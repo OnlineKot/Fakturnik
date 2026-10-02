@@ -1,0 +1,48 @@
+name: Zbuduj Fakturnik.exe
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalacja zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Testy
+        run: python -m pytest -q
+
+      - name: Budowanie .exe (Python spakowany do środka)
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name Fakturnik
+          --exclude-module tkinter --exclude-module unittest
+          main.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fakturnik
+          path: dist/Fakturnik.exe
+
+      - name: Wydanie "najnowsza" do pobrania
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: najnowsza
+          name: Fakturnik (najnowsza wersja)
+          prerelease: true
+          files: dist/Fakturnik.exe
+          body: |
+            Najnowsza wersja z gałęzi ${{ github.ref_name }} (commit ${{ github.sha }}).
+            Pobierz Fakturnik.exe i uruchom dwuklikiem: nie trzeba instalować Pythona.

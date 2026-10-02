@@ -1,0 +1,131 @@
+"""Ochrona pliku danych: blokada na czas pracy programu, dziennik logowań i automatyczne kopie.
+
+Uwaga: na Windows żaden program nie zrobi pliku całkowicie nieusuwalnym dla właściciela konta
+lub administratora. Dlatego ochrona ma trzy warstwy:
+  * gdy program działa, plik jest otwarty bez zgody na zapis i usuwanie przez innych
+    (Eksplorator pokaże "plik jest używany"),
+  * gdy program jest zamknięty, plik ma atrybut "tylko do odczytu", a zaszyfrowany plik
+    jest uwierzytelniony (AES-GCM), więc każda zmiana z zewnątrz zostanie wykryta,
+  * automatyczne kopie trafiają do drugiego katalogu, więc usunięcie pliku nie kasuje danych.
+"""
+
+import hashlib
+import os
+import shutil
+import stat
+import sys
+from datetime import date, datetime
+from pathlib import Path
+
+ILE_KOPII = 30
+
+
+# ---------------------------------------------------------------- blokada pliku
+
+class BlokadaPliku:
+    """Trzyma plik otwarty tak, by inne programy mogły go tylko czytać (Windows)."""
+
+    def __init__(self, sciezka: Path):
+        self.sciezka = sciezka
+        self.uchwyt = None
+
+    def zaloz(self) -> None:
+        tylko_do_odczytu(self.sciezka, True)
+        if sys.platform != "win32" or self.uchwyt is not None or not self.sciezka.exists():
+            return
+        import ctypes
+        from ctypes import wintypes
+        CreateFileW = ctypes.windll.kernel32.CreateFileW
+        CreateFileW.restype = wintypes.HANDLE
+        GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING = 0x80000000, 0x1, 3
+        uchwyt = CreateFileW(str(self.sciezka), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None)
+        if uchwyt not in (None, wintypes.HANDLE(-1).value):
+            self.uchwyt = uchwyt
+
+    def zwolnij(self) -> None:
+        if self.uchwyt is not None:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(self.uchwyt)
+            self.uchwyt = None
+        tylko_do_odczytu(self.sciezka, False)
+
+
+def tylko_do_odczytu(sciezka: Path, wlacz: bool) -> None:
+    if sciezka.exists():
+        os.chmod(sciezka, stat.S_IREAD if wlacz else stat.S_IREAD | stat.S_IWRITE)
+
+
+# ---------------------------------------------------------------- dziennik
+
+class Dziennik:
+    """Dziennik logowań i operacji na danych.
+
+    Każdy wpis zawiera skrót SHA-256 poprzedniego wpisu (łańcuch), więc usunięcie lub zmiana
+    dowolnej linii jest wykrywana. Dziennik nie zawiera danych pacjentów.
+    """
+
+    def __init__(self, sciezka: Path):
+        self.sciezka = sciezka
+        self.sciezka.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _skrot(poprzedni: str, tresc: str) -> str:
+        return hashlib.sha256(f"{poprzedni}|{tresc}".encode("utf-8")).hexdigest()
+
+    def _ostatni_skrot(self) -> str:
+        wpisy = self.wpisy()
+        return wpisy[-1][2] if wpisy else "0" * 64
+
+    def zapisz(self, zdarzenie: str) -> None:
+        tresc = f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{zdarzenie}"
+        skrot = self._skrot(self._ostatni_skrot(), tresc)
+        tylko_do_odczytu(self.sciezka, False)
+        with open(self.sciezka, "a", encoding="utf-8") as f:
+            f.write(f"{tresc}\t{skrot}\n")
+        tylko_do_odczytu(self.sciezka, True)
+
+    def wpisy(self) -> list[tuple[str, str, str]]:
+        """Lista (czas, zdarzenie, skrót)."""
+        if not self.sciezka.exists():
+            return []
+        wynik = []
+        for linia in self.sciezka.read_text(encoding="utf-8").splitlines():
+            czesci = linia.split("\t")
+            if len(czesci) == 3:
+                wynik.append((czesci[0], czesci[1], czesci[2]))
+        return wynik
+
+    def nienaruszony(self) -> bool:
+        poprzedni = "0" * 64
+        if self.sciezka.exists():
+            linie = self.sciezka.read_text(encoding="utf-8").splitlines()
+            if len(linie) != len(self.wpisy()):
+                return False
+        for czas, zdarzenie, skrot in self.wpisy():
+            if self._skrot(poprzedni, f"{czas}\t{zdarzenie}") != skrot:
+                return False
+            poprzedni = skrot
+        return True
+
+
+# ---------------------------------------------------------------- kopie automatyczne
+
+def katalog_kopii() -> Path:
+    return Path.home() / "Documents" / "Fakturnik" / "kopie"
+
+
+def kopia_automatyczna(plik: Path, katalog: Path | None = None) -> Path | None:
+    """Raz dziennie kopiuje plik danych (w postaci, w jakiej leży na dysku) i zostawia ostatnie 30 kopii."""
+    if not plik.exists():
+        return None
+    katalog = katalog or katalog_kopii()
+    katalog.mkdir(parents=True, exist_ok=True)
+    cel = katalog / f"fakturnik-{date.today().isoformat()}.db"
+    tylko_do_odczytu(cel, False)
+    shutil.copyfile(plik, cel)
+    tylko_do_odczytu(cel, True)
+    kopie = sorted(katalog.glob("fakturnik-*.db"))
+    for stara in kopie[:-ILE_KOPII]:
+        tylko_do_odczytu(stara, False)
+        stara.unlink()
+    return cel
