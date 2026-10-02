@@ -3,8 +3,10 @@
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QEvent, QObject, QStandardPaths, Qt, QTimer
-from PySide6.QtGui import QFont, QKeySequence, QShortcut
+import base64
+
+from PySide6.QtCore import QBuffer, QByteArray, QDate, QEvent, QIODevice, QObject, QStandardPaths, Qt, QTimer
+from PySide6.QtGui import QFont, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter,
@@ -550,6 +552,22 @@ class StronaUstawienia(QWidget):
         f.addRow("Tytuł:", self.pola["tytul"])
         self.pola["adnotacja"] = QPlainTextEdit(maximumHeight=60)
         f.addRow("Adnotacja VAT:", self.pola["adnotacja"])
+        self.logo = "domyslne"
+        self.podglad_logo = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.podglad_logo.setFixedSize(70, 70)
+        self.podglad_logo.setStyleSheet("background: white; border: 1px solid #d8dee5; border-radius: 5px;")
+        przyciski_logo = QVBoxLayout()
+        for tekst, akcja in [("Wybierz logo z pliku…", self.wybierz_logo),
+                             ("Logo gabinetu (ząb)", lambda: self.ustaw_logo("domyslne")),
+                             ("Bez logo", lambda: self.ustaw_logo(""))]:
+            b = QPushButton(tekst)
+            b.clicked.connect(akcja)
+            przyciski_logo.addWidget(b)
+        rzad_logo = QHBoxLayout()
+        rzad_logo.addWidget(self.podglad_logo)
+        rzad_logo.addLayout(przyciski_logo)
+        rzad_logo.addStretch()
+        f.addRow("Logo na wydruku:", rzad_logo)
         lewa.addWidget(dok)
         lewa.addStretch()
 
@@ -621,6 +639,7 @@ class StronaUstawienia(QWidget):
                 pole.setText(u[klucz])
         self.okno_drukarki.setChecked(u["okno_drukarki"] == "1")
         self.kopia.setChecked(u["kopia"] == "1")
+        self.ustaw_logo(u["logo"])
         ma = self.okno.baza.ma_haslo
         self.stan_hasla.setText(
             f"🔒 Dane zaszyfrowane (AES-256). Program blokuje się po {BLOKADA_PO_MINUTACH} min bezczynności."
@@ -640,11 +659,42 @@ class StronaUstawienia(QWidget):
         if "{n}" not in wartosci["format_numeru"]:
             QMessageBox.warning(self, "Format numeru", "Format numeru musi zawierać {n}.")
             return
+        wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
         self.okno.przejdz(0)
+
+    def ustaw_logo(self, wartosc: str):
+        self.logo = wartosc
+        dane = druk.logo_bajty({"logo": wartosc})
+        if dane:
+            obraz = QPixmap()
+            obraz.loadFromData(dane)
+            self.podglad_logo.setPixmap(obraz.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                                     Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.podglad_logo.clear()
+            self.podglad_logo.setText("brak")
+
+    def wybierz_logo(self):
+        sciezka, _ = QFileDialog.getOpenFileName(self, "Wybierz logo", str(Path.home()),
+                                                 "Obrazy (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if not sciezka:
+            return
+        obraz = QImage(sciezka)
+        if obraz.isNull():
+            QMessageBox.warning(self, "Logo", "Nie udało się wczytać tego obrazu.")
+            return
+        if obraz.height() > 400:
+            obraz = obraz.scaledToHeight(400, Qt.TransformationMode.SmoothTransformation)
+        bufor = QByteArray()
+        io = QBuffer(bufor)
+        io.open(QIODevice.OpenModeFlag.WriteOnly)
+        obraz.save(io, "PNG")
+        self.ustaw_logo(base64.b64encode(bytes(bufor)).decode("ascii"))
+        self.okno.komunikat("Logo wybrane: kliknij „Zapisz ustawienia”")
 
     def _potwierdz_obecne(self) -> bool:
         if not self.okno.baza.ma_haslo:
@@ -857,6 +907,7 @@ def uruchom() -> int:
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Fakturnik")
     app.setOrganizationName("Fakturnik")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "zasoby" / "ikona.png")))
     app.setStyle("Fusion")
     app.setStyleSheet(STYL)
     app.setFont(QFont("Segoe UI", 10))

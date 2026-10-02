@@ -22,6 +22,7 @@ DOMYSLNE_USTAWIENIA = {
     "miejsce": "Racibórz",
     "konto": "",
     "tytul": "Rachunek",
+    "logo": "domyslne",      # "domyslne", "" (bez logo) albo obraz zapisany w base64
     "format_numeru": "{n}/{mm}/{rrrr}",
     "adnotacja": "Zwolnienie z VAT na podstawie art. 43 ust. 1 pkt 19 ustawy z dnia "
                  "11 marca 2004 r. o podatku od towarów i usług.",

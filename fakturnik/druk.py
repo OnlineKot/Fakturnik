@@ -1,6 +1,8 @@
 """Wygląd dokumentu (HTML dla QTextDocument) oraz drukowanie i zapis do PDF."""
 
+import base64
 from html import escape
+from pathlib import Path
 
 from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageLayout, QPageSize, QTextDocument
@@ -8,6 +10,23 @@ from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 
 from .baza import Dokument
 from .slownie import kwota_slownie
+
+
+DOMYSLNE_LOGO = Path(__file__).parent / "zasoby" / "logo.png"
+WYSOKOSC_LOGO = 85  # px na wydruku, ok. 2 cm
+
+
+def logo_bajty(u: dict[str, str]) -> bytes | None:
+    """Ustawienie "logo": "domyslne" = logo gabinetu dołączone do programu, "" = bez logo, inaczej base64."""
+    wartosc = u.get("logo", "")
+    if not wartosc:
+        return None
+    if wartosc == "domyslne":
+        return DOMYSLNE_LOGO.read_bytes() if DOMYSLNE_LOGO.exists() else None
+    try:
+        return base64.b64decode(wartosc)
+    except ValueError:
+        return None
 
 
 def zl(v: float) -> str:
@@ -22,8 +41,8 @@ def _wiersze(tekst: str) -> str:
     return "<br>".join(escape(w) for w in tekst.splitlines() if w.strip())
 
 
-def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool) -> str:
-    sprzedawca = [f"<b>{escape(u['nazwa'])}</b>", _wiersze(u["adres"])]
+def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, logo: str) -> str:
+    sprzedawca = [_wiersze(u["adres"])]
     if u["nip"]:
         sprzedawca.append(f"NIP: {escape(u['nip'])}")
     if u["regon"]:
@@ -58,7 +77,12 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool) 
 <br>
 <table width="100%" cellspacing="0" cellpadding="6"><tr>
   <td width="50%" valign="top" style="border-top: 1.5px solid black;">
-    <span style="font-size:8pt;">SPRZEDAWCA</span><br>{'<br>'.join(s for s in sprzedawca if s)}</td>
+    <span style="font-size:8pt;">SPRZEDAWCA</span><br>
+    <table width="100%" cellspacing="0" cellpadding="0"><tr>
+      {f'<td valign="top" style="padding-right:10px;"><img src="data:image/png;base64,{logo}" height="{WYSOKOSC_LOGO}"></td>' if logo else ''}
+      <td width="100%" valign="top"><span style="font-size:11.5pt; font-weight:bold;">{escape(u['nazwa'])}</span><br>
+        {'<br>'.join(s for s in sprzedawca if s)}</td>
+    </tr></table></td>
   <td width="50%" valign="top" style="border-top: 1.5px solid black;">
     <span style="font-size:8pt;">NABYWCA</span><br>{'<br>'.join(s for s in nabywca if s)}</td>
 </tr></table>
@@ -82,9 +106,11 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool) 
 
 
 def html_dokumentu(dok: Dokument, u: dict[str, str], z_kopia: bool = False) -> str:
-    strony = [_strona(dok, u, "oryginał", False)]
+    obraz = logo_bajty(u)
+    logo = base64.b64encode(obraz).decode("ascii") if obraz else ""
+    strony = [_strona(dok, u, "oryginał", False, logo)]
     if z_kopia:
-        strony.append(_strona(dok, u, "kopia", True))
+        strony.append(_strona(dok, u, "kopia", True, logo))
     return f"<html><body style='font-family: Arial; font-size:10pt;'>{''.join(strony)}</body></html>"
 
 
