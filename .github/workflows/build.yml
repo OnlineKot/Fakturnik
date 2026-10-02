@@ -25,6 +25,13 @@ jobs:
       - name: Testy
         run: python -m pytest -q
 
+      - name: Numer wersji
+        shell: bash
+        run: |
+          WERSJA="1.0.${{ github.run_number }}"
+          echo "WERSJA=$WERSJA" >> "$GITHUB_ENV"
+          printf '# Wpisywane automatycznie przy budowaniu.\nWERSJA = "%s"\n' "$WERSJA" > fakturnik/wersja.py
+
       - name: Budowanie .exe (Python spakowany do środka)
         run: >
           pyinstaller --noconfirm --onefile --windowed --name Fakturnik
@@ -33,18 +40,32 @@ jobs:
           --add-data "fakturnik/zasoby;fakturnik/zasoby"
           main.py
 
+      - name: Suma kontrolna SHA-256
+        shell: bash
+        run: |
+          cd dist
+          sha256sum Fakturnik.exe | cut -d' ' -f1 > Fakturnik.exe.sha256
+          cat Fakturnik.exe.sha256
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Fakturnik
-          path: dist/Fakturnik.exe
+          name: Fakturnik-${{ env.WERSJA }}
+          path: |
+            dist/Fakturnik.exe
+            dist/Fakturnik.exe.sha256
 
-      - name: Wydanie "najnowsza" do pobrania
+      - name: Wydanie (z niego program pobiera aktualizacje)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: najnowsza
-          name: Fakturnik (najnowsza wersja)
-          prerelease: true
-          files: dist/Fakturnik.exe
+          tag_name: v${{ env.WERSJA }}
+          target_commitish: ${{ github.sha }}
+          name: Fakturnik ${{ env.WERSJA }}
+          make_latest: true
+          files: |
+            dist/Fakturnik.exe
+            dist/Fakturnik.exe.sha256
           body: |
-            Najnowsza wersja z gałęzi ${{ github.ref_name }} (commit ${{ github.sha }}).
-            Pobierz Fakturnik.exe i uruchom dwuklikiem: nie trzeba instalować Pythona.
+            ${{ github.event.head_commit.message }}
+
+            Pobierz Fakturnik.exe i uruchom dwuklikiem. Program sam sprawdza aktualizacje; dane zostają.

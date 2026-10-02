@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
@@ -29,7 +30,8 @@ DOMYSLNE_USTAWIENIA = {
     "uslugi": "Leczenie kanałowe;0\nKonsultacja;0",
     "drukarka": "",          # pusta = domyślna drukarka systemu
     "okno_drukarki": "0",    # "1" = pokazuj okno wyboru drukarki przed drukiem
-    "kopia": "0",            # "1" = drukuj oryginał i kopię
+    "kopia": "0",
+    "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu            # "1" = drukuj oryginał i kopię
 }
 
 
@@ -72,6 +74,33 @@ class PlikZajety(Exception):
     pass
 
 
+class NowszaBaza(Exception):
+    """Dane zapisała nowsza wersja programu; starsza mogłaby je uszkodzić."""
+
+
+# Wersja układu danych (PRAGMA user_version). Każda zmiana tabel to nowy wpis w MIGRACJE,
+# dzięki czemu nowsza wersja programu przerabia stare dane zamiast je gubić.
+# Nigdy nie zmieniaj ani nie usuwaj istniejących wpisów, tylko dopisuj kolejne.
+MIGRACJE: dict[int, str] = {
+    1: """
+        CREATE TABLE IF NOT EXISTS ustawienia (klucz TEXT PRIMARY KEY, wartosc TEXT);
+        CREATE TABLE IF NOT EXISTS liczniki (miesiac TEXT PRIMARY KEY, ostatni INTEGER);
+        CREATE TABLE IF NOT EXISTS dokumenty (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numer TEXT NOT NULL,
+            data_wystawienia TEXT NOT NULL,
+            dane TEXT NOT NULL,
+            utworzono TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """,
+}
+WERSJA_DANYCH = max(MIGRACJE)
+
+
+def wersja_danych(db: sqlite3.Connection) -> int:
+    return db.execute("PRAGMA user_version").fetchone()[0]
+
+
 class Baza:
     """Baza SQLite trzymana w pamięci i zapisywana w całości do pliku po każdej zmianie.
 
@@ -84,20 +113,28 @@ class Baza:
         self.szyfr: Szyfr | None = None
         self.blokada = BlokadaPliku(self.sciezka)
         self.db = sqlite3.connect(":memory:")
-        if self.sciezka.exists():
+        istnial = self.sciezka.exists()
+        if istnial:
             self.db.deserialize(self._wczytaj(self.sciezka, haslo, ustaw_szyfr=True))
-        self.db.executescript("""
-            CREATE TABLE IF NOT EXISTS ustawienia (klucz TEXT PRIMARY KEY, wartosc TEXT);
-            CREATE TABLE IF NOT EXISTS liczniki (miesiac TEXT PRIMARY KEY, ostatni INTEGER);
-            CREATE TABLE IF NOT EXISTS dokumenty (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                numer TEXT NOT NULL,
-                data_wystawienia TEXT NOT NULL,
-                dane TEXT NOT NULL,
-                utworzono TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+        self._migruj(kopia_przed=istnial)
         self._utrwal()
+
+    def _migruj(self, kopia_przed: bool) -> None:
+        """Doprowadza dane do bieżącej wersji układu; przed zmianą zachowuje kopię pliku."""
+        wersja = wersja_danych(self.db)
+        if wersja > WERSJA_DANYCH:
+            raise NowszaBaza("Dane zapisała nowsza wersja Fakturnika. Zaktualizuj program, "
+                             "żeby ich nie uszkodzić.")
+        if wersja == WERSJA_DANYCH:
+            return
+        if kopia_przed and self.sciezka.exists():
+            kopia = self.sciezka.with_name(f"{self.sciezka.stem}-przed-migracja-v{wersja}{self.sciezka.suffix}")
+            if not kopia.exists():
+                shutil.copyfile(self.sciezka, kopia)
+        for numer in range(wersja + 1, WERSJA_DANYCH + 1):
+            with self.db:
+                self.db.executescript(MIGRACJE[numer])
+                self.db.execute(f"PRAGMA user_version = {numer}")
 
     def _wczytaj(self, sciezka: Path, haslo: str | None, ustaw_szyfr: bool = False) -> bytes:
         dane = Path(sciezka).read_bytes()
@@ -249,7 +286,12 @@ class Baza:
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:
         """Zastępuje dane kopią zapasową; obecne hasło (szyfrowanie) zostaje."""
         dane = self._wczytaj(Path(zrodlo), haslo)
+        proba = sqlite3.connect(":memory:")
+        proba.deserialize(dane)
+        if wersja_danych(proba) > WERSJA_DANYCH:
+            raise NowszaBaza("Kopia pochodzi z nowszej wersji Fakturnika. Najpierw zaktualizuj program.")
         self.db.deserialize(dane)
+        self._migruj(kopia_przed=False)
         self._utrwal()
 
     def kopia_zapasowa(self, cel: Path | str) -> None:

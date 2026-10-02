@@ -114,13 +114,17 @@ def katalog_kopii() -> Path:
     return Path.home() / "Documents" / "Fakturnik" / "kopie"
 
 
-def kopia_automatyczna(plik: Path, katalog: Path | None = None) -> Path | None:
-    """Raz dziennie kopiuje plik danych (w postaci, w jakiej leży na dysku) i zostawia ostatnie 30 kopii."""
+def kopia_automatyczna(plik: Path, katalog: Path | None = None, nazwa: str | None = None) -> Path | None:
+    """Kopiuje plik danych (w postaci, w jakiej leży na dysku, czyli zaszyfrowany, jeśli jest hasło).
+
+    Bez `nazwa`: jedna kopia dziennie, zostaje ostatnie 30. Z `nazwa` (np. przed aktualizacją)
+    kopia ma własną nazwę i nie jest usuwana automatycznie.
+    """
     if not plik.exists():
         return None
     katalog = katalog or katalog_kopii()
     katalog.mkdir(parents=True, exist_ok=True)
-    cel = katalog / f"fakturnik-{date.today().isoformat()}.db"
+    cel = katalog / (nazwa or f"fakturnik-{date.today().isoformat()}.db")
     tylko_do_odczytu(cel, False)
     shutil.copyfile(plik, cel)
     tylko_do_odczytu(cel, True)

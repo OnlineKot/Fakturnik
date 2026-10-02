@@ -111,7 +111,7 @@ def html_dokumentu(dok: Dokument, u: dict[str, str], z_kopia: bool = False) -> s
     strony = [_strona(dok, u, "oryginał", False, logo)]
     if z_kopia:
         strony.append(_strona(dok, u, "kopia", True, logo))
-    return f"<html><body style='font-family: Arial; font-size:10pt;'>{''.join(strony)}</body></html>"
+    return f"<html><body style='font-family: Inter, Arial; font-size:10pt;'>{''.join(strony)}</body></html>"
 
 
 def dokument_tekstowy(html: str) -> QTextDocument:
