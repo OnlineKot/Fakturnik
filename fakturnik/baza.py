@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -64,6 +65,10 @@ def formatuj_numer(wzor: str, n: int, d: date) -> str:
                 .replace("{mm}", f"{d.month:02d}")
                 .replace("{rrrr}", str(d.year))
                 .replace("{rr}", f"{d.year % 100:02d}"))
+
+
+class PlikZajety(Exception):
+    pass
 
 
 class Baza:
@@ -146,7 +151,16 @@ class Baza:
             os.fsync(f.fileno())
         self.blokada.zwolnij()
         try:
-            os.replace(tymczasowy, self.sciezka)
+            for proba in range(10):
+                try:
+                    os.replace(tymczasowy, self.sciezka)
+                    break
+                except PermissionError:
+                    # plik chwilowo trzymany np. przez antywirus lub drugą kopię programu
+                    if proba == 9:
+                        raise PlikZajety(
+                            "Plik danych jest zablokowany. Czy Fakturnik nie jest już uruchomiony?") from None
+                    time.sleep(0.2)
         finally:
             self.blokada.zaloz()
 

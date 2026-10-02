@@ -35,6 +35,7 @@ def test_numeracja_w_miesiacu_i_po_ponownym_otwarciu(tmp_path):
     assert b.nastepny_numer(pazdziernik) == "2/10/2026"
     assert b.nastepny_numer(date(2026, 11, 1)) == "1/11/2026"
 
+    b.zamknij()
     b = Baza(plik)  # program zamknięty i otwarty ponownie
     assert b.nastepny_numer(pazdziernik) == "2/10/2026"
     b.zapisz_dokument(dok("7/10/2026"))  # numer poprawiony ręcznie
@@ -47,6 +48,7 @@ def test_haslo_szyfruje_plik(tmp_path):
     b.zapisz_dokument(dok("1/10/2026"))
     b.ustaw_haslo("tajne123")
 
+    b.zamknij()
     zawartosc = plik.read_bytes()
     assert b"Kowalski" not in zawartosc and b"SQLite" not in zawartosc
     assert Baza.wymaga_hasla(plik)
@@ -59,10 +61,13 @@ def test_haslo_szyfruje_plik(tmp_path):
     b = Baza(plik, "tajne123")
     assert [d.numer for d in b.dokumenty()] == ["1/10/2026"]
     b.zapisz_dokument(dok("2/10/2026"))  # kolejne zapisy też zaszyfrowane
-    assert Baza(plik, "tajne123").nastepny_numer(date(2026, 10, 1)) == "3/10/2026"
+    b.zamknij()
+    b = Baza(plik, "tajne123")
+    assert b.nastepny_numer(date(2026, 10, 1)) == "3/10/2026"
 
     b.ustaw_haslo(None)
     assert not Baza.wymaga_hasla(plik)
+    b.zamknij()
     assert len(Baza(plik).dokumenty()) == 2
 
 
@@ -100,6 +105,8 @@ def test_dziennik_wykrywa_zmiany(tmp_path):
 def test_kopie_automatyczne(tmp_path):
     from fakturnik.ochrona import kopia_automatyczna
     plik = tmp_path / "dane.db"
-    Baza(plik).zapisz_dokument(dok("1/10/2026"))
+    b = Baza(plik)
+    b.zapisz_dokument(dok("1/10/2026"))
+    b.zamknij()
     cel = kopia_automatyczna(plik, tmp_path / "kopie")
     assert cel.read_bytes() == plik.read_bytes()

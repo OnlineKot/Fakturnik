@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import druk
-from .baza import Baza, Dokument, Pozycja
+from .baza import Baza, Dokument, PlikZajety, Pozycja
 from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
 from .szyfrowanie import BledneHaslo
 
@@ -863,6 +863,14 @@ def uruchom() -> int:
 
     plik = sciezka_danych()
     dziennik = Dziennik(plik.parent / "dziennik.log")
+    try:
+        return _otworz(app, plik, dziennik)
+    except PlikZajety as e:
+        QMessageBox.warning(None, "Fakturnik", str(e))
+        return 1
+
+
+def _otworz(app: QApplication, plik: Path, dziennik: Dziennik) -> int:
     if Baza.wymaga_hasla(plik):
         wynik: dict[str, Baza] = {}
 
