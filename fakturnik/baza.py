@@ -267,6 +267,7 @@ class Baza:
 
     def _migruj(self, kopia_przed: bool) -> None:
         """Doprowadza dane do bieżącej wersji układu; przed zmianą zachowuje kopię pliku."""
+        self.db.execute("PRAGMA secure_delete = ON")  # usunięte dane są nadpisywane zerami (RODO)
         wersja = wersja_danych(self.db)
         if wersja > WERSJA_DANYCH:
             raise NowszaBaza("Dane zapisała nowsza wersja Fakturnika. Zaktualizuj program, "
@@ -540,6 +541,8 @@ class Baza:
                 self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (nazwa,))
                 self.db.execute("DELETE FROM ustawienia WHERE klucz = ?", (f"ukryty_pacjent:{nazwa}",))
         self.db.execute("UPDATE pliki SET osoba = '' WHERE CAST(substr(data, 1, 4) AS INTEGER) <= ?", (granica,))
+        self.db.commit()
+        self.db.execute("VACUUM")  # przepisuje bazę od nowa, bez śladów starych wartości
         self._utrwal()
         return len(stare)
 
