@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import aktualizacje, druk, windows
+from . import aktualizacje, druk, urzadzenie, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
@@ -34,7 +34,7 @@ from .system import (
     JednaKopia, autostart_wlaczony, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
     ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
 )
-from .szyfrowanie import BledneHaslo
+from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
 from .wersja import WERSJA
 from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, PodgladStron, Powiadomienie, WykresMiesiecy
@@ -2292,6 +2292,28 @@ class StronaUstawienia(Strona):
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
+        # --- komputer i urządzenie
+        prawa.addWidget(sekcja("Komputer i urządzenie"))
+        k, ku = karta()
+        self.stan_komputera = QLabel(objectName="drobny", wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        ku.addWidget(self.stan_komputera)
+        rzad = QHBoxLayout()
+        self.btn_weryfikacja = przycisk("", "tarcza", akcja=self.przelacz_weryfikacje)
+        self.btn_kod = przycisk("Kod odzyskiwania…", "klucz", akcja=self.pokaz_kod)
+        rzad.addWidget(self.btn_weryfikacja)
+        rzad.addWidget(self.btn_kod)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Przenieś na inny komputer…", "pobierz", akcja=self.migracja))
+        self.btn_instaluj_admin = przycisk("Zainstaluj z uprawnieniami administratora…", "tarcza",
+                                           akcja=self.instaluj_jako_admin)
+        rzad.addWidget(self.btn_instaluj_admin)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
         # --- aktualizacje
         prawa.addWidget(sekcja("Praca w tle i Windows"))
         k, ku = karta()
@@ -2348,6 +2370,114 @@ class StronaUstawienia(Strona):
         f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         uklad.addLayout(f)
         return f
+
+    def _pokaz_stan_komputera(self):
+        baza = self.okno.baza
+
+        def znak(stan, dobrze: str, zle: str, nie_wiadomo: str = "nie da się sprawdzić") -> str:
+            if stan is None:
+                return f"<span style='color:{TEKST_2}'>– {nie_wiadomo}</span>"
+            return (f"<span style='color:{ZIELONY}'>✓ {dobrze}</span>" if stan
+                    else f"<span style='color:{CZERWONY}'>✗ {zle}</span>")
+
+        admin = (not aktualizacje.mozna_zapisac_obok()) if aktualizacje.czy_spakowany() else None
+        konto = urzadzenie.konto_administratora()
+        wiersze = [
+            f"Komputer: <b>{html_escape(urzadzenie.nazwa_urzadzenia())}</b>",
+            "Secure Boot: " + znak(urzadzenie.secure_boot(), "włączony", "wyłączony (włącz w ustawieniach UEFI/BIOS)"),
+            "Instalacja: " + znak(admin, "z uprawnieniami administratora (Program Files, usługa kopii)",
+                                  "bez uprawnień administratora (użyj przycisku poniżej)", "wersja ze źródeł"),
+            "Konto Windows do codziennej pracy: " + znak(None if konto is None else not konto, "zwykłe (zalecane)",
+                                                          "administrator (bezpieczniej pracować na zwykłym koncie)"),
+            "Weryfikacja urządzenia: " + znak(baza.weryfikacja_urzadzenia,
+                                               "włączona (dane otworzą się tylko na tym komputerze)",
+                                               "wyłączona"),
+        ]
+        self.stan_komputera.setText("<br>".join(wiersze))
+        self.btn_weryfikacja.setText("Wyłącz weryfikację urządzenia…" if baza.weryfikacja_urzadzenia
+                                     else "Włącz weryfikację urządzenia…")
+        self.btn_weryfikacja.setEnabled(urzadzenie.dostepne() and baza.ma_haslo)
+        self.btn_weryfikacja.setToolTip("" if baza.ma_haslo else "Najpierw ustaw hasło")
+        self.btn_kod.setVisible(baza.weryfikacja_urzadzenia)
+        self.btn_instaluj_admin.setVisible(admin is False)
+
+    def przelacz_weryfikacje(self):
+        baza = self.okno.baza
+        katalog = baza.sciezka.parent
+        if baza.weryfikacja_urzadzenia:
+            if QMessageBox.question(self, "Weryfikacja urządzenia", "Wyłączyć weryfikację urządzenia? Dane znów "
+                                    "będzie można otworzyć na innym komputerze samym hasłem.") \
+                    != QMessageBox.StandardButton.Yes or not self._potwierdz_obecne():
+                return
+            baza.powiaz_z_urzadzeniem(None)
+            urzadzenie.usun_sekret(katalog)
+            self.okno.dziennik.zapisz("weryfikacja urządzenia: wyłączona")
+            self.okno.komunikat("Weryfikacja urządzenia wyłączona")
+        else:
+            if QMessageBox.question(
+                    self, "Weryfikacja urządzenia",
+                    "Po włączeniu dane (i ich kopie) otworzą się tylko na tym komputerze i tym koncie Windows, "
+                    "nawet ktoś znający hasło nie odczyta ich gdzie indziej.\n\nNa nowym komputerze potrzebny "
+                    "będzie KOD ODZYSKIWANIA, który za chwilę zobaczysz. Zapisz go lub wydrukuj i przechowuj "
+                    "w bezpiecznym miejscu (nie na tym komputerze). Bez kodu i bez pakietu migracji danych nie "
+                    "da się przenieść na inny komputer.\n\nWłączyć?") != QMessageBox.StandardButton.Yes:
+                return
+            if not self._potwierdz_obecne():
+                return
+            sekret = urzadzenie.nowy_sekret()
+            if not OknoKoduOdzyskiwania(urzadzenie.kod_odzyskiwania(sekret), self, potwierdzenie=True).exec():
+                return
+            try:
+                urzadzenie.zapisz_sekret(katalog, sekret)
+            except (OSError, urzadzenie.BrakDPAPI) as e:
+                QMessageBox.critical(self, "Weryfikacja urządzenia", f"Nie udało się zapisać klucza urządzenia: {e}")
+                return
+            baza.powiaz_z_urzadzeniem(sekret)
+            self.okno.dziennik.zapisz("weryfikacja urządzenia: włączona")
+            self.okno.komunikat("Weryfikacja urządzenia włączona")
+        self._pokaz_stan_komputera()
+
+    def pokaz_kod(self):
+        szyfr = self.okno.baza.szyfr
+        if not (szyfr and szyfr.sekret) or not self._potwierdz_obecne():
+            return
+        self.okno.dziennik.zapisz("wyświetlenie kodu odzyskiwania")
+        OknoKoduOdzyskiwania(urzadzenie.kod_odzyskiwania(szyfr.sekret), self).exec()
+
+    def migracja(self):
+        odp = QMessageBox.question(
+            self, "Przenieś na inny komputer",
+            "Program utworzy PAKIET MIGRACJI: jeden plik .fkopia z wszystkimi danymi, ustawieniami i wrzuconymi "
+            "plikami, zaszyfrowany osobnym hasłem pakietu (działa na każdym komputerze, także przy włączonej "
+            "weryfikacji urządzenia).\n\nNa nowym komputerze: zainstaluj Fakturnik i na pierwszym ekranie "
+            "wybierz „Przenieś dane z innego komputera”.\n\nUtworzyć pakiet?")
+        if odp == QMessageBox.StandardButton.Yes:
+            self.kopia_zapasowa(nazwa_pliku=f"Fakturnik-migracja-{date.today().isoformat()}.fkopia")
+
+    def instaluj_jako_admin(self):
+        if QMessageBox.question(
+                self, "Instalacja z uprawnieniami administratora",
+                "Program pobierze instalator z GitHuba (sprawdzi sumę SHA-256) i go uruchomi. Windows zapyta o zgodę "
+                "administratora. Instalator przeniesie Fakturnik do Program Files, włączy usługę kopii i ochronę "
+                "przed odinstalowaniem. Fakturnik zamknie się na czas instalacji. Dane zostają bez zmian.\n\nKontynuować?") != QMessageBox.StandardButton.Yes:
+            return
+        cel = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)) / "FakturnikSetup.exe"
+        self.okno.komunikat("Pobieranie instalatora…")
+        w = Watek(aktualizacje.pobierz_instalator, cel)
+        w.gotowe.connect(self._uruchom_instalator)
+        w.blad.connect(lambda tekst: QMessageBox.warning(self, "Instalator", tekst))
+        self.okno._w_tle(w)
+
+    def _uruchom_instalator(self, sciezka: Path):
+        """Instalator potrzebuje zamkniętego Fakturnika (podmienia program), więc po jego starcie program się wyłącza."""
+        self.okno.dziennik.zapisz("uruchomienie instalatora (administrator)")
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka))):
+            QMessageBox.warning(self, "Instalator", f"Nie udało się uruchomić instalatora:\n{sciezka}")
+            return
+        self.okno._wyjscie = True
+        self.okno.uruchom_po_zamknieciu = None
+        self.okno.close()
+        QApplication.quit()
 
     def _wybierz_folder_kopii(self):
         folder = QFileDialog.getExistingDirectory(self, "Folder na trzecią kopię", self.kopia_folder.text()
@@ -2419,6 +2549,7 @@ class StronaUstawienia(Strona):
         self.ochrona_ekranu.setChecked(u["ochrona_ekranu"] == "1")
         self.kopia_folder.setText(u["kopia_folder"])
         self._pokaz_stan_kopii()
+        self._pokaz_stan_komputera()
         self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
@@ -2609,6 +2740,7 @@ class StronaUstawienia(Strona):
         if QMessageBox.question(self, "Odszyfruj dane", "Hasło zostanie usunięte, a dane przestaną być "
                                 "zaszyfrowane. Kontynuować?") == QMessageBox.StandardButton.Yes:
             self.okno.baza.ustaw_haslo(None)
+            urzadzenie.usun_sekret(self.okno.baza.sciezka.parent)  # bez hasła nie ma też weryfikacji urządzenia
             self.okno.dziennik.zapisz("usunięcie hasła (odszyfrowanie danych)")
             self.okno.komunikat("Hasło usunięte, dane odszyfrowane")
             self.odswiez()
@@ -2709,13 +2841,13 @@ class StronaUstawienia(Strona):
             self.okno.dziennik.zapisz("eksport odszyfrowanej kopii danych")
             self.okno.komunikat(f"Zapisano: {sciezka}")
 
-    def kopia_zapasowa(self):
+    def kopia_zapasowa(self, *_, nazwa_pliku: str | None = None):
         haslo = OknoNowegoHasla(self, "Hasło kopii zapasowej",
                                 "Kopia (dane i wrzucone pliki) zostanie zaszyfrowana AES-256 tym hasłem. "
                                 "Może być inne niż hasło programu, np. do kopii na pendrive lub w chmurze.")
         if haslo.exec() != QDialog.DialogCode.Accepted:
             return
-        nazwa = f"fakturnik-kopia-{date.today().isoformat()}.fkopia"
+        nazwa = nazwa_pliku or f"fakturnik-kopia-{date.today().isoformat()}.fkopia"
         sciezka, _ = QFileDialog.getSaveFileName(self, "Szyfrowana kopia zapasowa", str(Path.home() / nazwa),
                                                  "Szyfrowana kopia Fakturnika (*.fkopia)")
         if not sciezka:
@@ -2735,6 +2867,60 @@ def rozmiar_tekst(bajty: int) -> str:
     if bajty < 1024 * 1024:
         return f"{max(1, round(bajty / 1024))} KB"
     return f"{bajty / 1024 / 1024:.1f} MB".replace(".", ",")
+
+
+class OknoKoduOdzyskiwania(QDialog):
+    """Kod odzyskiwania weryfikacji urządzenia: do zapisania lub wydrukowania (nie zostaje na tym komputerze)."""
+
+    def __init__(self, kod: str, parent=None, potwierdzenie: bool = False):
+        super().__init__(parent)
+        self.kod = kod
+        self.setWindowTitle("Kod odzyskiwania")
+        self.setFixedWidth(520)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(26, 24, 26, 20)
+        u.setSpacing(12)
+        t = QLabel("Kod odzyskiwania")
+        t.setStyleSheet("font-size: 17px; font-weight: 650;")
+        u.addWidget(t)
+        u.addWidget(QLabel("Będzie potrzebny, żeby otworzyć dane na innym komputerze (np. po awarii tego). "
+                           "Zapisz go na kartce lub wydrukuj i schowaj razem z ważnymi dokumentami.",
+                           objectName="podtytul", wordWrap=True))
+        grupy = kod.split("-")
+        pole_kodu = QLabel("-".join(grupy[:4]) + "-\n" + "-".join(grupy[4:]), alignment=Qt.AlignmentFlag.AlignCenter)
+        pole_kodu.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        pole_kodu.setStyleSheet(f"font-family: Consolas, 'Courier New', monospace; font-size: 19px; "
+                                f"font-weight: 600; letter-spacing: 2px; background: {TLO}; border-radius: 10px; "
+                                f"padding: 16px;")
+        u.addWidget(pole_kodu)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Drukuj", "drukarka", akcja=self._drukuj))
+        rzad.addStretch()
+        u.addLayout(rzad)
+        self.potwierdz = None
+        if potwierdzenie:
+            ostatnia = kod.split("-")[-1]
+            self.potwierdz = QLineEdit(placeholderText="Ostatnie 4 znaki kodu")
+            self.potwierdz.setMaxLength(4)
+            self.potwierdz.textChanged.connect(lambda t: self.ok.setEnabled(t.strip().upper() == ostatnia))
+            u.addLayout(pole("Przepisz ostatnie 4 znaki, żeby potwierdzić, że kod jest zapisany", self.potwierdz))
+        r = QHBoxLayout()
+        r.addStretch()
+        if potwierdzenie:
+            r.addWidget(przycisk("Anuluj", akcja=self.reject))
+        self.ok = przycisk("Zapisałem kod" if potwierdzenie else "Zamknij", styl="glowny", akcja=self.accept)
+        self.ok.setEnabled(not potwierdzenie)
+        r.addWidget(self.ok)
+        u.addLayout(r)
+
+    def _drukuj(self):
+        drukarka = druk.przygotuj_drukarke({})
+        if QPrintDialog(drukarka, self).exec() == QDialog.DialogCode.Accepted:
+            druk.drukuj(f"<html><body style='font-family: Arial; font-size: 12pt;'><h2>Fakturnik: kod odzyskiwania</h2>"
+                        f"<p>Komputer: {html_escape(urzadzenie.nazwa_urzadzenia())}, {date.today():%d.%m.%Y}</p>"
+                        f"<p style='font-family: Courier New; font-size: 18pt;'><b>{html_escape(self.kod)}</b></p>"
+                        "<p>Potrzebny do otwarcia danych Fakturnika na innym komputerze (razem z hasłem). "
+                        "Przechowuj w bezpiecznym miejscu.</p></body></html>", drukarka)
 
 
 class OknoDruku(QDialog):
@@ -3400,6 +3586,8 @@ class OknoGlowne(QMainWindow):
         self.zegar_kopii.start()
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
+        if urzadzenie.secure_boot() is False and self.baza.ustawienia()["ostrzezenie_secure_boot"] != "1":
+            QTimer.singleShot(10000, self._ostrzez_secure_boot)
 
     def przejdz(self, i: int, odswiez: bool = True):
         if i != STRONA_PRZYCHODY:
@@ -3462,6 +3650,13 @@ class OknoGlowne(QMainWindow):
         w.gotowe.connect(lambda wydanie: self._wynik_sprawdzenia(wydanie, cicho))
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
+
+    def _ostrzez_secure_boot(self):
+        """Jednorazowa wskazówka: Secure Boot chroni przed złośliwym oprogramowaniem uruchamianym przed Windows."""
+        self.baza.zapisz_ustawienia({"ostrzezenie_secure_boot": "1"})
+        self.zasobnik.showMessage("Fakturnik: Secure Boot jest wyłączony",
+                                  "Zalecane włączenie w ustawieniach UEFI/BIOS komputera. Szczegóły: "
+                                  "Ustawienia → Komputer i urządzenie.", QSystemTrayIcon.MessageIcon.Warning, 10000)
 
     def _co_10_minut(self):
         self.kopia_ciagla()
@@ -3909,9 +4104,9 @@ def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polece
         def sprawdz(haslo: str) -> bool:
             try:
                 blokada.zwolnij()
-                Baza(plik, haslo).zamknij()
+                Baza(plik, haslo, urzadzenie.wczytaj_sekret(plik.parent)).zamknij()
                 return True
-            except BledneHaslo:
+            except (BledneHaslo, WymaganeUrzadzenie, ValueError):
                 return False
             finally:
                 blokada.zaloz()
@@ -3952,7 +4147,8 @@ def potwierdz_odinstalowanie() -> int:
         pliki.append(sciezka_danych())
     chronione = [p for p in pliki if Baza.wymaga_hasla(p)]
     if chronione:
-        okno = OknoHasla(lambda h: any(Baza.da_sie_otworzyc(p, h) for p in chronione), "Odinstaluj Fakturnik",
+        okno = OknoHasla(lambda h: any(Baza.da_sie_otworzyc(p, h, urzadzenie.wczytaj_sekret(p.parent))
+                                       for p in chronione), "Odinstaluj Fakturnik",
                          opis="Podaj hasło Fakturnika, aby go odinstalować.\nDane i kopie zostaną na dysku.")
         return 0 if okno.exec() == QDialog.DialogCode.Accepted else 1
     odp = QMessageBox.question(None, "Odinstaluj Fakturnik", "Odinstalować Fakturnik?\n\nDane i kopie zostaną "
@@ -3989,7 +4185,36 @@ def _obsluga_bledow(log: Path) -> None:
     threading.excepthook = lambda a: obsluz(a.exc_type, a.exc_value, a.exc_traceback)
 
 
-def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dziennik) -> bool:
+def _nowe_urzadzenie(plik: Path, haslo: str, dziennik: Dziennik, wynik: dict) -> bool:
+    """Dane są powiązane z innym urządzeniem (nowy komputer, nowe konto Windows): potrzebny kod odzyskiwania.
+    Po poprawnym kodzie i haśle to urządzenie zostaje zweryfikowane (klucz zapisany przez Windows)."""
+    kod, ok = QInputDialog.getText(
+        None, "Weryfikacja urządzenia",
+        "Dane Fakturnika są powiązane z innym komputerem lub kontem Windows.\n\n"
+        "Wpisz kod odzyskiwania (8 grup po 4 znaki), aby otworzyć je na tym urządzeniu:")
+    if not ok:
+        return False
+    sekret = urzadzenie.sekret_z_kodu(kod)
+    try:
+        if sekret is None:
+            raise WymaganeUrzadzenie
+        wynik["baza"] = Baza(plik, haslo, sekret)
+    except WymaganeUrzadzenie:
+        dziennik.zapisz("weryfikacja urządzenia: NIEUDANA (zły kod odzyskiwania)")
+        QMessageBox.warning(None, "Weryfikacja urządzenia", "Nieprawidłowy kod odzyskiwania.")
+        return False
+    except BledneHaslo:
+        return False
+    try:
+        urzadzenie.zapisz_sekret(plik.parent, sekret)
+    except (OSError, urzadzenie.BrakDPAPI):
+        pass  # bez zapamiętania: przy następnym uruchomieniu znów zapyta o kod
+    dziennik.zapisz(f"weryfikacja urządzenia: nowe urządzenie {urzadzenie.nazwa_urzadzenia()} (kod odzyskiwania)")
+    return True
+
+
+def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dziennik,
+                      sekret: bytes | None = None) -> bool:
     """Szuka najnowszej kopii automatycznej, która się otwiera (tym hasłem), i proponuje jej przywrócenie.
 
     Sprawdza tylko 3 najnowsze kopie: każda próba z hasłem to kosztowne wyliczenie klucza.
@@ -3998,7 +4223,7 @@ def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dzien
     chronione = usluga.katalog_kopii_chronionych() / (os.environ.get("USERNAME") or os.environ.get("USER") or "?")
     kopie = sorted(lista_kopii() + lista_kopii(chronione), key=lambda k: k.stat().st_mtime, reverse=True)
     for kopia in kopie[:3]:
-        if not Baza.da_sie_otworzyc(kopia, haslo):
+        if not Baza.da_sie_otworzyc(kopia, haslo, sekret):
             continue
         kiedy = datetime.fromtimestamp(kopia.stat().st_mtime)
         odp = QMessageBox.question(
@@ -4023,11 +4248,14 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
         w_tle = False
     if Baza.wymaga_hasla(plik):
         wynik: dict = {}
+        sekret = urzadzenie.wczytaj_sekret(plik.parent)
 
         def sprawdz(haslo: str) -> bool:
             try:
-                wynik["baza"] = Baza(plik, haslo)
+                wynik["baza"] = Baza(plik, haslo, sekret)
                 return True
+            except WymaganeUrzadzenie:
+                return _nowe_urzadzenie(plik, haslo, dziennik, wynik)
             except BledneHaslo:
                 powod = ("To hasło nie otwiera aktualnego pliku danych, ale otwiera kopię automatyczną. "
                          "Jeśli zmieniano hasło po dacie tej kopii, wpisz nowe hasło. Jeśli nie, plik danych "
@@ -4037,9 +4265,9 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
             except (NowszaBaza, PlikZajety) as e:
                 wynik["blad"] = e  # okno hasła się zamknie, a komunikat pokaże uruchom()
                 return True
-            if _zaproponuj_kopie(plik, haslo, powod, dziennik):
+            if _zaproponuj_kopie(plik, haslo, powod, dziennik, sekret):
                 try:
-                    wynik["baza"] = Baza(plik, haslo)
+                    wynik["baza"] = Baza(plik, haslo, sekret)
                     return True
                 except (BledneHaslo, ValueError):
                     pass

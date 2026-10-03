@@ -125,6 +125,20 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   3. wybrany folder: pendrive, dysk sieciowy albo OneDrive (Ustawienia → Kopie zapasowe), co 10 minut.
   Kopie są zaszyfrowane tak samo jak dane (gdy ustawiono hasło). Stan wszystkich trzech widać
   w Ustawieniach.
+- **Weryfikacja urządzenia** (Ustawienia → Komputer i urządzenie): dane i ich kopie otwierają się tylko
+  na tym komputerze i tym koncie Windows. Klucz szyfrujący powstaje z hasła i sekretu urządzenia
+  chronionego przez Windows (DPAPI), więc skradziony plik lub kopia nie otworzą się gdzie indziej nawet
+  ze znanym hasłem. Na nowym komputerze potrzebny jest **kod odzyskiwania** (pokazywany przy włączaniu,
+  do zapisania lub wydrukowania).
+- **Migracja na nowy komputer**: „Przenieś na inny komputer” tworzy pakiet migracji (.fkopia z osobnym
+  hasłem: wszystkie dokumenty, ustawienia i wrzucone pliki). Na nowym komputerze kreator ma przycisk
+  „Przenieś dane z innego komputera”.
+- **Stan bezpieczeństwa komputera**: Ustawienia pokazują, czy włączony jest Secure Boot, czy program
+  zainstalowano z uprawnieniami administratora (z przyciskiem, który pobiera i uruchamia instalator)
+  i czy codzienna praca odbywa się na zwykłym koncie Windows (zalecane). Przy wyłączonym Secure Boot
+  program raz o tym przypomina. Sam program celowo działa bez uprawnień administratora: instalator
+  i usługa kopii je mają, a codzienna praca z najmniejszymi uprawnieniami jest bezpieczniejsza
+  (Windows nie pozwala też na autostart programów wymagających administratora).
 - **Odporność na awarie**: dane zapisują się po każdej zmianie (atomowo), a plik jest sprawdzany przy
   każdym otwarciu. Gdy okaże się uszkodzony (np. awaria dysku lub prądu), program sam znajdzie
   najnowszą działającą kopię automatyczną i zaproponuje jej przywrócenie, a uszkodzony plik zostawi

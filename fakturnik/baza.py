@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .ochrona import BlokadaPliku, tylko_do_odczytu
 from .szyfrowanie import (
-    BledneHaslo, Szyfr, czy_kopia_szyfrowana, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
+    BledneHaslo, Szyfr, WymaganeUrzadzenie, czy_kopia_szyfrowana, czy_powiazane_z_urzadzeniem, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
     zaszyfruj_plik,
 )
 
@@ -50,6 +50,7 @@ DOMYSLNE_USTAWIENIA = {
     "format_numeru_korekty": "KOR/{n}/{mm}/{rrrr}",
     "termin_dni": "7",       # termin płatności przy przelewie (dni od wystawienia)
     "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
+    "ostrzezenie_secure_boot": "0",  # "1" = już pokazano wskazówkę o wyłączonym Secure Boot
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach
@@ -287,8 +288,9 @@ class Baza:
     Gdy ustawione jest hasło, plik jest szyfrowany (patrz szyfrowanie.py).
     """
 
-    def __init__(self, sciezka: Path | str, haslo: str | None = None):
+    def __init__(self, sciezka: Path | str, haslo: str | None = None, sekret: bytes | None = None):
         self.sciezka = Path(sciezka)
+        self._sekret = sekret  # sekret urządzenia (weryfikacja urządzenia), gdy dane są z nim powiązane
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.szyfr: Szyfr | None = None
         self._skrot_zapisu = ""  # SHA-256 ostatnio zapisanego pliku danych (do wykrywania zmian z zewnątrz)
@@ -330,7 +332,8 @@ class Baza:
         if czy_zaszyfrowane(dane):
             if haslo is None:
                 raise PermissionError("Dane są chronione hasłem.")
-            dane, szyfr = Szyfr.otworz(dane, haslo)
+            sekret = self._sekret or (self.szyfr.sekret if self.szyfr else None)
+            dane, szyfr = Szyfr.otworz(dane, haslo, sekret)
             if ustaw_szyfr:
                 self.szyfr = szyfr
         elif not dane.startswith(b"SQLite format 3"):
@@ -343,20 +346,28 @@ class Baza:
         tylko_do_odczytu(self.sciezka, True)
 
     @staticmethod
-    def da_sie_otworzyc(sciezka: Path | str, haslo: str | None) -> bool:
+    def da_sie_otworzyc(sciezka: Path | str, haslo: str | None, sekret: bytes | None = None) -> bool:
         """Czy plik (np. kopia automatyczna) otwiera się tym hasłem i jest nieuszkodzony. Niczego nie zmienia."""
         try:
             dane = Path(sciezka).read_bytes()
             if czy_zaszyfrowane(dane):
                 if haslo is None:
                     return False
-                dane, _ = Szyfr.otworz(dane, haslo)
+                dane, _ = Szyfr.otworz(dane, haslo, sekret)
             elif not dane.startswith(b"SQLite format 3"):
                 return False
             db = sqlite3.connect(":memory:")
             db.deserialize(dane)
             return db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
-        except (BledneHaslo, OSError, ValueError, sqlite3.DatabaseError):
+        except (BledneHaslo, WymaganeUrzadzenie, OSError, ValueError, sqlite3.DatabaseError):
+            return False
+
+    @staticmethod
+    def powiazany_z_urzadzeniem(sciezka: Path | str) -> bool:
+        try:
+            with open(sciezka, "rb") as f:
+                return czy_powiazane_z_urzadzeniem(f.read(64))
+        except OSError:
             return False
 
     @staticmethod
@@ -375,11 +386,27 @@ class Baza:
         """Do odblokowania ekranu: porównuje klucz wyliczony z podanego hasła z bieżącym."""
         if not self.szyfr:
             return True
-        return hmac.compare_digest(Szyfr(haslo, self.szyfr.sol).klucz, self.szyfr.klucz)
+        return hmac.compare_digest(Szyfr(haslo, self.szyfr.sol).klucz_hasla, self.szyfr.klucz_hasla)
 
     def ustaw_haslo(self, haslo: str | None) -> None:
-        """Ustawia, zmienia (nowy tekst) lub usuwa (None) hasło i od razu przepisuje plik."""
-        self.szyfr = Szyfr(haslo) if haslo else None
+        """Ustawia, zmienia (nowy tekst) lub usuwa (None) hasło i od razu przepisuje plik.
+        Zmiana hasła zachowuje weryfikację urządzenia; usunięcie hasła ją wyłącza (wymaga hasła)."""
+        sekret = self.szyfr.sekret if self.szyfr else None
+        self.szyfr = Szyfr(haslo, sekret=sekret) if haslo else None
+        self._sekret = self.szyfr.sekret if self.szyfr else None
+        self._utrwal()
+
+    # ---------- weryfikacja urządzenia ----------
+    @property
+    def weryfikacja_urzadzenia(self) -> bool:
+        return bool(self.szyfr and self.szyfr.sekret)
+
+    def powiaz_z_urzadzeniem(self, sekret: bytes | None) -> None:
+        """Przepisuje plik tak, by do odczytu potrzebny był też sekret urządzenia (None = wyłącza)."""
+        if not self.szyfr:
+            raise PermissionError("Weryfikacja urządzenia wymaga ustawionego hasła.")
+        self.szyfr = self.szyfr.z_sekretem(sekret)
+        self._sekret = sekret
         self._utrwal()
 
     def _utrwal(self) -> None:

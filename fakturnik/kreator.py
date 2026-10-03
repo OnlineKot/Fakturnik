@@ -1,6 +1,7 @@
 """Kreator pierwszego uruchomienia: dane gabinetu, hasło, cennik, tryb pracy i integracja z Windows."""
 
 import re
+from pathlib import Path
 from html import escape
 
 from PySide6.QtCore import Qt
@@ -16,7 +17,7 @@ from .system import (
     integracja_dostepna, ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
 )
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny
-from .ui import MIN_DLUGOSC_HASLA, ZASOBY, liczba, pole, przycisk
+from .ui import MIN_DLUGOSC_HASLA, ZASOBY, liczba, liczba_dokumentow, pole, przycisk
 
 KROKI = ["Witaj", "Gabinet", "Hasło", "Cennik", "Tryb pracy", "Windows", "Gotowe"]
 
@@ -137,7 +138,63 @@ class Kreator(QDialog):
             ku.addWidget(t)
             ku.addWidget(QLabel(opis, objectName="podtytul", wordWrap=True))
             u.addWidget(k)
+        u.addSpacing(6)
+        migracja = QHBoxLayout()
+        migracja.addWidget(QLabel("Masz już Fakturnik na innym komputerze?", objectName="podtytul"))
+        migracja.addWidget(przycisk("Przenieś dane z innego komputera…", "pobierz", "plaski", self.importuj))
+        migracja.addStretch()
+        u.addLayout(migracja)
         u.addStretch()
+
+    def importuj(self):
+        """Migracja: pakiet .fkopia (albo pełna kopia .zip/.db) z poprzedniego komputera zamiast wpisywania od nowa."""
+        from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+        from . import urzadzenie
+        from .baza import NowszaBaza
+        from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
+        from .ui import OknoNowegoHasla
+        sciezka, _ = QFileDialog.getOpenFileName(self, "Pakiet migracji lub kopia Fakturnika", "",
+                                                 "Kopia Fakturnika (*.fkopia *.zip *.db)")
+        if not sciezka:
+            return
+        haslo = None
+        if self.baza.czy_kopia_szyfrowana(sciezka) or Path(sciezka).suffix.lower() in (".db", ".zip"):
+            haslo, ok = QInputDialog.getText(self, "Hasło", "Hasło pakietu migracji (albo hasło programu z poprzedniego "
+                                             "komputera, jeśli to zwykła kopia):", QLineEdit.EchoMode.Password)
+            if not ok:
+                return
+        try:
+            try:
+                self.baza.przywroc(sciezka, haslo or None)
+            except WymaganeUrzadzenie:
+                kod, ok = QInputDialog.getText(self, "Kod odzyskiwania", "Ta kopia jest powiązana z poprzednim "
+                                               "komputerem. Wpisz kod odzyskiwania:")
+                sekret = urzadzenie.sekret_z_kodu(kod) if ok else None
+                if not sekret:
+                    return
+                self.baza._sekret = sekret
+                try:
+                    self.baza.przywroc(sciezka, haslo or None)
+                finally:
+                    self.baza._sekret = None
+        except (BledneHaslo, WymaganeUrzadzenie) as e:
+            QMessageBox.warning(self, "Przeniesienie danych", f"Nie udało się otworzyć kopii: {e}")
+            return
+        except (ValueError, NowszaBaza, PermissionError, KeyError, OSError) as e:
+            QMessageBox.warning(self, "Przeniesienie danych", str(e) or "To nie jest kopia Fakturnika.")
+            return
+        self.okno.dziennik.zapisz("przeniesienie danych z innego komputera")
+        okno = OknoNowegoHasla(self, "Hasło na tym komputerze", "Dane zostały przeniesione. Ustaw hasło, które "
+                               "będzie je chronić na tym komputerze.")
+        while okno.exec() != QDialog.DialogCode.Accepted:
+            QMessageBox.information(self, "Hasło", "Hasło jest wymagane, żeby dane pacjentów były zaszyfrowane.")
+        self.baza.ustaw_haslo(okno.haslo.text())
+        self.baza.zapisz_ustawienia({"skonfigurowano": "1"})
+        if integracja_dostepna():
+            ustaw_autostart(True)
+        QMessageBox.information(self, "Przeniesienie danych", f"Przeniesiono: {liczba_dokumentow(len(self.baza.dokumenty()))}, "
+                                "ustawienia gabinetu i wrzucone pliki. Możesz pracować.")
+        self.accept()
 
     def _gabinet(self, u):
         self._naglowek(u, "Dane gabinetu", "Te dane drukują się na każdym rachunku i fakturze. "

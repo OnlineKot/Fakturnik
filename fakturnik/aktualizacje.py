@@ -212,6 +212,25 @@ def _usun(sciezka: Path) -> None:
         sciezka.unlink()
 
 
+def pobierz_instalator(cel: Path) -> Path:
+    """Najnowszy FakturnikSetup.exe z GitHuba, sprawdzony sumą SHA-256 (do instalacji z uprawnieniami admina)."""
+    try:
+        with _pobierz(ADRES_API) as o:
+            dane = json.load(o)
+    except BladAktualizacji:
+        raise
+    except Exception as e:
+        raise BladAktualizacji(f"Nie udało się połączyć z GitHubem ({e}).") from None
+    pliki = {a["name"]: a for a in dane.get("assets", [])}
+    if "FakturnikSetup.exe" not in pliki or "FakturnikSetup.exe.sha256" not in pliki:
+        raise BladAktualizacji("W najnowszym wydaniu nie ma instalatora.")
+    wydanie = Wydanie(wersja=dane.get("tag_name", "").lstrip("v"), opis="",
+                      adres_exe=pliki["FakturnikSetup.exe"]["browser_download_url"],
+                      adres_sha256=pliki["FakturnikSetup.exe.sha256"]["browser_download_url"],
+                      rozmiar=int(pliki["FakturnikSetup.exe"].get("size") or 0))
+    return pobierz(wydanie, cel)
+
+
 def zainstaluj(nowy: Path, obecny: Path | None = None) -> Path:
     """Podmienia działający .exe na nowy; zwraca ścieżkę do uruchomienia."""
     obecny = obecny or Path(sys.executable)
