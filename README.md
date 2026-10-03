@@ -143,6 +143,15 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   program raz o tym przypomina. Sam program celowo działa bez uprawnień administratora: instalator
   i usługa kopii je mają, a codzienna praca z najmniejszymi uprawnieniami jest bezpieczniejsza
   (Windows nie pozwala też na autostart programów wymagających administratora).
+- **Kontrola komputera przy każdym uruchomieniu** (także przy starcie Windows, gdy program startuje w tle):
+  hasło i szyfrowanie, oryginalność pliku programu (SHA-256 z wydania, sprawdzana też przez usługę
+  przy starcie komputera i co godzinę), Secure Boot, instalacja z uprawnieniami administratora, praca
+  usługi kopii, świeżość kopii, nienaruszony dziennik, weryfikacja urządzenia i rodzaj konta Windows.
+  Wynik trafia do dziennika i do powiadomienia; szczegóły w oknie „Kontrola komputera” (Ustawienia
+  albo menu ikony obok zegara). Ostrzeżenie można zignorować i przywrócić (pojedynczo lub wszystkie),
+  a po sprawdzeniu naruszonego dziennika zacząć nowy (stary zostaje do wglądu).
+- **Program nigdy nie podmienia się sam**: aktualizacje instaluje usługa systemowa (instalacja
+  administratora) albo instalator po zgodzie administratora (okienko Windows), po sprawdzeniu SHA-256.
 - **Odporność na awarie**: dane zapisują się po każdej zmianie (atomowo), a plik jest sprawdzany przy
   każdym otwarciu. Gdy okaże się uszkodzony (np. awaria dysku lub prądu), program sam znajdzie
   najnowszą działającą kopię automatyczną i zaproponuje jej przywrócenie, a uszkodzony plik zostawi
@@ -168,10 +177,11 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Szyfrowana kopia zapasowa** (`.fkopia`): jeden plik z danymi i wrzuconymi plikami, zaszyfrowany
   AES-256-GCM osobnym hasłem kopii (można ją bezpiecznie trzymać na pendrive lub w chmurze).
   Przywracanie przyjmuje `.fkopia`, `.zip` i `.db`; kopie automatyczne plików trafiają do `Dokumenty\Fakturnik\kopie\pliki`.
-- **Automatyczne aktualizacje**: program sprawdza nowe wersje przy starcie i co 6 godzin,
-  sam je pobiera, sprawdza sumą SHA-256 (tylko z GitHuba), robi kopię danych i podmienia się w tle.
-  Nowa wersja uruchamia się sama, gdy okno jest schowane (nikt nie traci pracy), albo od razu
-  po kliknięciu „Uruchom ponownie”. Można to wyłączyć i aktualizować ręcznie.
+- **Automatyczne aktualizacje**: program sprawdza nowe wersje przy starcie i co 6 godzin. W instalacji
+  z uprawnieniami administratora usługa sama pobiera nową wersję, sprawdza SHA-256 (tylko z GitHuba)
+  i ją instaluje, a program uruchamia się ponownie, gdy okno jest schowane. W instalacji bez
+  uprawnień administratora (lub wersji przenośnej) program tylko informuje o nowej wersji i instaluje
+  ją instalatorem po zgodzie administratora.
   **Dane nie giną przy aktualizacji**: leżą osobno od programu (w `%APPDATA%`), przed instalacją
   program robi ich kopię (`przed-aktualizacja-do-…db` w katalogu kopii), a gdy nowa wersja zmienia
   układ danych, przerabia je automatycznie, zostawiając kopię oryginału. Starsza wersja programu

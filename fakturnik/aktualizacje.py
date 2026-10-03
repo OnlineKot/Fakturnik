@@ -212,7 +212,7 @@ def _usun(sciezka: Path) -> None:
         sciezka.unlink()
 
 
-def pobierz_instalator(cel: Path) -> Path:
+def pobierz_instalator(cel: Path, postep=lambda procent: None) -> Path:
     """Najnowszy FakturnikSetup.exe z GitHuba, sprawdzony sumą SHA-256 (do instalacji z uprawnieniami admina)."""
     try:
         with _pobierz(ADRES_API) as o:
@@ -228,7 +228,7 @@ def pobierz_instalator(cel: Path) -> Path:
                       adres_exe=pliki["FakturnikSetup.exe"]["browser_download_url"],
                       adres_sha256=pliki["FakturnikSetup.exe.sha256"]["browser_download_url"],
                       rozmiar=int(pliki["FakturnikSetup.exe"].get("size") or 0))
-    return pobierz(wydanie, cel)
+    return pobierz(wydanie, cel, postep)
 
 
 def zainstaluj(nowy: Path, obecny: Path | None = None) -> Path:

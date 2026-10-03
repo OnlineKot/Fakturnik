@@ -87,6 +87,19 @@ class Dziennik:
         if self.po_zapisie:
             self.po_zapisie(skrot)
 
+    def archiwizuj(self) -> Path | None:
+        """Zamyka obecny dziennik (np. po sprawdzeniu ostrzeżenia o naruszeniu) i zaczyna nowy.
+        Stary zostaje obok, tylko do odczytu, a pierwszy wpis nowego wskazuje go z jego skrótem SHA-256."""
+        if not self.sciezka.exists():
+            return None
+        cel = self.sciezka.with_name(f"{self.sciezka.stem}-{datetime.now():%Y%m%d-%H%M%S}{self.sciezka.suffix}")
+        skrot = hashlib.sha256(self.sciezka.read_bytes()).hexdigest()
+        tylko_do_odczytu(self.sciezka, False)
+        os.replace(self.sciezka, cel)
+        tylko_do_odczytu(cel, True)
+        self.zapisz(f"nowy dziennik; poprzedni zarchiwizowany: {cel.name} (SHA-256 {skrot})")
+        return cel
+
     def zawiera(self, skrot: str) -> bool:
         """Czy wpis o tym skrócie wciąż jest w dzienniku (gdy nie ma, dziennik ucięto lub podmieniono)."""
         return any(w[2] == skrot for w in self.wpisy())

@@ -164,6 +164,26 @@ def aktualizuj_program() -> str:
     return f"zainstalowano wersję {wydanie.wersja}"
 
 
+def zapisz_stan_programu() -> str:
+    """Przy starcie komputera i co godzinę: czy plik programu jest identyczny z opublikowanym wydaniem."""
+    from . import aktualizacje
+    wynik = aktualizacje.sprawdz_wlasny_plik()
+    stan = {True: "oryginalny", False: "ZMIENIONY", None: "nieznany"}[wynik]
+    plik = katalog_uslugi() / "program.txt"
+    plik.parent.mkdir(parents=True, exist_ok=True)
+    plik.write_text(f"{stan} {datetime.now():%Y-%m-%d %H:%M}")
+    return stan
+
+
+def stan_programu() -> bool | None:
+    """Ostatni wynik sprawdzenia programu przez usługę (do kontroli komputera w programie)."""
+    try:
+        stan = (katalog_uslugi() / "program.txt").read_text().split()[0]
+    except (OSError, IndexError):
+        return None
+    return {"oryginalny": True, "ZMIENIONY": False}.get(stan)
+
+
 def uruchom_usluge() -> int:
     profile = profile_z_danymi()
     for uzytkownik, dane in profile:
@@ -174,6 +194,10 @@ def uruchom_usluge() -> int:
             _zapisz_log(f"kopia {uzytkownik}: BŁĄD\n{traceback.format_exc()}")
     if not profile:
         _zapisz_log("brak danych Fakturnika w profilach użytkowników")
+    try:
+        _zapisz_log("plik programu: " + zapisz_stan_programu())
+    except Exception as e:  # noqa: BLE001
+        _zapisz_log(f"plik programu: nie sprawdzono ({e})")
     try:
         _zapisz_log("aktualizacja: " + aktualizuj_program())
     except Exception as e:  # noqa: BLE001 - brak internetu itp.; spróbujemy za godzinę

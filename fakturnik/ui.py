@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import aktualizacje, druk, urzadzenie, windows
+from . import aktualizacje, druk, kontrola, urzadzenie, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
@@ -301,7 +301,10 @@ def maskuj_id(identyfikator: str) -> str:
 def wyczysc_uklad(uklad) -> None:
     """Usuwa od razu wszystkie elementy układu (deleteLater zostawiałby je widoczne do końca zdarzenia)."""
     while uklad.count():
-        w = uklad.takeAt(0).widget()
+        element = uklad.takeAt(0)
+        if element.layout():
+            wyczysc_uklad(element.layout())  # także zagnieżdżone układy (rzędy przycisków)
+        w = element.widget()
         if w:
             w.hide()
             w.setParent(None)
@@ -2308,6 +2311,8 @@ class StronaUstawienia(Strona):
         rzad.addStretch()
         ku.addLayout(rzad)
         rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Kontrola komputera…", "tarcza", akcja=lambda: (self.okno.pokaz_kontrole(),
+                                                                               self._pokaz_stan_komputera())))
         rzad.addWidget(przycisk("Przenieś na inny komputer…", "pobierz", akcja=self.migracja))
         self.btn_instaluj_admin = przycisk("Zainstaluj z uprawnieniami administratora…", "tarcza",
                                            akcja=self.instaluj_jako_admin)
@@ -2349,10 +2354,11 @@ class StronaUstawienia(Strona):
         rzad.addStretch()
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
         ku.addLayout(rzad)
-        self.auto_aktualizacje = QCheckBox("Aktualizuj automatycznie: pobiera, sprawdza SHA-256 i instaluje w tle")
+        self.auto_aktualizacje = QCheckBox("Sprawdzaj aktualizacje automatycznie (w instalacji administratora instaluje je usługa)")
         ku.addWidget(self.auto_aktualizacje)
         ku.addWidget(QLabel("Aktualizacja wymienia tylko program. Dane zostają, a przed instalacją "
-                            "program robi ich kopię. Nowa wersja uruchamia się sama, gdy okno jest schowane.",
+                            "program robi ich kopię. Program nigdy nie podmienia się sam: robi to instalator za zgodą "
+                            "administratora albo usługa systemowa.",
                             objectName="drobny", wordWrap=True))
         prawa.addWidget(k)
         prawa.addSpacing(14)
@@ -2458,29 +2464,10 @@ class StronaUstawienia(Strona):
             self.kopia_zapasowa(nazwa_pliku=f"Fakturnik-migracja-{date.today().isoformat()}.fkopia")
 
     def instaluj_jako_admin(self):
-        if QMessageBox.question(
-                self, "Instalacja z uprawnieniami administratora",
-                "Program pobierze instalator z GitHuba (sprawdzi sumę SHA-256) i go uruchomi. Windows zapyta o zgodę "
-                "administratora. Instalator przeniesie Fakturnik do Program Files, włączy usługę kopii i ochronę "
-                "przed odinstalowaniem. Fakturnik zamknie się na czas instalacji. Dane zostają bez zmian.\n\nKontynuować?") != QMessageBox.StandardButton.Yes:
-            return
-        cel = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)) / "FakturnikSetup.exe"
-        self.okno.komunikat("Pobieranie instalatora…")
-        w = Watek(aktualizacje.pobierz_instalator, cel)
-        w.gotowe.connect(self._uruchom_instalator)
-        w.blad.connect(lambda tekst: QMessageBox.warning(self, "Instalator", tekst))
-        self.okno._w_tle(w)
-
-    def _uruchom_instalator(self, sciezka: Path):
-        """Instalator potrzebuje zamkniętego Fakturnika (podmienia program), więc po jego starcie program się wyłącza."""
-        self.okno.dziennik.zapisz("uruchomienie instalatora (administrator)")
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka))):
-            QMessageBox.warning(self, "Instalator", f"Nie udało się uruchomić instalatora:\n{sciezka}")
-            return
-        self.okno._wyjscie = True
-        self.okno.uruchom_po_zamknieciu = None
-        self.okno.close()
-        QApplication.quit()
+        self.okno.uruchom_instalator_admin(
+            "Program pobierze instalator z GitHuba (sprawdzi sumę SHA-256) i go uruchomi. Windows zapyta o zgodę "
+            "administratora. Instalator przeniesie Fakturnik do Program Files, włączy usługę kopii i ochronę "
+            "przed odinstalowaniem. Dane zostają bez zmian.\n\nKontynuować?")
 
     def _wybierz_folder_kopii(self):
         folder = QFileDialog.getExistingDirectory(self, "Folder na trzecią kopię", self.kopia_folder.text()
@@ -2872,6 +2859,93 @@ def rozmiar_tekst(bajty: int) -> str:
     if bajty < 1024 * 1024:
         return f"{max(1, round(bajty / 1024))} KB"
     return f"{bajty / 1024 / 1024:.1f} MB".replace(".", ",")
+
+
+class OknoKontroli(QDialog):
+    """Kontrola komputera: co chroni dane, co wymaga uwagi; ostrzeżenia można zignorować i przywrócić."""
+
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno)
+        self.okno = okno
+        self.setWindowTitle("Kontrola komputera")
+        self.setMinimumWidth(620)
+        self.u = QVBoxLayout(self)
+        self.u.setContentsMargins(24, 22, 24, 18)
+        self.u.setSpacing(10)
+        self.odswiez()
+
+    def odswiez(self):
+        wyczysc_uklad(self.u)
+        wyniki = self.okno.wyniki_kontroli()
+        ignor = kontrola.zignorowane(self.okno.baza)
+        pokaz = kontrola.do_pokazania(self.okno.baza, wyniki)
+        t = QLabel("Kontrola komputera")
+        t.setStyleSheet("font-size: 17px; font-weight: 650;")
+        self.u.addWidget(t)
+        self.u.addWidget(QLabel(f"{urzadzenie.nazwa_urzadzenia()}, {datetime.now():%d.%m.%Y %H:%M}. "
+                                + ("Wszystko, co chroni dane, działa." if not pokaz
+                                   else f"Wymaga uwagi: {len(pokaz)}."), objectName="podtytul"))
+        k, ku = karta()
+        for w in wyniki:
+            rzad = QHBoxLayout()
+            rzad.setSpacing(10)
+            znak = QLabel()
+            kolor = ZIELONY if w.stan else (TEKST_3 if w.stan is None or w.klucz in ignor else
+                                            (CZERWONY if w.waga == "problem" else "#b7791f"))
+            znak.setPixmap(pixmapa("ok" if w.stan else ("uwaga" if w.stan is False else "kreska"), kolor, 16))
+            rzad.addWidget(znak, alignment=Qt.AlignmentFlag.AlignTop)
+            tekst = f"<b>{html_escape(w.nazwa)}</b>: {html_escape(w.opis)}"
+            if w.ostrzezenie:
+                tekst += f"<br><span style='color:{TEKST_2}'>{html_escape(w.rada)}</span>"
+                if w.klucz in ignor:
+                    tekst += f" <span style='color:{TEKST_3}'>(zignorowane)</span>"
+            opis = QLabel(tekst, wordWrap=True, textFormat=Qt.TextFormat.RichText)
+            rzad.addWidget(opis, 1)
+            if w.ostrzezenie:
+                if w.klucz == "dziennik":
+                    rzad.addWidget(przycisk("Nowy dziennik…", styl="plaski", akcja=self._nowy_dziennik),
+                                   alignment=Qt.AlignmentFlag.AlignTop)
+                if w.klucz in ignor:
+                    rzad.addWidget(przycisk("Przywróć", styl="plaski",
+                                            akcja=lambda _=False, k=w.klucz: self._ignoruj(k, False)),
+                                   alignment=Qt.AlignmentFlag.AlignTop)
+                else:
+                    rzad.addWidget(przycisk("Ignoruj", styl="plaski",
+                                            akcja=lambda _=False, k=w.klucz: self._ignoruj(k, True)),
+                                   alignment=Qt.AlignmentFlag.AlignTop)
+            ku.addLayout(rzad)
+        self.u.addWidget(k)
+        r = QHBoxLayout()
+        if ignor:
+            r.addWidget(przycisk("Przywróć wszystkie ostrzeżenia", "odswiez", "plaski", self._przywroc_wszystkie))
+        r.addStretch()
+        r.addWidget(przycisk("Sprawdź ponownie", "odswiez", akcja=self.odswiez))
+        r.addWidget(przycisk("Zamknij", styl="glowny", akcja=self.accept))
+        self.u.addLayout(r)
+        self.adjustSize()
+
+    def _ignoruj(self, klucz: str, ignoruj: bool):
+        ignor = kontrola.zignorowane(self.okno.baza)
+        kontrola.zapisz_zignorowane(self.okno.baza, ignor | {klucz} if ignoruj else ignor - {klucz})
+        self.okno.dziennik.zapisz(f"kontrola komputera: {'zignorowano' if ignoruj else 'przywrócono'} "
+                                  f"ostrzeżenie „{klucz}”")
+        self.odswiez()
+
+    def _przywroc_wszystkie(self):
+        kontrola.zapisz_zignorowane(self.okno.baza, set())
+        self.okno.dziennik.zapisz("kontrola komputera: przywrócono wszystkie ostrzeżenia")
+        self.odswiez()
+
+    def _nowy_dziennik(self):
+        if QMessageBox.question(self, "Nowy dziennik", "Obecny dziennik zostanie zamknięty i zachowany obok (tylko "
+                                "do odczytu), a nowy zacznie się od wpisu wskazującego stary. Zrób to dopiero po "
+                                "sprawdzeniu, kto i dlaczego zmienił dziennik.\n\nKontynuować?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        if not self.okno.potwierdz_haslem("nowy dziennik", "Rozpoczęcie nowego dziennika wymaga hasła."):
+            return
+        self.okno.nowy_dziennik()
+        self.odswiez()
 
 
 class OknoKoduOdzyskiwania(QDialog):
@@ -3591,8 +3665,11 @@ class OknoGlowne(QMainWindow):
         self.zegar_kopii.start()
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
-        if urzadzenie.secure_boot() is False and self.baza.ustawienia()["ostrzezenie_secure_boot"] != "1":
-            QTimer.singleShot(10000, self._ostrzez_secure_boot)
+        # kontrola komputera przy każdym uruchomieniu (także przy starcie Windows, gdy program startuje w tle)
+        self._program_ok: bool | None = None
+        self._klik_kontroli = False
+        self.zasobnik.messageClicked.connect(self._klik_powiadomienia)
+        QTimer.singleShot(8000, self.kontrola_startowa)
 
     def przejdz(self, i: int, odswiez: bool = True):
         if i != STRONA_PRZYCHODY:
@@ -3656,12 +3733,47 @@ class OknoGlowne(QMainWindow):
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
 
-    def _ostrzez_secure_boot(self):
-        """Jednorazowa wskazówka: Secure Boot chroni przed złośliwym oprogramowaniem uruchamianym przed Windows."""
-        self.baza.zapisz_ustawienia({"ostrzezenie_secure_boot": "1"})
-        self.zasobnik.showMessage("Fakturnik: Secure Boot jest wyłączony",
-                                  "Zalecane włączenie w ustawieniach UEFI/BIOS komputera. Szczegóły: "
-                                  "Ustawienia → Komputer i urządzenie.", QSystemTrayIcon.MessageIcon.Warning, 10000)
+    def _dziennik_ok(self) -> bool:
+        zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
+        uciety = self._dziennik_uciety or (bool(zapamietany) and not self.dziennik.zawiera(zapamietany))
+        return self.dziennik.nienaruszony() and not uciety
+
+    def wyniki_kontroli(self) -> list:
+        return kontrola.kontrola(self.baza, self._dziennik_ok(), self._program_ok)
+
+    def kontrola_startowa(self):
+        """Weryfikacja komputera po uruchomieniu: wynik w dzienniku, ostrzeżenia w powiadomieniu."""
+        if self.baza.ustawienia()["skonfigurowano"] != "1":
+            return  # najpierw kreator pierwszego uruchomienia
+        pokaz = kontrola.do_pokazania(self.baza, self.wyniki_kontroli())
+        self.dziennik.zapisz("kontrola komputera: " + ("OK" if not pokaz else
+                                                        "uwagi: " + ", ".join(w.klucz for w in pokaz)))
+        self._klik_kontroli = True
+        if pokaz:
+            self.zasobnik.showMessage(f"Fakturnik: kontrola komputera ({len(pokaz)} do sprawdzenia)",
+                                      "\n".join(f"• {w.nazwa}: {w.opis}" for w in pokaz[:4])
+                                      + "\nKliknij, aby zobaczyć szczegóły.", QSystemTrayIcon.MessageIcon.Warning, 12000)
+        else:
+            self.zasobnik.showMessage("Fakturnik: komputer zweryfikowany",
+                                      "Szyfrowanie, kopie i ochrona programu działają.",
+                                      QSystemTrayIcon.MessageIcon.Information, 4000)
+
+    def _klik_powiadomienia(self):
+        if self._klik_kontroli:
+            self._klik_kontroli = False
+            self.pokaz_okno()
+            if self.isVisible():
+                self.pokaz_kontrole()
+
+    def pokaz_kontrole(self):
+        OknoKontroli(self).exec()
+
+    def nowy_dziennik(self):
+        archiwum = self.dziennik.archiwizuj()
+        self._dziennik_uciety = False
+        self._dziennik_zgloszony = False
+        if archiwum:
+            self.komunikat(f"Rozpoczęto nowy dziennik; poprzedni: {archiwum.name}")
 
     def _co_10_minut(self):
         self.kopia_ciagla()
@@ -3708,43 +3820,6 @@ class OknoGlowne(QMainWindow):
             self.sprawdz_aktualizacje(cicho=True)
         self._restart_jesli_mozna()
 
-    def _aktualizuj_w_tle(self, wydanie: aktualizacje.Wydanie):
-        """Automatyczna aktualizacja: kopia danych, pobranie, sprawdzenie SHA-256 i podmiana programu w tle.
-        Nowa wersja startuje sama, gdy okno jest schowane (albo po kliknięciu „Uruchom ponownie”)."""
-        if self._aktualizacja_w_toku or self.uruchom_po_zamknieciu or not aktualizacje.mozna_zapisac_obok():
-            return  # w Program Files aktualizacje instaluje usługa Fakturnika
-        try:
-            kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-aktualizacja-do-{wydanie.wersja}.db")
-        except OSError:
-            return  # bez kopii danych nie aktualizujemy; spróbujemy przy następnym sprawdzeniu
-        self._aktualizacja_w_toku = True
-        self.dziennik.zapisz(f"aktualizacja automatyczna {WERSJA} -> {wydanie.wersja}: kopia danych wykonana")
-        cel = Path(sys.executable).with_name("Fakturnik.new.exe")
-        w = Watek(aktualizacje.pobierz, wydanie, cel)
-        w.gotowe.connect(lambda nowy: self._zainstaluj_w_tle(wydanie, nowy))
-        w.blad.connect(lambda _: (setattr(self, "_aktualizacja_w_toku", False),
-                                  self.dziennik.zapisz("aktualizacja automatyczna: NIEUDANA (spróbuje później)")))
-        self._w_tle(w)
-
-    def _zainstaluj_w_tle(self, wydanie: aktualizacje.Wydanie, nowy: Path):
-        self._aktualizacja_w_toku = False
-        try:
-            self.uruchom_po_zamknieciu = aktualizacje.zainstaluj(Path(nowy))
-        except OSError:
-            self.dziennik.zapisz("aktualizacja automatyczna: nie udało się podmienić programu")
-            return
-        self.dziennik.zapisz(f"aktualizacja do {wydanie.wersja}: zainstalowana")
-        self.tekst_aktualizacji.setText(f"Zainstalowano wersję {wydanie.wersja}. Uruchomi się sama, "
-                                        "gdy schowasz okno, albo teraz:")
-        self.btn_instaluj.setText("Uruchom ponownie")
-        self.btn_instaluj.clicked.disconnect()
-        self.btn_instaluj.clicked.connect(lambda: self._uruchom_ponownie(w_tle=False))
-        self.pasek_aktualizacji.show()
-        self.zasobnik.showMessage("Fakturnik zaktualizowany",
-                                  f"Wersja {wydanie.wersja} jest gotowa. Dane zostają bez zmian.",
-                                  QSystemTrayIcon.MessageIcon.Information, 6000)
-        self._restart_jesli_mozna()
-
     def _restart_jesli_mozna(self):
         """Nowa wersja startuje sama tylko wtedy, gdy nikt nie pracuje w oknie."""
         if self.uruchom_po_zamknieciu and not self.isVisible() and not QApplication.activeModalWidget():
@@ -3770,6 +3845,7 @@ class OknoGlowne(QMainWindow):
         self._w_tle(w)
 
     def _wynik_sprawdzenia_programu(self, oryginalny):
+        self._program_ok = oryginalny
         if oryginalny is False:
             tekst = ("Plik programu różni się od opublikowanego wydania (mógł zostać zmieniony). "
                      "Pobierz Fakturnik.exe ponownie ze strony wydań i nie wpisuj hasła w tej kopii.")
@@ -3779,75 +3855,85 @@ class OknoGlowne(QMainWindow):
 
     def _wynik_sprawdzenia(self, wydanie, cicho: bool):
         self.wydanie = wydanie
-        if wydanie and cicho and self.baza.ustawienia()["auto_aktualizacje"] == "1" \
-                and aktualizacje.czy_spakowany():
-            self._aktualizuj_w_tle(wydanie)
+        if not wydanie:
+            if not cicho:
+                QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
-        if wydanie:
-            self.tekst_aktualizacji.setText(f"Dostępna jest nowa wersja {wydanie.wersja}. "
-                                            "Dane zostaną zachowane.")
-            self.pasek_aktualizacji.show()
-        elif not cicho:
-            QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
+        if aktualizacje.czy_spakowany() and not aktualizacje.mozna_zapisac_obok():
+            if not cicho:  # Program Files: nową wersję zainstaluje usługa (konto SYSTEM)
+                QMessageBox.information(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Zainstaluje ją "
+                                        "automatycznie usługa Fakturnika w ciągu godziny, a program uruchomi się "
+                                        "ponownie, gdy schowasz okno.")
+            return
+        self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. Instaluje ją instalator "
+                                        "za zgodą administratora; dane zostają.")
+        self.pasek_aktualizacji.show()
+        if cicho and not self.isVisible():
+            self.zasobnik.showMessage("Fakturnik: dostępna aktualizacja",
+                                      f"Wersja {wydanie.wersja}. Otwórz Fakturnik, aby ją zainstalować.",
+                                      QSystemTrayIcon.MessageIcon.Information, 6000)
 
     def instaluj_aktualizacje(self):
+        """Program nigdy nie podmienia sam swojego pliku: aktualizacja idzie przez instalator z okienkiem zgody
+        administratora (UAC) albo, w instalacji w Program Files, przez usługę systemową."""
         if not self.wydanie or self._aktualizacja_w_toku or self.uruchom_po_zamknieciu:
             return
         if not aktualizacje.czy_spakowany():
             QMessageBox.information(self, "Aktualizacje", "Aktualizacje instalują się tylko w wersji .exe.")
             return
         if not aktualizacje.mozna_zapisac_obok():
-            QMessageBox.information(self, "Aktualizacje", "Program jest zainstalowany dla wszystkich (Program Files). "
-                                    "Nową wersję zainstaluje automatycznie usługa Fakturnika w ciągu godziny, "
-                                    "a program uruchomi się ponownie, gdy schowasz okno.")
+            QMessageBox.information(self, "Aktualizacje", "Nową wersję zainstaluje automatycznie usługa Fakturnika "
+                                    "w ciągu godziny, a program uruchomi się ponownie, gdy schowasz okno.")
             return
         opis = self.wydanie.opis.strip()
-        if QMessageBox.question(
-                self, "Aktualizacja",
-                f"Zainstalować wersję {self.wydanie.wersja}?\n\nProgram zrobi kopię danych, pobierze nową "
-                f"wersję, sprawdzi jej sumę kontrolną i uruchomi się ponownie. Dane pacjentów i numeracja "
-                f"zostają bez zmian." + (f"\n\nZmiany:\n{opis[:600]}" if opis else "")) \
+        self.uruchom_instalator_admin(
+            f"Zainstalować wersję {self.wydanie.wersja}?\n\nProgram zrobi kopię danych, pobierze instalator, "
+            "sprawdzi jego sumę SHA-256 i uruchomi go. Windows zapyta o zgodę administratora. Fakturnik trafi do "
+            "Program Files z usługą kopii, a kolejne aktualizacje będą instalować się same." +
+            (f"\n\nZmiany:\n{opis[:500]}" if opis else ""))
+
+    def uruchom_instalator_admin(self, pytanie: str):
+        if QMessageBox.question(self, "Instalacja", pytanie + "\n\nFakturnik zamknie się na czas instalacji.") \
                 != QMessageBox.StandardButton.Yes:
             return
         try:
-            kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-aktualizacja-do-{self.wydanie.wersja}.db")
+            kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-instalacja-{datetime.now():%Y-%m-%d-%H%M%S}.db")
         except OSError as e:
-            QMessageBox.critical(self, "Aktualizacja", f"Nie udało się zrobić kopii danych, aktualizacja przerwana.\n{e}")
+            QMessageBox.critical(self, "Instalacja", f"Nie udało się zrobić kopii danych, instalacja przerwana.\n{e}")
             return
-        self.dziennik.zapisz(f"aktualizacja {WERSJA} -> {self.wydanie.wersja}: kopia danych wykonana")
-
-        cel = Path(sys.executable).with_name("Fakturnik.new.exe")
-        postep = QProgressDialog("Pobieranie aktualizacji…", "Anuluj", 0, 100, self)
-        postep.setWindowTitle("Aktualizacja")
+        cel = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)) / "FakturnikSetup.exe"
+        postep = QProgressDialog("Pobieranie instalatora…", "Anuluj", 0, 100, self)
+        postep.setWindowTitle("Instalacja")
         postep.setWindowModality(Qt.WindowModality.WindowModal)
         postep.setMinimumDuration(0)
         postep.setCancelButton(None)
-        w = Watek(aktualizacje.pobierz, self.wydanie, cel, z_postepem=True)
+        self._aktualizacja_w_toku = True
+        w = Watek(aktualizacje.pobierz_instalator, cel, z_postepem=True)
         w.postep.connect(postep.setValue)
-        w.gotowe.connect(lambda nowy: (postep.close(), self._zainstaluj(nowy)))
+        w.gotowe.connect(lambda sciezka: (postep.close(), self._uruchom_instalator(sciezka)))
         w.blad.connect(lambda tekst: (postep.close(), self._blad_aktualizacji(tekst)))
         self._w_tle(w)
 
+    def _uruchom_instalator(self, sciezka: Path):
+        """Instalator podmienia program, więc po jego starcie Fakturnik się wyłącza (dane są zapisane)."""
+        self._aktualizacja_w_toku = False
+        self.dziennik.zapisz("uruchomienie instalatora (zgoda administratora)")
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka))):
+            QMessageBox.warning(self, "Instalacja", f"Nie udało się uruchomić instalatora:\n{sciezka}")
+            return
+        self._wyjscie = True
+        self.uruchom_po_zamknieciu = None
+        self.close()
+        QApplication.quit()
+
     def _blad_aktualizacji(self, tekst: str):
+        self._aktualizacja_w_toku = False
         self.dziennik.zapisz("aktualizacja: NIEUDANA")
         odp = QMessageBox.warning(self, "Aktualizacja", f"{tekst}\n\nOtworzyć stronę z pobraniem, "
                                   "żeby zaktualizować ręcznie?",
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if odp == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(QUrl(f"https://github.com/{aktualizacje.REPOZYTORIUM}/releases/latest"))
-
-    def _zainstaluj(self, nowy: Path):
-        try:
-            self.uruchom_po_zamknieciu = aktualizacje.zainstaluj(Path(nowy))
-        except OSError as e:
-            self._blad_aktualizacji(f"Nie udało się podmienić programu ({e}). Jeśli program leży w folderze "
-                                    "Program Files, przenieś go np. na Pulpit.")
-            return
-        self.dziennik.zapisz(f"aktualizacja do {self.wydanie.wersja}: zainstalowana")
-        QMessageBox.information(self, "Aktualizacja", "Aktualizacja zainstalowana. Program uruchomi się ponownie.")
-        self._wyjscie = True
-        self.close()
-        QApplication.quit()
 
     # ---- blokada i zamykanie
     def korekta_dokumentu(self, dok: Dokument):
@@ -3893,6 +3979,8 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("plus", TEKST_2), "Nowy rachunek", lambda: self._nowy_z_zasobnika("Rachunek"))
         menu.addAction(ikona("faktura", TEKST_2), "Nowa faktura", lambda: self._nowy_z_zasobnika("Faktura"))
         menu.addAction(ikona("kalendarz", TEKST_2), "Zamknięcie dnia…", self._zamkniecie_z_zasobnika)
+        menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
+                       lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
         menu.addAction(ikona("klodka", TEKST_2), "Zablokuj", self.zablokuj)
         menu.addAction(ikona("zamknij", TEKST_2), "Zakończ program…", self.zakoncz)
