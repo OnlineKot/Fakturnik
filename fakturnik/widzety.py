@@ -5,7 +5,7 @@ import math
 from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRectF, QSizeF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QTextDocument
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+    QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QVBoxLayout,
     QToolTip, QWidget,
 )
 
@@ -356,3 +356,111 @@ class PodgladStron(QWidget):
             self.dokument.drawContents(m, obszar)
             m.restore()
         m.end()
+
+
+class OknoPowiadomienia(QWidget):
+    """Własne powiadomienie Fakturnika w prawym dolnym rogu ekranu (nad paskiem zadań), także gdy okno
+    programu jest schowane. Wjeżdża z boku, znika samo po kilku sekundach albo po kliknięciu; kliknięcie
+    wykonuje akcję (np. otwiera szczegóły). Kilka powiadomień układa się jedno nad drugim."""
+
+    otwarte: list["OknoPowiadomienia"] = []
+    KOLORY = {"info": "#5fc4b4", "ok": "#7fd6ae", "uwaga": "#f2c66d", "blad": "#ff9aa5"}
+    IKONY = {"info": "tarcza", "ok": "ok", "uwaga": "uwaga", "blad": "uwaga"}
+
+    def __init__(self, tytul: str, tekst: str = "", typ: str = "info", akcja=None, czas_ms: int = 6000,
+                 logo=None):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.akcja = akcja
+        self.setFixedWidth(360)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if akcja else Qt.CursorShape.ArrowCursor)
+        karta = QFrame(self)
+        karta.setObjectName("powiadomienie")
+        karta.setStyleSheet(
+            "QFrame#powiadomienie { background: #0f2c33; border: 1px solid #23505a; border-radius: 14px; }"
+            "QLabel { background: transparent; color: #dfeef0; }")
+        zew = QHBoxLayout(self)
+        zew.setContentsMargins(10, 10, 10, 10)
+        zew.addWidget(karta)
+        u = QHBoxLayout(karta)
+        u.setContentsMargins(16, 14, 14, 14)
+        u.setSpacing(12)
+        znak = QLabel()
+        if logo is not None:
+            znak.setPixmap(logo)
+        else:
+            znak.setPixmap(pixmapa(self.IKONY.get(typ, "tarcza"), self.KOLORY.get(typ, "#5fc4b4"), 22))
+        u.addWidget(znak, alignment=Qt.AlignmentFlag.AlignTop)
+        kolumna = QVBoxLayout()
+        kolumna.setSpacing(3)
+        naglowek = QHBoxLayout()
+        t = QLabel(tytul, textFormat=Qt.TextFormat.PlainText, wordWrap=True)
+        t.setStyleSheet("font-weight: 650; font-size: 13px; color: white;")
+        naglowek.addWidget(t, 1)
+        zrodlo = QLabel("Fakturnik")
+        zrodlo.setStyleSheet(f"font-size: 11px; color: {self.KOLORY.get(typ, '#5fc4b4')};")
+        naglowek.addWidget(zrodlo, alignment=Qt.AlignmentFlag.AlignTop)
+        kolumna.addLayout(naglowek)
+        if tekst:
+            opis = QLabel(tekst, textFormat=Qt.TextFormat.PlainText, wordWrap=True)
+            opis.setStyleSheet("font-size: 12px; color: #a9c3c8;")
+            kolumna.addWidget(opis)
+        u.addLayout(kolumna, 1)
+        self.adjustSize()
+        self.efekt = QGraphicsOpacityEffect(self)
+        self.efekt.setOpacity(0.0)
+        self.setGraphicsEffect(self.efekt)
+        self._przezroczystosc = QPropertyAnimation(self.efekt, b"opacity", self)
+        self._ruch = QPropertyAnimation(self, b"pos", self)
+        for a in (self._przezroczystosc, self._ruch):
+            a.setEasingCurve(QEasingCurve.Type.OutCubic)
+            a.setDuration(260)
+        self.zegar = QTimer(self, singleShot=True, interval=czas_ms)
+        self.zegar.timeout.connect(self.zgas)
+
+    def pokaz(self):
+        from PySide6.QtGui import QGuiApplication
+        ekran = QGuiApplication.primaryScreen().availableGeometry()
+        wysokosc = sum(o.height() for o in OknoPowiadomienia.otwarte if o.isVisible())
+        cel = QPoint(ekran.right() - self.width() - 8, ekran.bottom() - self.height() - 8 - wysokosc)
+        OknoPowiadomienia.otwarte.append(self)
+        self.move(cel + QPoint(40, 0))
+        self.show()
+        self._ruch.setStartValue(cel + QPoint(40, 0))
+        self._ruch.setEndValue(cel)
+        self._przezroczystosc.setStartValue(0.0)
+        self._przezroczystosc.setEndValue(1.0)
+        self._ruch.start()
+        self._przezroczystosc.start()
+        self.zegar.start()
+        return self
+
+    def enterEvent(self, e):
+        self.zegar.stop()  # najechanie myszą zatrzymuje znikanie
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.zegar.start(2500)
+        super().leaveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        akcja, self.akcja = self.akcja, None
+        self.zgas()
+        if akcja:
+            akcja()
+
+    def zgas(self):
+        self.zegar.stop()
+        self._przezroczystosc.stop()
+        self._przezroczystosc.setStartValue(self.efekt.opacity())
+        self._przezroczystosc.setEndValue(0.0)
+        self._przezroczystosc.finished.connect(self._zamknij)
+        self._przezroczystosc.start()
+
+    def _zamknij(self):
+        if self in OknoPowiadomienia.otwarte:
+            OknoPowiadomienia.otwarte.remove(self)
+        self.close()

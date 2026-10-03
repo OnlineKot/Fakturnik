@@ -52,6 +52,8 @@ DOMYSLNE_USTAWIENIA = {
     "druk_qr": "1",          # "1" = kod QR do przelewu (rekomendacja ZBP) na dokumentach płatnych przelewem
     "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
     "ostrzezenie_secure_boot": "0",  # "1" = już pokazano wskazówkę o wyłączonym Secure Boot
+    "ostatnie_sprawdzenie_logowan": "",  # od kiedy liczyć nieudane logowania do Windows
+    "poprzednia_tapeta": "",  # tapeta sprzed ustawienia tapety Fakturnika (do przywrócenia)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach

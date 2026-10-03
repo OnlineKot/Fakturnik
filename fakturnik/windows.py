@@ -62,3 +62,81 @@ def ochrona_przed_przechwytywaniem(okno_hwnd: int, wlacz: bool) -> bool:
     if not wlacz:
         return bool(ustaw(okno_hwnd, WDA_NONE))
     return bool(ustaw(okno_hwnd, WDA_EXCLUDEFROMCAPTURE) or ustaw(okno_hwnd, WDA_MONITOR))
+
+
+# ---------------------------------------------------------------- blokowanie i odblokowanie komputera
+
+WM_WTSSESSION_CHANGE = 0x02B1
+ZDARZENIA_SESJI = {
+    0x1: "podłączono konsolę", 0x2: "odłączono konsolę",
+    0x3: "ZDALNE POŁĄCZENIE z komputerem", 0x4: "zakończono zdalne połączenie",
+    0x5: "zalogowano do Windows", 0x6: "wylogowano z Windows",
+    0x7: "komputer zablokowany", 0x8: "komputer odblokowany",
+}
+BLOKADA, ODBLOKOWANIE = 0x7, 0x8
+
+
+def sledz_sesje(okno_hwnd: int) -> bool:
+    """Prosi Windows o powiadomienia o blokowaniu, odblokowaniu, logowaniu i połączeniach zdalnych."""
+    if not na_windows() or not okno_hwnd:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    try:
+        rejestruj = ctypes.windll.wtsapi32.WTSRegisterSessionNotification
+        rejestruj.argtypes = [wintypes.HWND, wintypes.DWORD]
+        return bool(rejestruj(okno_hwnd, 0))  # NOTIFY_FOR_THIS_SESSION
+    except (AttributeError, OSError):
+        return False
+
+
+def zdarzenie_sesji(wiadomosc_wskaznik: int) -> int | None:
+    """Z komunikatu okna (nativeEvent) odczytuje zdarzenie sesji Windows albo None."""
+    from ctypes import wintypes
+    msg = wintypes.MSG.from_address(wiadomosc_wskaznik)
+    return int(msg.wParam) if msg.message == WM_WTSSESSION_CHANGE else None
+
+
+def nieudane_logowania(od) -> int | None:
+    """Liczba nieudanych prób zalogowania lub odblokowania Windows od chwili `od` (zdarzenie 4625
+    w dzienniku zabezpieczeń). Wymaga uprawnień administratora; None, gdy nie da się sprawdzić."""
+    if not na_windows():
+        return None
+    import subprocess
+    from datetime import timezone
+    od_utc = od.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    zapytanie = f"*[System[(EventID=4625) and TimeCreated[@SystemTime>='{od_utc}']]]"
+    try:
+        wynik = subprocess.run(["wevtutil", "qe", "Security", f"/q:{zapytanie}", "/f:xml", "/c:200"],
+                               capture_output=True, timeout=15,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if wynik.returncode != 0:
+        return None  # brak uprawnień do dziennika zabezpieczeń
+    return wynik.stdout.count(b"<Event ")
+
+
+# ---------------------------------------------------------------- tapeta pulpitu
+
+SPI_GETDESKWALLPAPER = 0x0073
+SPI_SETDESKWALLPAPER = 0x0014
+SPIF_UPDATEINIFILE_SENDCHANGE = 0x01 | 0x02
+
+
+def obecna_tapeta() -> str | None:
+    if not na_windows():
+        return None
+    import ctypes
+    bufor = ctypes.create_unicode_buffer(1024)
+    if ctypes.windll.user32.SystemParametersInfoW(SPI_GETDESKWALLPAPER, len(bufor), bufor, 0):
+        return bufor.value or None
+    return None
+
+
+def ustaw_tapete(sciezka: str) -> bool:
+    if not na_windows():
+        return False
+    import ctypes
+    return bool(ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, str(sciezka),
+                                                           SPIF_UPDATEINIFILE_SENDCHANGE))

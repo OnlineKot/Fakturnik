@@ -152,6 +152,14 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   a po sprawdzeniu naruszonego dziennika zacząć nowy (stary zostaje do wglądu).
 - **Program nigdy nie podmienia się sam**: aktualizacje instaluje usługa systemowa (instalacja
   administratora) albo instalator po zgodzie administratora (okienko Windows), po sprawdzeniu SHA-256.
+- **Własne powiadomienia** w rogu ekranu (także gdy okno jest schowane), w stylu programu; kliknięcie
+  otwiera szczegóły (np. kontrolę komputera albo aktualizację).
+- **Dziennik blokowania komputera**: blokada, odblokowanie, logowanie i wylogowanie Windows oraz
+  połączenia zdalne trafiają do dziennika Fakturnika. Gdy komputer się blokuje, Fakturnik też.
+  Nieudane próby odblokowania lub logowania do Windows (z dziennika zabezpieczeń, gdy program ma do
+  niego dostęp) są zapisywane i zgłaszane powiadomieniem; połączenie zdalne zgłaszane od razu.
+- **Tapeta pulpitu** (Ustawienia → Tapeta pulpitu): trzy warianty w kolorach Fakturnika z nazwą
+  gabinetu, rysowane w rozdzielczości ekranu; polecana „Turkus nocą”. Poprzednią tapetę można przywrócić.
 - **Odporność na awarie**: dane zapisują się po każdej zmianie (atomowo), a plik jest sprawdzany przy
   każdym otwarciu. Gdy okaże się uszkodzony (np. awaria dysku lub prądu), program sam znajdzie
   najnowszą działającą kopię automatyczną i zaproponuje jej przywrócenie, a uszkodzony plik zostawi

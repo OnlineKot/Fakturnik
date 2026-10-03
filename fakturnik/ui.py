@@ -37,7 +37,7 @@ from .system import (
 from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
 from .wersja import WERSJA
-from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, PodgladStron, Powiadomienie, WykresMiesiecy
+from .widzety import DwuliniowyDelegate, OknoPowiadomienia, PigulkaDelegate, PodgladKartki, PodgladStron, Powiadomienie, WykresMiesiecy
 
 STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
 MIN_DLUGOSC_HASLA = 8
@@ -2084,6 +2084,7 @@ class StronaUstawienia(Strona):
 
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
+        self._miniatury_tapet: list = []
         u = self.uklad
         gora = QWidget()
         gora.setMaximumWidth(760)
@@ -2322,6 +2323,33 @@ class StronaUstawienia(Strona):
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
+        # --- tapeta pulpitu
+        prawa.addWidget(sekcja("Tapeta pulpitu"))
+        k, ku = karta()
+        ku.addWidget(QLabel("Tapeta w kolorach Fakturnika z nazwą gabinetu, w rozdzielczości ekranu. Polecam "
+                            "„Turkus nocą”: spokojna i nie męczy oczu.", objectName="drobny", wordWrap=True))
+        rzad = QHBoxLayout()
+        from . import tapeta
+        for klucz, opis in tapeta.WARIANTY.items():
+            b = QPushButton(cursor=Qt.CursorShape.PointingHandCursor, objectName="tapeta")
+            b.setToolTip(opis["nazwa"])
+            b.setIconSize(QSize(150, 84))
+            b.setFixedSize(166, 100)
+            b.clicked.connect(lambda _=False, k=klucz: self.ustaw_tapete(k))
+            self._miniatury_tapet.append((b, klucz))
+            kolumna = QVBoxLayout()
+            kolumna.addWidget(b)
+            kolumna.addWidget(QLabel(opis["nazwa"], objectName="drobny", alignment=Qt.AlignmentFlag.AlignHCenter))
+            rzad.addLayout(kolumna)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Przywróć poprzednią tapetę", "przywroc", akcja=self.przywroc_tapete))
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
         # --- aktualizacje
         prawa.addWidget(sekcja("Praca w tle i Windows"))
         k, ku = karta()
@@ -2469,6 +2497,47 @@ class StronaUstawienia(Strona):
             "administratora. Instalator przeniesie Fakturnik do Program Files, włączy usługę kopii i ochronę "
             "przed odinstalowaniem. Dane zostają bez zmian.\n\nKontynuować?")
 
+    def _pokaz_miniatury_tapet(self):
+        if getattr(self, "_miniatury_gotowe", False):
+            return
+        from . import tapeta
+        nazwa = self.okno.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        for b, klucz in self._miniatury_tapet:
+            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 480, 270, nazwa).scaled(
+                300, 168, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))))
+        self._miniatury_gotowe = True
+
+    def ustaw_tapete(self, wariant: str):
+        from . import tapeta
+        if not windows.na_windows():
+            QMessageBox.information(self, "Tapeta", "Tapetę ustawia się w wersji na Windows.")
+            return
+        ekran = QApplication.primaryScreen()
+        rozmiar = ekran.size() * ekran.devicePixelRatio()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            u = self.okno.baza.ustawienia()
+            plik = tapeta.zapisz(wariant, self.okno.baza.sciezka.parent, max(1280, rozmiar.width()),
+                                 max(720, rozmiar.height()), u["nazwa"].split(",")[0].strip())
+            obecna = windows.obecna_tapeta()
+            if obecna and "tapeta-" not in Path(obecna).name and not u["poprzednia_tapeta"]:
+                self.okno.baza.zapisz_ustawienia({"poprzednia_tapeta": obecna})
+            ok = windows.ustaw_tapete(str(plik))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.okno.komunikat(f"Ustawiono tapetę: {tapeta.WARIANTY[wariant]['nazwa']}" if ok
+                            else "Nie udało się ustawić tapety", blad=not ok)
+
+    def przywroc_tapete(self):
+        poprzednia = self.okno.baza.ustawienia()["poprzednia_tapeta"]
+        if not poprzednia or not Path(poprzednia).exists():
+            QMessageBox.information(self, "Tapeta", "Nie ma zapamiętanej poprzedniej tapety. Zmienisz ją w "
+                                    "Ustawieniach Windows → Personalizacja → Tło.")
+            return
+        if windows.ustaw_tapete(poprzednia):
+            self.okno.baza.zapisz_ustawienia({"poprzednia_tapeta": ""})
+            self.okno.komunikat("Przywrócono poprzednią tapetę")
+
     def _wybierz_folder_kopii(self):
         folder = QFileDialog.getExistingDirectory(self, "Folder na trzecią kopię", self.kopia_folder.text()
                                                   or str(Path.home()))
@@ -2541,6 +2610,7 @@ class StronaUstawienia(Strona):
         self.kopia_folder.setText(u["kopia_folder"])
         self._pokaz_stan_kopii()
         self._pokaz_stan_komputera()
+        self._pokaz_miniatury_tapet()
         self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
@@ -3667,9 +3737,10 @@ class OknoGlowne(QMainWindow):
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
         # kontrola komputera przy każdym uruchomieniu (także przy starcie Windows, gdy program startuje w tle)
         self._program_ok: bool | None = None
-        self._klik_kontroli = False
-        self.zasobnik.messageClicked.connect(self._klik_powiadomienia)
         QTimer.singleShot(8000, self.kontrola_startowa)
+        # dziennik blokowania i odblokowania komputera (oraz logowań i połączeń zdalnych)
+        self._zablokowano_windows: datetime | None = None
+        windows.sledz_sesje(int(self.winId()))
 
     def przejdz(self, i: int, odswiez: bool = True):
         if i != STRONA_PRZYCHODY:
@@ -3745,25 +3816,77 @@ class OknoGlowne(QMainWindow):
         """Weryfikacja komputera po uruchomieniu: wynik w dzienniku, ostrzeżenia w powiadomieniu."""
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             return  # najpierw kreator pierwszego uruchomienia
+        # nieudane logowania do Windows od poprzedniego uruchomienia (np. ktoś próbował w nocy)
+        try:
+            od = datetime.fromisoformat(self.baza.ustawienia()["ostatnie_sprawdzenie_logowan"])
+        except ValueError:
+            od = datetime.now() - timedelta(days=1)
+        self.baza.zapisz_ustawienia({"ostatnie_sprawdzenie_logowan": datetime.now().isoformat(timespec="seconds")})
+        w = Watek(windows.nieudane_logowania, od)
+        w.gotowe.connect(self._nieudane_proby)
+        self._w_tle(w)
         pokaz = kontrola.do_pokazania(self.baza, self.wyniki_kontroli())
         self.dziennik.zapisz("kontrola komputera: " + ("OK" if not pokaz else
                                                         "uwagi: " + ", ".join(w.klucz for w in pokaz)))
-        self._klik_kontroli = True
         if pokaz:
-            self.zasobnik.showMessage(f"Fakturnik: kontrola komputera ({len(pokaz)} do sprawdzenia)",
-                                      "\n".join(f"• {w.nazwa}: {w.opis}" for w in pokaz[:4])
-                                      + "\nKliknij, aby zobaczyć szczegóły.", QSystemTrayIcon.MessageIcon.Warning, 12000)
+            self.powiadom(f"Kontrola komputera: {len(pokaz)} do sprawdzenia",
+                          "\n".join(f"• {w.nazwa}: {w.opis}" for w in pokaz[:4]) + "\nKliknij, aby zobaczyć szczegóły.",
+                          "uwaga", self._otworz_kontrole, 12000)
         else:
-            self.zasobnik.showMessage("Fakturnik: komputer zweryfikowany",
-                                      "Szyfrowanie, kopie i ochrona programu działają.",
-                                      QSystemTrayIcon.MessageIcon.Information, 4000)
+            self.powiadom("Komputer zweryfikowany", "Szyfrowanie, kopie i ochrona programu działają.", "ok",
+                          self._otworz_kontrole, 4500)
 
-    def _klik_powiadomienia(self):
-        if self._klik_kontroli:
-            self._klik_kontroli = False
-            self.pokaz_okno()
-            if self.isVisible():
-                self.pokaz_kontrole()
+    def nativeEvent(self, typ, wiadomosc):
+        if windows.na_windows() and typ == b"windows_generic_MSG":
+            try:
+                zdarzenie = windows.zdarzenie_sesji(int(wiadomosc))
+            except (TypeError, ValueError, OSError):
+                zdarzenie = None
+            if zdarzenie is not None:
+                QTimer.singleShot(0, lambda z=zdarzenie: self._zdarzenie_sesji(z))
+        return super().nativeEvent(typ, wiadomosc)
+
+    def _zdarzenie_sesji(self, zdarzenie: int):
+        opis = windows.ZDARZENIA_SESJI.get(zdarzenie)
+        if not opis:
+            return
+        uzytkownik = os.environ.get("USERNAME", "")
+        self.dziennik.zapisz(f"Windows: {opis}" + (f" ({uzytkownik})" if uzytkownik else ""))
+        if zdarzenie == windows.BLOKADA:
+            self._zablokowano_windows = datetime.now()
+            if self.baza.ma_haslo:
+                self.zablokuj()  # komputer zablokowany: Fakturnik też
+        elif zdarzenie == windows.ODBLOKOWANIE:
+            od = self._zablokowano_windows or datetime.now() - timedelta(hours=1)
+            self._zablokowano_windows = None
+            w = Watek(windows.nieudane_logowania, od)
+            w.gotowe.connect(self._nieudane_proby)
+            self._w_tle(w)
+        elif zdarzenie == 0x3:  # ktoś połączył się zdalnie
+            self.powiadom("Zdalne połączenie z komputerem", "Ktoś połączył się z tym komputerem zdalnie. "
+                          "Jeśli to nie Ty ani Twój serwis, odłącz komputer od internetu.", "blad", czas_ms=20000)
+
+    def _nieudane_proby(self, ile):
+        if ile:
+            self.dziennik.zapisz(f"Windows: NIEUDANE próby odblokowania lub logowania: {ile}")
+            self.powiadom("Nieudane próby odblokowania komputera",
+                          f"Ktoś {ile} raz(y) wpisał złe hasło do Windows. Szczegóły w dzienniku Fakturnika.",
+                          "uwaga", lambda: (self.pokaz_okno(), self.strona_ustawienia.pokaz_dziennik()
+                                            if self.isVisible() else None), 15000)
+
+    def _otworz_kontrole(self):
+        self.pokaz_okno()
+        if self.isVisible():
+            self.pokaz_kontrole()
+
+    def powiadom(self, tytul: str, tekst: str = "", typ: str = "info", akcja=None, czas_ms: int = 6000):
+        """Własne powiadomienie Fakturnika w rogu ekranu (zamiast dymków Windows)."""
+        if not QApplication.instance().platformName() or QApplication.instance().platformName() == "minimal":
+            return
+        OknoPowiadomienia(tytul, tekst, typ, akcja, czas_ms,
+                          QPixmap(str(ZASOBY / "ikona.png")).scaled(
+                              30, 30, Qt.AspectRatioMode.KeepAspectRatio,
+                              Qt.TransformationMode.SmoothTransformation)).pokaz()
 
     def pokaz_kontrole(self):
         OknoKontroli(self).exec()
@@ -3808,9 +3931,8 @@ class OknoGlowne(QMainWindow):
             except OSError:
                 if self._blad_kopii_zgloszony != date.today().isoformat():  # raz dziennie, bez zasypywania
                     self._blad_kopii_zgloszony = date.today().isoformat()
-                    self.zasobnik.showMessage("Fakturnik: trzecia kopia niedostępna",
-                                              f"Nie można zapisać kopii w {folder}. Podłącz dysk lub sprawdź folder.",
-                                              QSystemTrayIcon.MessageIcon.Warning, 8000)
+                    self.powiadom("Trzecia kopia niedostępna",
+                                  f"Nie można zapisać kopii w {folder}. Podłącz dysk lub sprawdź folder.", "uwaga")
         self._skrot_kopii = skrot
         self.ostatnia_kopia = datetime.now()
 
@@ -3850,7 +3972,7 @@ class OknoGlowne(QMainWindow):
             tekst = ("Plik programu różni się od opublikowanego wydania (mógł zostać zmieniony). "
                      "Pobierz Fakturnik.exe ponownie ze strony wydań i nie wpisuj hasła w tej kopii.")
             self.dziennik.zapisz("STRAŻNIK: plik programu różni się od opublikowanego wydania")
-            self.zasobnik.showMessage("Fakturnik: uwaga", tekst, QSystemTrayIcon.MessageIcon.Warning, 15000)
+            self.powiadom("Uwaga: plik programu zmieniony", tekst, "blad", czas_ms=15000)
             QMessageBox.critical(self, "Fakturnik", tekst)
 
     def _wynik_sprawdzenia(self, wydanie, cicho: bool):
@@ -3869,9 +3991,8 @@ class OknoGlowne(QMainWindow):
                                         "za zgodą administratora; dane zostają.")
         self.pasek_aktualizacji.show()
         if cicho and not self.isVisible():
-            self.zasobnik.showMessage("Fakturnik: dostępna aktualizacja",
-                                      f"Wersja {wydanie.wersja}. Otwórz Fakturnik, aby ją zainstalować.",
-                                      QSystemTrayIcon.MessageIcon.Information, 6000)
+            self.powiadom("Dostępna aktualizacja", f"Wersja {wydanie.wersja}. Kliknij, aby ją zainstalować.", "info",
+                          lambda: (self.pokaz_okno(), self.instaluj_aktualizacje() if self.isVisible() else None))
 
     def instaluj_aktualizacje(self):
         """Program nigdy nie podmienia sam swojego pliku: aktualizacja idzie przez instalator z okienkiem zgody
@@ -4010,9 +4131,9 @@ class OknoGlowne(QMainWindow):
             QTimer.singleShot(1500, self._restart_jesli_mozna)  # gotowa aktualizacja: nowa wersja startuje w tle
         if not self._podpowiedz_zasobnika:
             self._podpowiedz_zasobnika = True
-            self.zasobnik.showMessage("Fakturnik działa w tle",
-                                      "Pilnuje bezpieczeństwa danych. Kliknij ikonę obok zegara, aby go otworzyć.",
-                                      QSystemTrayIcon.MessageIcon.Information, 5000)
+            self.powiadom("Fakturnik działa w tle",
+                          "Pilnuje bezpieczeństwa danych i robi kopie. Kliknij ikonę obok zegara, aby go otworzyć.",
+                          "info", self.pokaz_okno, 5000)
 
     def pokaz_okno(self):
         if self._ukryty and self.baza.ma_haslo:
@@ -4092,8 +4213,7 @@ class OknoGlowne(QMainWindow):
         for p in problemy:
             self.dziennik.zapisz(f"STRAŻNIK: {p}")
         if problemy:
-            self.zasobnik.showMessage("Fakturnik: wykryto problem z danymi", "\n".join(problemy)[:400],
-                                      QSystemTrayIcon.MessageIcon.Warning, 10000)
+            self.powiadom("Wykryto problem z danymi", "\n".join(problemy)[:400], "blad", czas_ms=12000)
             if self.isVisible():
                 self.komunikat(problemy[0], blad=True)
 
