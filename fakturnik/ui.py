@@ -3,18 +3,20 @@
 import base64
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
     QBuffer, QByteArray, QDate, QEvent, QIODevice, QObject, QPoint, QRect, QSize, QStandardPaths, Qt, QThread,
     QTimer, QUrl, Signal,
 )
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut,
+)
 from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
-    QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
+    QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea,
     QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -25,98 +27,133 @@ from .ikony import ikona, pixmapa
 from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
 from .szyfrowanie import BledneHaslo
 from .wersja import WERSJA
+from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, Powiadomienie, WykresMiesiecy
 
+STRONA_PULPIT, STRONA_NOWY, STRONA_HISTORIA, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
 MIN_DLUGOSC_HASLA = 8
 BLOKADA_PO_MINUTACH = 10
 ZASOBY = Path(__file__).parent / "zasoby"
 
 # ---------------------------------------------------------------- wygląd
 
-AKCENT = "#1e6b7b"          # morski z logo gabinetu
-AKCENT_CIEMNY = "#175866"
-AKCENT_TLO = "#e3eef0"
-TEKST = "#1d1d1f"
-TEKST_2 = "#6e6e73"
-LINIA = "#e5e5ea"
-TLO = "#f5f5f7"
-CZERWONY = "#c4314b"
-ZIELONY = "#2f7d4f"
+from .motyw import (  # noqa: E402
+    AKCENT, AKCENT_CIEMNY, AKCENT_TLO, CZERWONY, LINIA, MENU, MENU_AKTYWNY, MENU_TEKST, TEKST, TEKST_2,
+    TEKST_3, TLO, ZIELONY,
+)
 
 STYL = f"""
 * {{ font-family: "Inter"; font-size: 13px; color: {TEKST}; }}
 QMainWindow, QWidget#tresc, QScrollArea, QScrollArea > QWidget > QWidget {{ background: {TLO}; }}
 QDialog {{ background: {TLO}; }}
 
-QFrame#menu {{ background: #ececef; border-right: 1px solid #dcdce0; }}
+QFrame#menu {{ background: {MENU}; }}
+QFrame#menu QLabel {{ color: white; background: transparent; }}
 QFrame#menu QPushButton {{
-    background: transparent; border: none; border-radius: 7px; text-align: left;
-    padding: 7px 10px; margin: 1px 10px; font-weight: 500; color: #3a3a3c;
+    background: transparent; border: none; border-radius: 8px; text-align: left;
+    padding: 9px 12px; margin: 1px 12px; font-weight: 500; color: {MENU_TEKST};
 }}
-QFrame#menu QPushButton:hover {{ background: #e1e1e5; }}
-QFrame#menu QPushButton:checked {{ background: {AKCENT_TLO}; color: {AKCENT}; font-weight: 600; }}
-QLabel#nazwa_programu {{ font-size: 15px; font-weight: 600; }}
-QLabel#wersja {{ font-size: 11px; color: {TEKST_2}; }}
+QFrame#menu QPushButton:hover {{ background: #163a42; color: white; }}
+QFrame#menu QPushButton:checked {{ background: {MENU_AKTYWNY}; color: white; font-weight: 600; }}
+QLabel#nazwa_programu {{ font-size: 15px; font-weight: 600; color: white; }}
+QLabel#gabinet {{ font-size: 11px; color: {MENU_TEKST}; }}
+QFrame#menu_linia {{ background: #1f454d; max-height: 1px; border: none; margin: 0 20px; }}
 
-QLabel#tytul {{ font-size: 22px; font-weight: 600; letter-spacing: -0.3px; }}
+QLabel#tytul {{ font-size: 24px; font-weight: 650; letter-spacing: -0.5px; }}
 QLabel#podtytul {{ color: {TEKST_2}; }}
-QLabel#sekcja {{ font-size: 11px; font-weight: 600; color: {TEKST_2}; letter-spacing: 0.4px; padding: 0 2px; }}
+QLabel#sekcja {{ font-size: 14px; font-weight: 600; padding: 0 2px; }}
 QLabel#drobny {{ font-size: 12px; color: {TEKST_2}; }}
-QLabel#etykieta {{ font-size: 12px; color: {TEKST_2}; }}
+QLabel#etykieta {{ font-size: 12px; font-weight: 500; color: {TEKST_2}; }}
+QLabel#kpi_etykieta {{ font-size: 12px; font-weight: 500; color: {TEKST_2}; }}
+QLabel#kpi_wartosc {{ font-size: 26px; font-weight: 650; letter-spacing: -0.6px; }}
+QLabel#kpi_zmiana {{ font-size: 12px; font-weight: 500; color: {TEKST_3}; }}
 QFrame#karta {{ background: white; border: 1px solid {LINIA}; border-radius: 12px; }}
 QFrame#karta QLabel {{ background: transparent; }}
+QFrame#papier {{ background: transparent; }}
 QFrame#separator {{ background: {LINIA}; max-height: 1px; border: none; }}
 
 QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
-    background: white; border: 1px solid #d2d2d7; border-radius: 7px; padding: 6px 9px;
-    selection-background-color: {AKCENT_TLO}; selection-color: {TEKST};
+    background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 7px 10px;
+    selection-background-color: #cfe3e7; selection-color: {TEKST};
 }}
+QLineEdit:hover, QComboBox:hover, QDateEdit:hover {{ border-color: #bcc4ca; }}
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {AKCENT}; }}
 QLineEdit, QComboBox, QDateEdit {{ min-height: 20px; }}
 QLineEdit#numer {{ font-size: 15px; font-weight: 600; }}
-QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 22px; }}
-QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINIA}; selection-background-color: {AKCENT_TLO}; }}
+QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 24px; }}
+QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINIA}; padding: 4px;
+    selection-background-color: {AKCENT_TLO}; selection-color: {TEKST}; outline: none; }}
 
 QPushButton {{
-    background: white; border: 1px solid #d2d2d7; border-radius: 7px; padding: 6px 12px; font-weight: 500;
+    background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 7px 13px; font-weight: 500;
 }}
-QPushButton:hover {{ background: #f7f7f9; border-color: #c4c4ca; }}
-QPushButton:pressed {{ background: #ededf0; }}
-QPushButton:disabled {{ color: #b0b0b5; }}
-QPushButton#glowny {{ background: {AKCENT}; border: 1px solid {AKCENT}; color: white; font-weight: 600; padding: 8px 18px; }}
+QPushButton:hover {{ background: #f6f8f9; border-color: #bcc4ca; }}
+QPushButton:pressed {{ background: #eceff1; }}
+QPushButton:disabled {{ color: #aab2b9; background: #fafbfb; }}
+QPushButton#glowny {{ background: {AKCENT}; border: 1px solid {AKCENT}; color: white; font-weight: 600; padding: 9px 18px; }}
 QPushButton#glowny:hover {{ background: {AKCENT_CIEMNY}; border-color: {AKCENT_CIEMNY}; }}
-QPushButton#glowny:disabled {{ background: #a9c4ca; border-color: #a9c4ca; }}
-QPushButton#plaski {{ background: transparent; border: none; color: {AKCENT}; padding: 4px 6px; }}
+QPushButton#glowny:pressed {{ background: #11444f; }}
+QPushButton#glowny:disabled {{ background: #a7c3c9; border-color: #a7c3c9; }}
+QPushButton#plaski {{ background: transparent; border: none; color: {AKCENT}; padding: 5px 8px; font-weight: 600; }}
 QPushButton#plaski:hover {{ background: {AKCENT_TLO}; }}
-QPushButton#chip {{ background: #f2f2f4; border: none; border-radius: 6px; padding: 5px 10px; font-weight: 500; }}
-QPushButton#chip:hover {{ background: {AKCENT_TLO}; color: {AKCENT}; }}
-QPushButton#pacjent {{ background: transparent; border: 1px solid {LINIA}; border-radius: 6px;
-    padding: 3px 11px; font-weight: 400; color: #3a3a3c; }}
+QPushButton#chip {{ background: #f1f4f5; border: 1px solid transparent; border-radius: 8px; padding: 6px 11px; font-weight: 500; }}
+QPushButton#chip:hover {{ background: {AKCENT_TLO}; border-color: #c5dde1; color: {AKCENT}; }}
+QPushButton#pacjent {{ background: white; border: 1px solid {LINIA}; border-radius: 14px;
+    padding: 4px 12px; font-weight: 500; color: #36414a; }}
 QPushButton#pacjent:hover {{ border-color: {AKCENT}; color: {AKCENT}; }}
 QPushButton#niebezpieczny {{ color: {CZERWONY}; }}
-QPushButton#niebezpieczny:disabled {{ color: #e6b3bc; }}
-QFrame#przelacznik {{ background: #e8e8ec; border-radius: 9px; }}
-QPushButton#segment {{ background: transparent; border: none; border-radius: 7px; padding: 6px 18px;
-    font-weight: 500; color: #3a3a3c; }}
-QPushButton#segment:checked {{ background: white; color: {TEKST}; font-weight: 600; border: 1px solid #dcdce0; }}
+QPushButton#niebezpieczny:disabled {{ color: #e2b4ba; }}
+QPushButton#szybki {{ background: white; border: 1px solid {LINIA}; border-radius: 12px; padding: 14px 16px;
+    text-align: left; font-weight: 600; }}
+QPushButton#szybki:hover {{ border-color: {AKCENT}; background: #fbfdfd; }}
+QFrame#przelacznik {{ background: #e9ecee; border-radius: 10px; }}
+QPushButton#segment {{ background: transparent; border: none; border-radius: 8px; padding: 7px 20px;
+    font-weight: 500; color: {TEKST_2}; }}
+QPushButton#segment:checked {{ background: white; color: {TEKST}; font-weight: 600; border: 1px solid #d9dee1; }}
 
 QCheckBox {{ spacing: 8px; }}
-QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid #c4c4ca; background: white; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid #c3cbd1; background: white; }}
 QCheckBox::indicator:checked {{ background: {AKCENT}; border-color: {AKCENT}; image: url("{(ZASOBY / "zaznaczone.svg").as_posix()}"); }}
 
 QTableWidget {{ background: white; border: none; gridline-color: transparent;
     selection-background-color: {AKCENT_TLO}; selection-color: {TEKST}; outline: none; }}
-QTableWidget::item {{ padding: 0 8px; border-bottom: 1px solid #f0f0f2; }}
+QTableWidget::item {{ padding: 0 10px; border-bottom: 1px solid #eef0f2; }}
+QTableWidget::item:hover {{ background: #f7f9fa; }}
+QTableWidget::item:selected {{ background: {AKCENT_TLO}; }}
 QHeaderView::section {{ background: white; border: none; border-bottom: 1px solid {LINIA};
-    padding: 8px; font-size: 11px; font-weight: 600; color: {TEKST_2}; }}
+    padding: 9px 10px; font-size: 12px; font-weight: 500; color: {TEKST_3}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #c7c7cc; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:vertical {{ background: #cdd3d8; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: #b4bcc3; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 
 QFrame#pasek_aktualizacji {{ background: {AKCENT_TLO}; border: none; border-bottom: 1px solid #cfe0e3; }}
-QStatusBar {{ background: {TLO}; color: {TEKST_2}; border-top: 1px solid {LINIA}; }}
-QStatusBar QLabel {{ color: {TEKST_2}; }}
-QToolTip {{ background: white; border: 1px solid {LINIA}; padding: 4px; }}
+QFrame#toast {{ background: #141a1f; border-radius: 10px; }}
+QFrame#toast QLabel {{ color: white; background: transparent; font-weight: 500; }}
+QStatusBar {{ background: {TLO}; color: {TEKST_2}; border: none; }}
+QToolTip {{ background: #141a1f; color: white; border: none; padding: 6px 8px; border-radius: 6px; }}
 """
+
+
+def cien(w: QWidget, rozmycie: int = 24, alfa: int = 16, przesuniecie: int = 2) -> QWidget:
+    """Delikatny cień pod kartą (głębia bez krzykliwych efektów)."""
+    efekt = QGraphicsDropShadowEffect(w)
+    efekt.setBlurRadius(rozmycie)
+    efekt.setOffset(0, przesuniecie)
+    efekt.setColor(QColor(16, 32, 40, alfa))
+    w.setGraphicsEffect(efekt)
+    return w
+
+
+def czcionka_cyfr(rozmiar: int = 13, waga: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    """Inter z cyframi o stałej szerokości, żeby kwoty w kolumnach równo się układały."""
+    f = QFont("Inter")
+    f.setPixelSize(rozmiar)
+    f.setWeight(waga)
+    try:
+        f.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError):
+        pass
+    return f
 
 
 def zaladuj_czcionki() -> None:
@@ -221,8 +258,10 @@ def przycisk(tekst: str, nazwa_ikony: str | None = None, styl: str | None = None
     return b
 
 
-def karta() -> tuple[QFrame, QVBoxLayout]:
+def karta(z_cieniem: bool = True) -> tuple[QFrame, QVBoxLayout]:
     k = QFrame(objectName="karta")
+    if z_cieniem:
+        cien(k)
     u = QVBoxLayout(k)
     u.setContentsMargins(18, 16, 18, 16)
     u.setSpacing(10)
@@ -230,7 +269,7 @@ def karta() -> tuple[QFrame, QVBoxLayout]:
 
 
 def sekcja(tekst: str) -> QLabel:
-    return QLabel(tekst.upper(), objectName="sekcja")
+    return QLabel(tekst, objectName="sekcja")
 
 
 def separator() -> QFrame:
@@ -287,15 +326,17 @@ class OknoHasla(QDialog):
         self.sprawdz, self.dziennik, self.cel = sprawdz, dziennik, cel
         self.proby = 0
         self.setWindowTitle(tytul)
-        self.setFixedWidth(380)
+        self.setFixedWidth(400)
         u = QVBoxLayout(self)
-        u.setContentsMargins(28, 26, 28, 22)
+        u.setContentsMargins(32, 30, 32, 24)
         u.setSpacing(10)
         znak = QLabel()
-        znak.setPixmap(pixmapa("klodka", AKCENT, 30))
+        znak.setPixmap(QPixmap(str(ZASOBY / "ikona.png")).scaled(
+            56, 56, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         u.addWidget(znak, alignment=Qt.AlignmentFlag.AlignHCenter)
+        u.addSpacing(4)
         naglowek = QLabel(tytul, alignment=Qt.AlignmentFlag.AlignHCenter)
-        naglowek.setStyleSheet("font-size: 16px; font-weight: 600;")
+        naglowek.setStyleSheet("font-size: 18px; font-weight: 650; letter-spacing: -0.3px;")
         u.addWidget(naglowek)
         u.addWidget(QLabel(opis, objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addSpacing(6)
@@ -408,6 +449,180 @@ class Strona(QWidget):
         pass
 
 
+MIESIACE_DOP = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+                "października", "listopada", "grudnia"]
+MIESIACE_MIEJSC = ["styczniu", "lutym", "marcu", "kwietniu", "maju", "czerwcu", "lipcu", "sierpniu", "wrześniu",
+                   "październiku", "listopadzie", "grudniu"]
+MIESIACE_KROTKO = ["sty", "lut", "mar", "kwi", "maj", "cze", "lip", "sie", "wrz", "paź", "lis", "gru"]
+DNI = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
+
+
+def poprzedni_miesiac(rok: int, mies: int, ile: int = 1) -> tuple[int, int]:
+    indeks = rok * 12 + (mies - 1) - ile
+    return indeks // 12, indeks % 12 + 1
+
+
+def kafelek(etykieta: str) -> tuple[QFrame, QLabel, QLabel]:
+    k, ku = karta()
+    ku.setContentsMargins(18, 16, 18, 16)
+    ku.setSpacing(4)
+    e = QLabel(etykieta, objectName="kpi_etykieta")
+    ku.addWidget(e)
+    wartosc = QLabel("—", objectName="kpi_wartosc")
+    wartosc.setFont(czcionka_cyfr(26, QFont.Weight.DemiBold))
+    ku.addWidget(wartosc)
+    zmiana = QLabel(objectName="kpi_zmiana")
+    ku.addWidget(zmiana)
+    return k, wartosc, zmiana
+
+
+class StronaPulpit(Strona):
+    """Ekran startowy: najważniejsze liczby, wykres przychodu i ostatnie dokumenty."""
+
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno, przewijana=True)
+        u = self.uklad
+        u.setSpacing(16)
+        gora = QHBoxLayout()
+        nag = QVBoxLayout()
+        nag.setSpacing(2)
+        self.powitanie = QLabel(objectName="tytul")
+        self.data = QLabel(objectName="podtytul")
+        nag.addWidget(self.powitanie)
+        nag.addWidget(self.data)
+        gora.addLayout(nag)
+        gora.addStretch()
+        gora.addWidget(przycisk("Nowa faktura", "faktura", akcja=lambda: self._nowy("Faktura")),
+                       alignment=Qt.AlignmentFlag.AlignBottom)
+        gora.addWidget(przycisk("Nowy rachunek", "plus", "glowny", lambda: self._nowy("Rachunek")),
+                       alignment=Qt.AlignmentFlag.AlignBottom)
+        u.addLayout(gora)
+
+        # --- liczby
+        kafle = QHBoxLayout()
+        kafle.setSpacing(14)
+        k1, self.k_przychod, self.k_przychod_zm = kafelek("Przychód w tym miesiącu")
+        k2, self.k_liczba, self.k_liczba_zm = kafelek("Wystawione dokumenty")
+        k3, self.k_srednia, self.k_srednia_zm = kafelek("Średnio na dokument")
+        k4, self.k_rok, self.k_rok_zm = kafelek("Przychód od początku roku")
+        self.k_przychod_et = k1.findChild(QLabel, "kpi_etykieta")
+        for k in (k1, k2, k3, k4):
+            kafle.addWidget(k, 1)
+        u.addLayout(kafle)
+
+        # --- wykres i ostatnie dokumenty
+        rzad = QHBoxLayout()
+        rzad.setSpacing(14)
+        k, ku = karta()
+        ku.setContentsMargins(20, 18, 20, 14)
+        tyt = QHBoxLayout()
+        tyt.addWidget(QLabel("Przychód w ostatnich 12 miesiącach", objectName="sekcja"))
+        tyt.addStretch()
+        self.suma_12 = QLabel(objectName="drobny")
+        tyt.addWidget(self.suma_12)
+        ku.addLayout(tyt)
+        self.wykres = WykresMiesiecy(druk.zl)
+        ku.addWidget(self.wykres, 1)
+        rzad.addWidget(k, 3)
+
+        k, ku = karta()
+        ku.setContentsMargins(0, 18, 0, 10)
+        tyt = QHBoxLayout()
+        tyt.setContentsMargins(20, 0, 12, 0)
+        tyt.addWidget(QLabel("Ostatnie dokumenty", objectName="sekcja"))
+        tyt.addStretch()
+        tyt.addWidget(przycisk("Wszystkie", styl="plaski", akcja=lambda: self.okno.przejdz(STRONA_HISTORIA)))
+        ku.addLayout(tyt)
+        self.ostatnie = QTableWidget(0, 3)
+        self.ostatnie.horizontalHeader().setVisible(False)
+        self.ostatnie.verticalHeader().setVisible(False)
+        self.ostatnie.verticalHeader().setDefaultSectionSize(52)
+        self.ostatnie.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.ostatnie.setColumnWidth(1, 92)
+        self.ostatnie.setColumnWidth(2, 110)
+        self.ostatnie.setItemDelegateForColumn(0, DwuliniowyDelegate(self.ostatnie))
+        self.ostatnie.setItemDelegateForColumn(1, PigulkaDelegate(self.ostatnie))
+        self.ostatnie.setShowGrid(False)
+        self.ostatnie.setWordWrap(False)
+        self.ostatnie.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ostatnie.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.ostatnie.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.ostatnie.cellDoubleClicked.connect(self._pokaz)
+        ku.addWidget(self.ostatnie, 1)
+        self.pusto = QLabel("Nie ma jeszcze dokumentów.\nWystaw pierwszy rachunek przyciskiem powyżej.",
+                            objectName="drobny", alignment=Qt.AlignmentFlag.AlignCenter)
+        ku.addWidget(self.pusto, 1)
+        rzad.addWidget(k, 2)
+        u.addLayout(rzad, 1)
+        self._docs: list[Dokument] = []
+
+    def _nowy(self, rodzaj: str):
+        self.okno.przejdz(STRONA_NOWY)
+        self.okno.strona_nowy.ustaw_rodzaj(rodzaj)
+        self.okno.strona_nowy.nabywca.setFocus()
+
+    def _pokaz(self, wiersz: int, _kol: int):
+        if 0 <= wiersz < len(self._docs):
+            self.okno.podglad(self._docs[wiersz], duplikat=True)
+
+    def odswiez(self):
+        dzis = date.today()
+        godz = datetime.now().hour
+        self.powitanie.setText("Dzień dobry" if 5 <= godz < 18 else "Dobry wieczór")
+        self.data.setText(f"{DNI[dzis.weekday()].capitalize()}, {dzis.day} {MIESIACE_DOP[dzis.month - 1]} {dzis.year}")
+        baza = self.okno.baza
+
+        teraz = podsumuj(baza.dokumenty(rok=dzis.year, miesiac=dzis.month))
+        pr, pm = poprzedni_miesiac(dzis.year, dzis.month)
+        wczesniej = podsumuj(baza.dokumenty(rok=pr, miesiac=pm))
+        # uczciwe porównanie: te same dni poprzedniego miesiąca (np. 1–3 października z 1–3 września)
+        do_dnia = podsumuj([d for d in baza.dokumenty(rok=pr, miesiac=pm) if int(d.data_wystawienia[8:10]) <= dzis.day])
+        self.k_przychod_et.setText(f"Przychód w {MIESIACE_MIEJSC[dzis.month - 1]}")
+        self.k_przychod.setText(f"{druk.zl(teraz.suma)} zł")
+        okres = f"1–{dzis.day} {MIESIACE_DOP[pm - 1]}" if dzis.day > 1 else f"1 {MIESIACE_DOP[pm - 1]}"
+        if do_dnia.suma:
+            zmiana = (teraz.suma - do_dnia.suma) / do_dnia.suma * 100
+            znak = "+" if zmiana >= 0 else "−"
+            kolor = ZIELONY if zmiana >= 0 else CZERWONY
+            self.k_przychod_zm.setText(f'<span style="color:{kolor}; font-weight:600;">{znak}{abs(zmiana):.0f}%</span>'
+                                       f" wobec {okres}")
+        else:
+            self.k_przychod_zm.setText(f"{okres}: {druk.zl(do_dnia.suma)} zł")
+        wszystkie_teraz = baza.dokumenty(rok=dzis.year, miesiac=dzis.month)
+        faktur = sum(1 for d in wszystkie_teraz if d.wazny and d.tytul == "Faktura")
+        self.k_liczba.setText(str(teraz.liczba))
+        self.k_liczba_zm.setText(f"rachunki: {teraz.liczba - faktur}, faktury: {faktur}")
+        self.k_srednia.setText(f"{druk.zl(teraz.suma / teraz.liczba) if teraz.liczba else '0,00'} zł")
+        self.k_srednia_zm.setText(f"w {MIESIACE_MIEJSC[pm - 1]}: "
+                                  f"{druk.zl(wczesniej.suma / wczesniej.liczba) if wczesniej.liczba else '0,00'} zł")
+        rok = podsumuj(baza.dokumenty(rok=dzis.year))
+        self.k_rok.setText(f"{druk.zl(rok.suma)} zł")
+        self.k_rok_zm.setText(f"{liczba_dokumentow(rok.liczba)} w {dzis.year} r.")
+
+        dane = []
+        for ile in range(11, -1, -1):
+            r, mies = poprzedni_miesiac(dzis.year, dzis.month, ile)
+            p = podsumuj(baza.dokumenty(rok=r, miesiac=mies))
+            dane.append((MIESIACE_KROTKO[mies - 1], f"{MIESIACE[mies - 1].capitalize()} {r}", p.suma, p.liczba))
+        self.wykres.ustaw(dane)
+        self.suma_12.setText(f"razem {druk.zl(sum(d[2] for d in dane))} zł")
+
+        self._docs = baza.dokumenty()[:7]
+        self.ostatnie.setRowCount(len(self._docs))
+        for r, d in enumerate(self._docs):
+            opis = QTableWidgetItem(f"{d.nabywca}\n{d.numer}  ·  {druk.data_pl(d.data_wystawienia)}")
+            self.ostatnie.setItem(r, 0, opis)
+            self.ostatnie.setItem(r, 1, QTableWidgetItem("Anulowany" if d.anulowano else d.tytul))
+            kwota = QTableWidgetItem(f"{druk.zl(d.suma)} zł")
+            kwota.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
+            kwota.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if d.anulowano:
+                kwota.setForeground(QColor(TEKST_3))
+            self.ostatnie.setItem(r, 2, kwota)
+        self.ostatnie.setVisible(bool(self._docs))
+        self.pusto.setVisible(not self._docs)
+
+
 class StronaNowy(Strona):
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno)
@@ -430,13 +645,38 @@ class StronaNowy(Strona):
         u.addLayout(gora)
         u.addSpacing(10)
 
+        # formularz po lewej, podgląd kartki po prawej
+        kolumny = QHBoxLayout()
+        kolumny.setSpacing(22)
+        self.uklad.addLayout(kolumny, 1)
+        u = QVBoxLayout()
+        u.setSpacing(8)
+        kolumny.addLayout(u, 3)
+        self.ramka_podgladu = QWidget()
+        rp = QVBoxLayout(self.ramka_podgladu)
+        rp.setContentsMargins(0, 0, 0, 0)
+        rp.setSpacing(6)
+        naglowek_podgladu = QHBoxLayout()
+        naglowek_podgladu.addWidget(QLabel("Podgląd wydruku", objectName="sekcja"))
+        naglowek_podgladu.addStretch()
+        naglowek_podgladu.addWidget(QLabel("aktualizuje się na bieżąco", objectName="drobny"))
+        rp.addLayout(naglowek_podgladu)
+        self.kartka = PodgladKartki()
+        self.kartka.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.kartka.setToolTip("Kliknij, aby zobaczyć pełny podgląd")
+        self.kartka.mousePressEvent = lambda _e: self.podglad()
+        rp.addWidget(self.kartka, 1)
+        kolumny.addWidget(self.ramka_podgladu, 2)
+        self._zegar_podgladu = QTimer(self, singleShot=True, interval=150)
+        self._zegar_podgladu.timeout.connect(self.odswiez_podglad)
+
         # --- dokument i nabywca w jednej karcie
         k, ku = karta()
         siatka = QGridLayout()
         siatka.setHorizontalSpacing(14)
         siatka.setVerticalSpacing(12)
         self.numer = QLineEdit(objectName="numer")
-        self.numer.setFixedWidth(180)
+        self.numer.setFixedWidth(150)
         self.data_wyst = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
         self.data_uslugi = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
         self.platnosc = QComboBox()
@@ -472,8 +712,7 @@ class StronaNowy(Strona):
         nab.setColumnStretch(0, 3)
         nab.setColumnStretch(1, 2)
         ku.addLayout(nab)
-        self.ostatni = QHBoxLayout()
-        self.ostatni.setSpacing(6)
+        self.ostatni = UkladPlynny()
         ku.addLayout(self.ostatni)
         u.addWidget(k)
         u.addSpacing(8)
@@ -486,7 +725,7 @@ class StronaNowy(Strona):
         self.przyciski_uslug.setContentsMargins(16, 0, 16, 4)
         ku.addLayout(self.przyciski_uslug)
         self.tabela = QTableWidget(0, 4)
-        self.tabela.setHorizontalHeaderLabels(["NAZWA USŁUGI", "ILOŚĆ", "CENA (ZŁ)", "WARTOŚĆ (ZŁ)"])
+        self.tabela.setHorizontalHeaderLabels(["Nazwa usługi", "Ilość", "Cena (zł)", "Wartość (zł)"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for kol, szer in ((1, 80), (2, 120), (3, 130)):
@@ -530,6 +769,43 @@ class StronaNowy(Strona):
         QShortcut(QKeySequence("Ctrl+P"), self, self.drukuj)
         QShortcut(QKeySequence("F2"), self, self.wybierz_pacjenta)
 
+        for pole_tekstu in (self.numer, self.nabywca, self.nabywca_id, self.nabywca_adres):
+            pole_tekstu.textChanged.connect(self.zaplanuj_podglad)
+        for pole_daty in (self.data_wyst, self.data_uslugi):
+            pole_daty.dateChanged.connect(self.zaplanuj_podglad)
+        self.platnosc.currentIndexChanged.connect(self.zaplanuj_podglad)
+        self.tabela.itemChanged.connect(self.zaplanuj_podglad)
+        self.tabela.model().rowsRemoved.connect(self.zaplanuj_podglad)
+        self.kopia.toggled.connect(self.zaplanuj_podglad)
+
+    def zaplanuj_podglad(self, *_):
+        self._zegar_podgladu.start()
+
+    def dokument_roboczy(self) -> Dokument:
+        """Dokument z tego, co wpisano do tej pory (bez sprawdzania), do podglądu na żywo."""
+        return Dokument(
+            numer=self.numer.text().strip() or "…",
+            data_wystawienia=self.data_wyst.date().toPython().isoformat(),
+            data_uslugi=self.data_uslugi.date().toPython().isoformat(),
+            platnosc=self.platnosc.currentText(),
+            nabywca=self.nabywca.text().strip() or "Imię i nazwisko",
+            nabywca_adres=self.nabywca_adres.text().strip(),
+            nabywca_id=self.nabywca_id.text().strip(),
+            rodzaj=self.rodzaj,
+            pozycje=self.pozycje())
+
+    def odswiez_podglad(self):
+        if self.ramka_podgladu.isVisible() or not self.isVisible():
+            self.kartka.ustaw_html(druk.html_dokumentu(self.dokument_roboczy(), self.okno.baza.ustawienia()))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        widoczny = self.width() >= 1000
+        if widoczny != self.ramka_podgladu.isVisible():
+            self.ramka_podgladu.setVisible(widoczny)
+            if widoczny:
+                self.zaplanuj_podglad()
+
     def wybierz_pacjenta(self):
         okno = OknoPacjentow(self.okno.baza, self, self.nabywca.text().strip())
         if okno.exec() == QDialog.DialogCode.Accepted and okno.wybrany:
@@ -553,14 +829,13 @@ class StronaNowy(Strona):
             self.przyciski_uslug.addWidget(b)
 
         wyczysc_uklad(self.ostatni)
-        ostatni = self.okno.baza.ostatni_nabywcy()
+        ostatni = self.okno.baza.ostatni_nabywcy(6)
         if ostatni:
-            self.ostatni.addWidget(QLabel("Ostatnio:", objectName="drobny"))
+            self.ostatni.addWidget(QLabel("Ostatnio:", objectName="drobny", minimumHeight=26))
             for d in ostatni:
                 b = QPushButton(d.nabywca, objectName="pacjent", cursor=Qt.CursorShape.PointingHandCursor)
                 b.clicked.connect(lambda _=False, n=d.nabywca: (self.nabywca.setText(n), self.uzupelnij_nabywce(n)))
                 self.ostatni.addWidget(b)
-        self.ostatni.addStretch()
 
         podpowiedzi = QCompleter(sorted(self.okno.baza.nabywcy()))
         podpowiedzi.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -580,6 +855,7 @@ class StronaNowy(Strona):
     def zmien_rodzaj(self):
         tytul = self.naglowek.itemAt(0).widget()
         tytul.setText("Nowa faktura" if self.rodzaj == "Faktura" else "Nowy rachunek")
+        self.zaplanuj_podglad()
         self.etykieta_nabywcy.setText("Nabywca (pacjent lub firma)" if self.rodzaj == "Faktura" else "Pacjent")
         self.odswiez_numer()
 
@@ -759,7 +1035,7 @@ class OknoPacjentow(QDialog):
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
         self.tabela = QTableWidget(0, 4)
-        self.tabela.setHorizontalHeaderLabels(["PACJENT", "PESEL / NIP", "OSTATNIO", "DOKUMENTÓW"])
+        self.tabela.setHorizontalHeaderLabels(["Pacjent", "PESEL / NIP", "Ostatnio", "Dokumentów"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -861,13 +1137,15 @@ class StronaHistoria(Strona):
 
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
-        self.tabela = QTableWidget(0, 5)
-        self.tabela.setHorizontalHeaderLabels(["NUMER", "DATA", "PACJENT", "PŁATNOŚĆ", "KWOTA"])
+        self.tabela = QTableWidget(0, 6)
+        self.tabela.setHorizontalHeaderLabels(["Numer", "Data", "Pacjent", "Rodzaj", "Płatność", "Kwota"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        for kol, szer in ((0, 120), (1, 110), (3, 110), (4, 180)):
+        self.tabela.horizontalHeaderItem(5).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for kol, szer in ((0, 130), (1, 110), (3, 120), (4, 110), (5, 140)):
             self.tabela.setColumnWidth(kol, szer)
+        self.tabela.setItemDelegateForColumn(3, PigulkaDelegate(self.tabela))
         self.tabela.setWordWrap(False)
         self.tabela.verticalHeader().setVisible(False)
         self.tabela.verticalHeader().setDefaultSectionSize(36)
@@ -938,17 +1216,20 @@ class StronaHistoria(Strona):
         self.docs = self.okno.baza.dokumenty(self.szukaj.text(), self.rok.currentData() or None,
                                              self.miesiac.currentData() or None, self.rodzaj.currentData())
         self.tabela.setRowCount(len(self.docs))
-        szary = Qt.GlobalColor.gray
         for r, d in enumerate(self.docs):
-            kwota = f"{druk.zl(d.suma)} zł" + (" · anulowany" if d.anulowano else "")
-            for kol, tekst in enumerate([d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, d.platnosc, kwota]):
+            wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca,
+                      "Anulowany" if d.anulowano else d.tytul, d.platnosc, f"{druk.zl(d.suma)} zł"]
+            for kol, tekst in enumerate(wiersz):
                 item = QTableWidgetItem(tekst)
                 if kol == 0:
-                    item.setFont(QFont("Inter", -1, QFont.Weight.Medium))
-                if d.anulowano:
-                    item.setForeground(szary)
+                    item.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
+                if kol == 5:
+                    item.setFont(czcionka_cyfr(13, QFont.Weight.Medium))
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if d.anulowano and kol != 3:
+                    item.setForeground(QColor(TEKST_3))
                     f = item.font()
-                    f.setStrikeOut(kol != 4)
+                    f.setStrikeOut(True)
                     item.setFont(f)
                 self.tabela.setItem(r, kol, item)
         self.tabela.clearSelection()
@@ -988,7 +1269,7 @@ class StronaHistoria(Strona):
             s.tabela.setRowCount(0)
             for p in d.pozycje:
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
-            self.okno.przejdz(0, odswiez=False)
+            self.okno.przejdz(STRONA_NOWY, odswiez=False)
 
     def anuluj(self):
         d = self.wybrany()
@@ -1106,7 +1387,8 @@ class StronaUstawienia(Strona):
         logo.addWidget(self.podglad_logo)
         przyc = QVBoxLayout()
         przyc.setSpacing(2)
-        przyc.addWidget(przycisk("Wybierz z pliku…", "obraz", "plaski", self.wybierz_logo))
+        przyc.addWidget(przycisk("Wybierz z pliku…", "obraz", "plaski", self.wybierz_logo),
+                        alignment=Qt.AlignmentFlag.AlignLeft)
         rzad = QHBoxLayout()
         rzad.addWidget(przycisk("Logo gabinetu", styl="plaski", akcja=lambda: self.ustaw_logo("domyslne")))
         rzad.addWidget(przycisk("Bez logo", styl="plaski", akcja=lambda: self.ustaw_logo("")))
@@ -1250,7 +1532,7 @@ class StronaUstawienia(Strona):
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
-        self.okno.przejdz(0)
+        self.okno.przejdz(STRONA_PULPIT)
 
     def ustaw_logo(self, wartosc: str):
         self.logo = wartosc
@@ -1326,7 +1608,7 @@ class StronaUstawienia(Strona):
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
         tabela = QTableWidget(0, 2)
-        tabela.setHorizontalHeaderLabels(["CZAS", "ZDARZENIE"])
+        tabela.setHorizontalHeaderLabels(["Czas", "Zdarzenie"])
         tabela.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         tabela.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         tabela.verticalHeader().setVisible(False)
@@ -1370,7 +1652,7 @@ class StronaUstawienia(Strona):
             return
         self.okno.dziennik.zapisz(f"przywrócenie danych z kopii {Path(sciezka).name}")
         self.okno.komunikat("Przywrócono dane z kopii")
-        self.okno.przejdz(1)
+        self.okno.przejdz(STRONA_HISTORIA)
 
     @staticmethod
     def _kopia_wymaga_hasla(sciezka: str) -> bool:
@@ -1544,7 +1826,8 @@ class StronaPliki(Strona):
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
         self.tabela = QTableWidget(0, 5)
-        self.tabela.setHorizontalHeaderLabels(["DATA", "PLIK", "RODZAJ", "PACJENT / KONTRAHENT", "ROZMIAR"])
+        self.tabela.setHorizontalHeaderLabels(["Data", "Plik", "Rodzaj", "Pacjent / kontrahent", "Rozmiar"])
+        self.tabela.horizontalHeaderItem(4).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1600,6 +1883,9 @@ class StronaPliki(Strona):
                 item = QTableWidgetItem(tekst)
                 if kol == 1:
                     item.setIcon(ikona("pdf" if p.typ == "pdf" else "obraz"))
+                if kol == 4:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    item.setForeground(QColor(TEKST_2))
                 self.tabela.setItem(r, kol, item)
         self.tabela.clearSelection()
         self._stan_akcji()
@@ -1732,48 +2018,55 @@ class OknoGlowne(QMainWindow):
         self.uruchom_po_zamknieciu: Path | None = None
         self._watki: list[Watek] = []
         self.setWindowTitle("Fakturnik")
-        self.resize(1180, 800)
-        self.setMinimumSize(980, 680)
+        self.resize(1320, 860)
+        self.setMinimumSize(1040, 700)
 
         tlo = QWidget()
         uklad = QHBoxLayout(tlo)
         uklad.setContentsMargins(0, 0, 0, 0)
         uklad.setSpacing(0)
 
-        # --- menu boczne
+        # --- menu boczne (ciemne, w kolorze marki)
         menu = QFrame(objectName="menu")
-        menu.setFixedWidth(220)
+        menu.setFixedWidth(232)
         m = QVBoxLayout(menu)
-        m.setContentsMargins(0, 20, 0, 14)
+        m.setContentsMargins(0, 22, 0, 16)
         m.setSpacing(2)
         marka = QHBoxLayout()
-        marka.setContentsMargins(20, 0, 16, 18)
-        marka.setSpacing(10)
+        marka.setContentsMargins(22, 0, 16, 22)
+        marka.setSpacing(11)
         znak = QLabel()
         znak.setPixmap(QPixmap(str(ZASOBY / "ikona.png")).scaled(
-            30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         marka.addWidget(znak)
         opis = QVBoxLayout()
-        opis.setSpacing(0)
+        opis.setSpacing(1)
         opis.addWidget(QLabel("Fakturnik", objectName="nazwa_programu"))
-        opis.addWidget(QLabel(f"wersja {WERSJA}", objectName="wersja"))
+        nazwa = self.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        self.etykieta_gabinetu = QLabel(nazwa, objectName="gabinet")
+        opis.addWidget(self.etykieta_gabinetu)
         marka.addLayout(opis)
         marka.addStretch()
         m.addLayout(marka)
 
         self.grupa = QButtonGroup(self)
-        for i, (nazwa, ik) in enumerate([("Nowy dokument", "nowy"), ("Historia", "historia"),
+        for i, (nazwa, ik) in enumerate([("Pulpit", "pulpit"), ("Nowy dokument", "nowy"), ("Historia", "historia"),
                                          ("Pliki", "archiwum"), ("Ustawienia", "ustawienia")]):
-            b = QPushButton(f"  {nazwa}", checkable=True, cursor=Qt.CursorShape.PointingHandCursor)
-            b.setIcon(ikona(ik, "#5b5b60", aktywny=AKCENT))
+            b = QPushButton(f"   {nazwa}", checkable=True, cursor=Qt.CursorShape.PointingHandCursor)
+            b.setIcon(ikona(ik, MENU_TEKST, aktywny="#ffffff"))
             b.clicked.connect(lambda _=False, i=i: self.przejdz(i))
             self.grupa.addButton(b, i)
             m.addWidget(b)
         m.addStretch()
-        self.btn_blokuj = QPushButton("  Zablokuj", cursor=Qt.CursorShape.PointingHandCursor)
-        self.btn_blokuj.setIcon(ikona("klodka", "#5b5b60"))
+        m.addWidget(QFrame(objectName="menu_linia"))
+        m.addSpacing(8)
+        self.btn_blokuj = QPushButton("   Zablokuj", cursor=Qt.CursorShape.PointingHandCursor)
+        self.btn_blokuj.setIcon(ikona("klodka", MENU_TEKST))
         self.btn_blokuj.clicked.connect(self.zablokuj)
         m.addWidget(self.btn_blokuj)
+        wersja = QLabel(f"Wersja {WERSJA}")
+        wersja.setStyleSheet("color: #6f8f95; font-size: 11px; padding: 6px 24px 0;")
+        m.addWidget(wersja)
         uklad.addWidget(menu)
 
         # --- treść z paskiem aktualizacji
@@ -1794,19 +2087,21 @@ class OknoGlowne(QMainWindow):
         prawa.addWidget(self.pasek_aktualizacji)
 
         self.strony = QStackedWidget()
+        self.strona_pulpit = StronaPulpit(self)
         self.strona_nowy = StronaNowy(self)
         self.strona_historia = StronaHistoria(self)
         self.strona_pliki = StronaPliki(self)
         self.strona_ustawienia = StronaUstawienia(self)
-        for s in (self.strona_nowy, self.strona_historia, self.strona_pliki, self.strona_ustawienia):
+        for s in (self.strona_pulpit, self.strona_nowy, self.strona_historia, self.strona_pliki,
+                  self.strona_ustawienia):
             self.strony.addWidget(s)
         prawa.addWidget(self.strony, 1)
         uklad.addLayout(prawa, 1)
         self.setCentralWidget(tlo)
-        self.statusBar().setSizeGripEnabled(False)
+        self.powiadomienie = Powiadomienie(tlo)
 
         self.strona_nowy.wyczysc()
-        self.przejdz(0)
+        self.przejdz(STRONA_PULPIT)
 
         # automatyczna blokada po bezczynności (tylko gdy jest hasło)
         self.timer = QTimer(self, interval=BLOKADA_PO_MINUTACH * 60 * 1000, singleShot=True)
@@ -1827,9 +2122,10 @@ class OknoGlowne(QMainWindow):
         if odswiez:
             self.strony.currentWidget().odswiez()
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
+        self.etykieta_gabinetu.setText(self.baza.ustawienia()["nazwa"].split(",")[0].strip())
 
-    def komunikat(self, tekst: str):
-        self.statusBar().showMessage(tekst, 6000)
+    def komunikat(self, tekst: str, blad: bool = False):
+        self.powiadomienie.pokaz(tekst, blad)
 
     def podglad(self, dok: Dokument, z_kopia=False, duplikat=False):
         u = self.baza.ustawienia()
@@ -1946,7 +2242,7 @@ class OknoGlowne(QMainWindow):
             self, "Witaj w Fakturniku",
             "Uzupełnij dane gabinetu (przede wszystkim NIP) i ceny usług.\n\n"
             "Ustaw też hasło w sekcji Bezpieczeństwo: dane pacjentów będą wtedy zaszyfrowane.")
-        self.przejdz(3)
+        self.przejdz(STRONA_USTAWIENIA)
 
 
 def uruchom() -> int:
