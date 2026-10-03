@@ -8,7 +8,9 @@ from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 
-from .baza import Dokument
+from datetime import date
+
+from .baza import Dokument, podsumuj
 from .slownie import kwota_slownie
 
 
@@ -66,8 +68,13 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
         platnosc += " (zapłacono)"
 
     podzial = "page-break-before: always;" if nowa_strona else ""
+    anulowany = ""
+    if dok.anulowano:
+        powod = f": {escape(dok.powod_anulowania)}" if dok.powod_anulowania else ""
+        anulowany = (f'<p style="font-size:13pt; font-weight:bold; color:#b00020; border:2px solid #b00020; '
+                     f'padding:4px;">DOKUMENT ANULOWANY {data_pl(dok.anulowano)}{powod}</p>')
     return f"""
-<div style="{podzial}">
+<div style="{podzial}">{anulowany}
 <table width="100%" cellspacing="0" cellpadding="0"><tr>
   <td><span style="font-size:20pt; font-weight:bold;">{escape(u['tytul'])} nr {escape(dok.numer)}</span><br>
       <span style="font-size:9pt; letter-spacing:1px;">{etykieta.upper()}</span></td>
@@ -105,13 +112,54 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
 </div>"""
 
 
-def html_dokumentu(dok: Dokument, u: dict[str, str], z_kopia: bool = False) -> str:
+def html_dokumentu(dok: Dokument, u: dict[str, str], z_kopia: bool = False, duplikat: bool = False) -> str:
+    """Dokument do druku. `duplikat` = ponowny wydruk wystawionego wcześniej dokumentu."""
     obraz = logo_bajty(u)
     logo = base64.b64encode(obraz).decode("ascii") if obraz else ""
-    strony = [_strona(dok, u, "oryginał", False, logo)]
+    pierwsza = f"duplikat z dnia {data_pl(date.today().isoformat())}" if duplikat else "oryginał"
+    strony = [_strona(dok, u, pierwsza, False, logo)]
     if z_kopia:
         strony.append(_strona(dok, u, "kopia", True, logo))
     return f"<html><body style='font-family: Inter, Arial; font-size:10pt;'>{''.join(strony)}</body></html>"
+
+
+def html_zestawienia(dokumenty: list[Dokument], u: dict[str, str], okres: str, filtr: str = "") -> str:
+    """Zestawienie dokumentów (np. za miesiąc) do druku lub PDF, np. dla księgowej."""
+    pods = podsumuj(dokumenty)
+    wiersze = []
+    for i, d in enumerate(sorted(dokumenty, key=lambda d: (d.data_wystawienia, d.id or 0)), 1):
+        styl = ' style="color:#888888;"' if d.anulowano else ""
+        kwota = "anulowany" if d.anulowano else zl(d.suma)
+        wiersze.append(
+            f"<tr{styl}><td align='right'>{i}</td><td>{escape(d.numer)}</td><td>{data_pl(d.data_wystawienia)}</td>"
+            f"<td>{escape(d.nabywca)}</td><td>{escape(d.platnosc)}</td><td align='right'>{kwota}</td></tr>")
+    platnosci = "".join(f"<tr><td>{escape(k)}</td><td align='right'>{zl(v)} zł</td></tr>"
+                        for k, v in sorted(pods.wg_platnosci.items()))
+    anul = f"<br>Anulowane (nie wliczone): {pods.anulowanych}" if pods.anulowanych else ""
+    return f"""<html><body style='font-family: Inter, Arial; font-size:9.5pt;'>
+<table width="100%" cellspacing="0" cellpadding="0"><tr>
+  <td width="55%"><span style="font-size:16pt; font-weight:bold;">Zestawienie dokumentów</span><br>
+      <span style="font-size:11pt;">{escape(okres)}</span>
+      {f'<br><span style="font-size:9pt;">Filtr: {escape(filtr)}</span>' if filtr else ''}</td>
+  <td align="right" valign="top" style="font-size:9pt;"><b>{escape(u['nazwa'])}</b><br>
+      {('NIP: ' + escape(u['nip']) + '<br>') if u['nip'] else ''}
+      Wygenerowano {data_pl(date.today().isoformat())}</td>
+</tr></table>
+<br>
+<table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black;">
+  <tr style="background:#e8e8e8;"><th>Lp.</th><th>Numer</th><th>Data</th><th width="40%">Nabywca</th>
+      <th>Płatność</th><th>Kwota (zł)</th></tr>
+  {''.join(wiersze) or '<tr><td colspan="6" align="center">Brak dokumentów</td></tr>'}
+  <tr><td colspan="5" align="right"><b>Razem ({pods.liczba} dok.)</b></td>
+      <td align="right"><b>{zl(pods.suma)}</b></td></tr>
+</table>
+<br>
+<table cellspacing="0" cellpadding="3" style="font-size:10pt;">
+  <tr><td colspan="2"><b>Według sposobu płatności</b></td></tr>
+  {platnosci or '<tr><td>brak</td><td></td></tr>'}
+</table>
+<p style="font-size:10pt;">Suma: <b>{zl(pods.suma)} zł</b>{anul}</p>
+</body></html>"""
 
 
 def dokument_tekstowy(html: str) -> QTextDocument:

@@ -19,7 +19,15 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   w każdym miesiącu; numer można poprawić ręcznie.
 - **Ostatni pacjenci** jako przyciski oraz podpowiedzi przy wpisywaniu nazwiska.
 - **Szybkie usługi**: przyciski z nazwą i ceną.
-- **Historia**: wyszukiwanie, ponowny wydruk, „użyj jako wzór”, eksport do CSV (Excel).
+- **Wybór pacjenta** z listy wszystkich pacjentów (przycisk „Wybierz…” lub F2), alfabetycznie
+  po nazwisku, z wyszukiwaniem po nazwisku, imieniu lub PESEL; dane pacjenta wpisują się same.
+- **Historia** z wyszukiwaniem po nazwisku, imieniu, numerze lub PESEL (bez względu na polskie
+  znaki) i filtrami **rok** i **miesiąc**; podsumowanie wyników z podziałem na gotówkę, kartę i przelew.
+- **Zestawienie wyników** (np. za miesiąc, dla księgowej): drukowanie, zapis do PDF i do Excela (CSV).
+- **Duplikat**: ponowny wydruk jest oznaczony „duplikat z dnia …”.
+- **Anulowanie dokumentu** z powodem: dokument zostaje w historii (przekreślony, z adnotacją
+  na wydruku), nie liczy się do sum, a jego numer nie jest używany ponownie.
+- „Użyj jako wzór”: nowy dokument na podstawie starego.
 - **Hasło i szyfrowanie**: klucz 256-bitowy z hasła (PBKDF2-HMAC-SHA256, 600 000 iteracji),
   dane szyfrowane AES-256-GCM. Automatyczna blokada po 10 minutach bezczynności,
   rosnące opóźnienie po błędnych hasłach. Zapomnianego hasła nie da się odzyskać.

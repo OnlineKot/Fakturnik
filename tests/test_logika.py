@@ -110,3 +110,58 @@ def test_kopie_automatyczne(tmp_path):
     b.zamknij()
     cel = kopia_automatyczna(plik, tmp_path / "kopie")
     assert cel.read_bytes() == plik.read_bytes()
+
+
+def dok_dla(numer, dzien, nabywca, kwota, platnosc="gotówka", pesel=""):
+    return Dokument(numer=numer, data_wystawienia=dzien, data_uslugi=dzien, platnosc=platnosc,
+                    nabywca=nabywca, nabywca_id=pesel, pozycje=[Pozycja("Leczenie", 1, kwota)])
+
+
+def baza_z_danymi(tmp_path):
+    b = Baza(tmp_path / "dane.db")
+    b.zapisz_dokument(dok_dla("1/09/2026", "2026-09-15", "Anna Nowak", 900, "karta"))
+    b.zapisz_dokument(dok_dla("1/10/2026", "2026-10-01", "Piotr Wiśniewski", 1500, pesel="80010112345"))
+    b.zapisz_dokument(dok_dla("2/10/2026", "2026-10-02", "Jan Kowalski", 1200))
+    b.zapisz_dokument(dok_dla("1/10/2025", "2025-10-20", "Jan Kowalski", 200, "przelew"))
+    return b
+
+
+def test_szukanie_po_roku_miesiacu_i_nazwisku(tmp_path):
+    b = baza_z_danymi(tmp_path)
+    assert [d.numer for d in b.dokumenty(rok=2026, miesiac=10)] == ["2/10/2026", "1/10/2026"]
+    assert len(b.dokumenty(rok=2026)) == 3
+    assert [d.numer for d in b.dokumenty(miesiac=10)] == ["2/10/2026", "1/10/2026", "1/10/2025"]
+    assert [d.numer for d in b.dokumenty("kowalski")] == ["2/10/2026", "1/10/2025"]
+    assert [d.numer for d in b.dokumenty("wisniewski")] == ["1/10/2026"]  # bez polskich znaków
+    assert [d.numer for d in b.dokumenty("80010112345")] == ["1/10/2026"]  # po PESEL
+    assert [d.numer for d in b.dokumenty("kowalski", rok=2025)] == ["1/10/2025"]
+    assert b.lata() == [2026, 2025]
+
+
+def test_anulowanie_nie_psuje_numeracji_i_sum(tmp_path):
+    from fakturnik.baza import podsumuj
+    b = baza_z_danymi(tmp_path)
+    d = b.dokumenty("Kowalski", rok=2026)[0]
+    b.anuluj(d.id, "pomyłka w kwocie")
+    pazdziernik = b.dokumenty(rok=2026, miesiac=10)
+    assert len(pazdziernik) == 2  # anulowany zostaje w historii
+    p = podsumuj(pazdziernik)
+    assert (p.liczba, p.suma, p.anulowanych) == (1, 1500, 1)
+    assert b.nastepny_numer(date(2026, 10, 5)) == "3/10/2026"  # numer anulowanego nie wraca
+    assert b.dokument(d.id).powod_anulowania == "pomyłka w kwocie"
+
+
+def test_lista_pacjentow_po_nazwisku(tmp_path):
+    b = baza_z_danymi(tmp_path)
+    pacjenci = b.pacjenci()
+    assert [p.nazwa for p in pacjenci] == ["Jan Kowalski", "Anna Nowak", "Piotr Wiśniewski"]
+    kowalski = pacjenci[0]
+    assert (kowalski.dokumentow, kowalski.suma, kowalski.ostatnia_wizyta) == (2, 1400, "2026-10-02")
+    assert [p.nazwa for p in b.pacjenci("now")] == ["Anna Nowak"]
+
+
+def test_zestawienie_do_druku(tmp_path):
+    from fakturnik import druk
+    b = baza_z_danymi(tmp_path)
+    html = druk.html_zestawienia(b.dokumenty(rok=2026, miesiac=10), b.ustawienia(), "Październik 2026")
+    assert "Październik 2026" in html and "Jan Kowalski" in html and "2 700,00" in html

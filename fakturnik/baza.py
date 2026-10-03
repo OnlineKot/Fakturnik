@@ -56,11 +56,54 @@ class Dokument:
     nabywca_adres: str = ""
     nabywca_id: str = ""         # PESEL lub NIP
     pozycje: list[Pozycja] = field(default_factory=list)
+    anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
+    powod_anulowania: str = ""
     id: int | None = None
 
     @property
     def suma(self) -> float:
         return round(sum(p.wartosc for p in self.pozycje), 2)
+
+    @property
+    def wazny(self) -> bool:
+        return not self.anulowano
+
+
+@dataclass
+class Pacjent:
+    nazwa: str
+    adres: str
+    identyfikator: str           # PESEL lub NIP
+    ostatnia_wizyta: str
+    dokumentow: int
+    suma: float
+
+    @property
+    def nazwisko(self) -> str:
+        """Do sortowania: przy zapisie "Jan Kowalski" nazwisko to ostatni wyraz."""
+        czesci = self.nazwa.split()
+        return czesci[-1] if czesci else ""
+
+
+@dataclass
+class Podsumowanie:
+    liczba: int
+    suma: float
+    wg_platnosci: dict[str, float]
+    anulowanych: int
+
+
+def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
+    wazne = [d for d in dokumenty if d.wazny]
+    wg: dict[str, float] = {}
+    for d in wazne:
+        wg[d.platnosc] = round(wg.get(d.platnosc, 0) + d.suma, 2)
+    return Podsumowanie(len(wazne), round(sum(d.suma for d in wazne), 2), wg, len(dokumenty) - len(wazne))
+
+
+def _bez_ogonkow(tekst: str) -> str:
+    """Wyszukiwanie nie zależy od polskich znaków ani wielkości liter ("wisniewski" znajdzie "Wiśniewski")."""
+    return tekst.lower().translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
 
 
 def formatuj_numer(wzor: str, n: int, d: date) -> str:
@@ -245,16 +288,51 @@ class Baza:
         dok.id = kursor.lastrowid
         return dok
 
-    def dokumenty(self, szukaj: str = "") -> list[Dokument]:
+    def dokumenty(self, szukaj: str = "", rok: int | None = None, miesiac: int | None = None) -> list[Dokument]:
+        """Dokumenty od najnowszego; `szukaj` dopasowuje nazwisko/imię, numer lub PESEL/NIP."""
+        wzor = _bez_ogonkow(szukaj.strip())
+        prefiks = f"{rok:04d}-" if rok else ""
+        if rok and miesiac:
+            prefiks += f"{miesiac:02d}-"
         wynik = []
-        for id_, dane in self.db.execute("SELECT id, dane FROM dokumenty ORDER BY id DESC"):
+        for id_, dane in self.db.execute(
+                "SELECT id, dane FROM dokumenty WHERE data_wystawienia LIKE ? ORDER BY data_wystawienia DESC, id DESC",
+                (prefiks + "%",)):
             d = json.loads(dane)
             d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
             dok = Dokument(id=id_, **d)
-            if szukaj and szukaj.lower() not in f"{dok.numer} {dok.nabywca}".lower():
+            if miesiac and not rok and int(dok.data_wystawienia[5:7]) != miesiac:
+                continue
+            if wzor and not all(slowo in _bez_ogonkow(f"{dok.numer} {dok.nabywca} {dok.nabywca_id}")
+                                for slowo in wzor.split()):
                 continue
             wynik.append(dok)
         return wynik
+
+    def dokument(self, id_: int) -> Dokument | None:
+        wiersz = self.db.execute("SELECT dane FROM dokumenty WHERE id = ?", (id_,)).fetchone()
+        if not wiersz:
+            return None
+        d = json.loads(wiersz[0])
+        d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
+        return Dokument(id=id_, **d)
+
+    def anuluj(self, id_: int, powod: str = "") -> Dokument:
+        """Oznacza dokument jako anulowany. Nie usuwa go, żeby numeracja nie miała dziur."""
+        dok = self.dokument(id_)
+        if dok is None:
+            raise KeyError(id_)
+        dok.anulowano = date.today().isoformat()
+        dok.powod_anulowania = powod.strip()
+        dane = asdict(dok)
+        dane.pop("id")
+        self.db.execute("UPDATE dokumenty SET dane = ? WHERE id = ?", (json.dumps(dane, ensure_ascii=False), id_))
+        self._utrwal()
+        return dok
+
+    def lata(self) -> list[int]:
+        return [int(r[0]) for r in self.db.execute(
+            "SELECT DISTINCT substr(data_wystawienia, 1, 4) FROM dokumenty ORDER BY 1 DESC")]
 
     def nabywcy(self) -> dict[str, Dokument]:
         """Ostatni dokument każdego nabywcy (do podpowiedzi przy wpisywaniu)."""
@@ -262,6 +340,19 @@ class Baza:
         for dok in self.dokumenty():
             wynik.setdefault(dok.nabywca, dok)
         return wynik
+
+    def pacjenci(self, szukaj: str = "") -> list[Pacjent]:
+        """Lista pacjentów z dotychczasowych dokumentów, alfabetycznie po nazwisku."""
+        zebrani: dict[str, Pacjent] = {}
+        for dok in self.dokumenty(szukaj):
+            p = zebrani.get(dok.nabywca)
+            if p is None:
+                p = zebrani[dok.nabywca] = Pacjent(dok.nabywca, dok.nabywca_adres, dok.nabywca_id,
+                                                   dok.data_wystawienia, 0, 0.0)
+            p.dokumentow += 1
+            if dok.wazny:
+                p.suma = round(p.suma + dok.suma, 2)
+        return sorted(zebrani.values(), key=lambda p: (_bez_ogonkow(p.nazwisko), _bez_ogonkow(p.nazwa)))
 
     def ostatni_nabywcy(self, ile: int = 8) -> list[Dokument]:
         return list(self.nabywcy().values())[:ile]
@@ -275,12 +366,13 @@ class Baza:
         with open(cel, "w", newline="", encoding="utf-8-sig") as f:  # BOM: Excel poprawnie czyta polskie znaki
             w = csv.writer(f, delimiter=";")
             w.writerow(["Numer", "Data wystawienia", "Data usługi", "Nabywca", "PESEL/NIP", "Adres",
-                        "Usługi", "Płatność", "Kwota"])
+                        "Usługi", "Płatność", "Kwota", "Status"])
             for d in reversed(dokumenty):
                 w.writerow([d.numer, d.data_wystawienia, d.data_uslugi, d.nabywca, d.nabywca_id,
                             d.nabywca_adres.replace("\n", ", "),
                             " | ".join(f"{p.nazwa} x{p.ilosc:g}" for p in d.pozycje),
-                            d.platnosc, f"{d.suma:.2f}".replace(".", ",")])
+                            d.platnosc, f"{d.suma:.2f}".replace(".", ","),
+                            f"anulowany {d.anulowano}" if d.anulowano else "ważny"])
         return len(dokumenty)
 
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:

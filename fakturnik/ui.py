@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import aktualizacje, druk
-from .baza import Baza, Dokument, NowszaBaza, PlikZajety, Pozycja
+from .baza import Baza, Dokument, NowszaBaza, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
 from .szyfrowanie import BledneHaslo
@@ -435,7 +435,16 @@ class StronaNowy(Strona):
         nab = QGridLayout()
         nab.setHorizontalSpacing(14)
         nab.setVerticalSpacing(12)
-        nab.addLayout(pole("Pacjent", self.nabywca), 0, 0)
+        wiersz_pacjenta = QHBoxLayout()
+        wiersz_pacjenta.setSpacing(6)
+        wiersz_pacjenta.addWidget(self.nabywca, 1)
+        wybierz = przycisk("Wybierz…", "uzytkownicy", akcja=self.wybierz_pacjenta)
+        wybierz.setToolTip("Lista wszystkich pacjentów (F2)")
+        wiersz_pacjenta.addWidget(wybierz)
+        kontener = QWidget()
+        kontener.setLayout(wiersz_pacjenta)
+        wiersz_pacjenta.setContentsMargins(0, 0, 0, 0)
+        nab.addLayout(pole("Pacjent", kontener), 0, 0)
         nab.addLayout(pole("PESEL lub NIP", self.nabywca_id), 0, 1)
         nab.addLayout(pole("Adres", self.nabywca_adres), 1, 0, 1, 2)
         nab.setColumnStretch(0, 3)
@@ -497,6 +506,15 @@ class StronaNowy(Strona):
 
         QShortcut(QKeySequence("F5"), self, self.drukuj)
         QShortcut(QKeySequence("Ctrl+P"), self, self.drukuj)
+        QShortcut(QKeySequence("F2"), self, self.wybierz_pacjenta)
+
+    def wybierz_pacjenta(self):
+        okno = OknoPacjentow(self.okno.baza, self, self.nabywca.text().strip())
+        if okno.exec() == QDialog.DialogCode.Accepted and okno.wybrany:
+            p = okno.wybrany
+            self.nabywca.setText(p.nazwa)
+            self.nabywca_adres.setText(p.adres.replace("\n", ", "))
+            self.nabywca_id.setText(p.identyfikator)
 
     # ---- dane z formularza
     def odswiez(self):
@@ -668,39 +686,145 @@ class StronaNowy(Strona):
             self.okno.podglad(dok, self.kopia.isChecked())
 
 
+MIESIACE = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec", "lipiec", "sierpień", "wrzesień",
+            "październik", "listopad", "grudzień"]
+
+
+def liczba_dokumentow(n: int) -> str:
+    if n == 1:
+        return "1 dokument"
+    return f"{n} dokumenty" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else f"{n} dokumentów"
+
+
+class OknoPacjentow(QDialog):
+    """Wybór pacjenta z listy wszystkich dotychczasowych nabywców, z wyszukiwaniem."""
+
+    def __init__(self, baza: Baza, parent=None, szukaj: str = ""):
+        super().__init__(parent)
+        self.baza = baza
+        self.wybrany = None
+        self.setWindowTitle("Wybierz pacjenta")
+        self.resize(720, 520)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(22, 20, 22, 18)
+        u.setSpacing(10)
+        t = QLabel("Pacjenci")
+        t.setStyleSheet("font-size: 16px; font-weight: 600;")
+        u.addWidget(t)
+        self.szukaj = QLineEdit(szukaj, placeholderText="Szukaj po nazwisku, imieniu lub PESEL")
+        self.szukaj.addAction(ikona("szukaj"), QLineEdit.ActionPosition.LeadingPosition)
+        self.szukaj.setClearButtonEnabled(True)
+        self.szukaj.textChanged.connect(self.odswiez)
+        self.szukaj.returnPressed.connect(self.wybierz)
+        u.addWidget(self.szukaj)
+        k, ku = karta()
+        ku.setContentsMargins(0, 4, 0, 4)
+        self.tabela = QTableWidget(0, 4)
+        self.tabela.setHorizontalHeaderLabels(["PACJENT", "PESEL / NIP", "OSTATNIO", "DOKUMENTÓW"])
+        h = self.tabela.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for kol, szer in ((1, 140), (2, 110), (3, 110)):
+            self.tabela.setColumnWidth(kol, szer)
+        self.tabela.verticalHeader().setVisible(False)
+        self.tabela.verticalHeader().setDefaultSectionSize(34)
+        self.tabela.setShowGrid(False)
+        self.tabela.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tabela.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tabela.doubleClicked.connect(self.wybierz)
+        ku.addWidget(self.tabela)
+        u.addWidget(k, 1)
+        rzad = QHBoxLayout()
+        self.licznik = QLabel(objectName="drobny")
+        rzad.addWidget(self.licznik)
+        rzad.addStretch()
+        rzad.addWidget(przycisk("Anuluj", akcja=self.reject))
+        rzad.addWidget(przycisk("Wybierz", styl="glowny", akcja=self.wybierz))
+        u.addLayout(rzad)
+        self.pacjenci = []
+        self.odswiez()
+        self.szukaj.setFocus()
+
+    def odswiez(self):
+        self.pacjenci = self.baza.pacjenci(self.szukaj.text())
+        self.tabela.setRowCount(len(self.pacjenci))
+        for r, p in enumerate(self.pacjenci):
+            for kol, tekst in enumerate([p.nazwa, p.identyfikator, druk.data_pl(p.ostatnia_wizyta), str(p.dokumentow)]):
+                self.tabela.setItem(r, kol, QTableWidgetItem(tekst))
+        if self.pacjenci:
+            self.tabela.selectRow(0)
+        self.licznik.setText(f"Pacjentów: {len(self.pacjenci)}")
+
+    def wybierz(self, *_):
+        r = self.tabela.currentRow()
+        if 0 <= r < len(self.pacjenci):
+            self.wybrany = self.pacjenci[r]
+            self.accept()
+
+
 class StronaHistoria(Strona):
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno)
         u = self.uklad
-        u.addLayout(naglowek_strony("Historia", "Wszystkie wystawione dokumenty."))
+        naglowek = QHBoxLayout()
+        naglowek.addLayout(naglowek_strony("Historia", "Szukaj po nazwisku, numerze lub PESEL i zawężaj do roku i miesiąca."))
+        naglowek.addStretch()
+        for b in (przycisk("Drukuj zestawienie", "drukarka", akcja=self.drukuj_zestawienie),
+                  przycisk("Zestawienie PDF", "pdf", akcja=self.zestawienie_pdf),
+                  przycisk("Excel", "arkusz", akcja=self.eksport)):
+            b.setToolTip("Dotyczy wyników widocznych poniżej")
+            naglowek.addWidget(b, alignment=Qt.AlignmentFlag.AlignBottom)
+        u.addLayout(naglowek)
         u.addSpacing(10)
 
-        pasek = QHBoxLayout()
-        self.szukaj = QLineEdit(placeholderText="Szukaj po numerze lub nazwisku")
+        # --- filtry
+        filtry = QHBoxLayout()
+        filtry.setSpacing(8)
+        self.szukaj = QLineEdit(placeholderText="Nazwisko, imię, numer lub PESEL")
         self.szukaj.addAction(ikona("szukaj"), QLineEdit.ActionPosition.LeadingPosition)
         self.szukaj.setClearButtonEnabled(True)
-        self.szukaj.textChanged.connect(self.odswiez)
-        pasek.addWidget(self.szukaj, 1)
-        pasek.addSpacing(8)
-        self.akcje = [przycisk("Drukuj ponownie", "drukarka", akcja=self.drukuj),
+        self.szukaj.textChanged.connect(self.filtruj)
+        filtry.addWidget(self.szukaj, 1)
+        self.rok = QComboBox()
+        self.rok.setMinimumWidth(110)
+        self.rok.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.rok)
+        self.miesiac = QComboBox()
+        self.miesiac.setMinimumWidth(140)
+        self.miesiac.addItem("Wszystkie miesiące", 0)
+        for i, nazwa in enumerate(MIESIACE, 1):
+            self.miesiac.addItem(nazwa.capitalize(), i)
+        self.miesiac.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.miesiac)
+        filtry.addWidget(przycisk("Ten miesiąc", "kalendarz", akcja=self.ten_miesiac))
+        filtry.addWidget(przycisk("Wyczyść", styl="plaski", akcja=self.wyczysc_filtry))
+        u.addLayout(filtry)
+        u.addSpacing(4)
+
+        # --- akcje
+        akcje = QHBoxLayout()
+        akcje.setSpacing(6)
+        self.akcje = [przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
                       przycisk("Podgląd", "podglad", akcja=self.podglad),
                       przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor)]
-        for b in self.akcje:
-            pasek.addWidget(b)
-        pasek.addWidget(przycisk("Eksport do Excela", "arkusz", akcja=self.eksport))
-        u.addLayout(pasek)
+        self.btn_anuluj = przycisk("Anuluj dokument", "anuluj", "niebezpieczny", self.anuluj)
+        for b in self.akcje + [self.btn_anuluj]:
+            akcje.addWidget(b)
+        akcje.addStretch()
+        u.addLayout(akcje)
         u.addSpacing(6)
 
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
-        self.tabela = QTableWidget(0, 4)
-        self.tabela.setHorizontalHeaderLabels(["NUMER", "DATA", "PACJENT", "KWOTA"])
+        self.tabela = QTableWidget(0, 5)
+        self.tabela.setHorizontalHeaderLabels(["NUMER", "DATA", "PACJENT", "PŁATNOŚĆ", "KWOTA"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.tabela.setColumnWidth(0, 130)
-        self.tabela.setColumnWidth(1, 120)
-        self.tabela.setColumnWidth(3, 130)
+        for kol, szer in ((0, 120), (1, 110), (3, 110), (4, 180)):
+            self.tabela.setColumnWidth(kol, szer)
+        self.tabela.setWordWrap(False)
         self.tabela.verticalHeader().setVisible(False)
         self.tabela.verticalHeader().setDefaultSectionSize(36)
         self.tabela.setShowGrid(False)
@@ -715,47 +839,99 @@ class StronaHistoria(Strona):
         u.addWidget(self.podsumowanie)
         self.docs: list[Dokument] = []
 
+    # ---- filtry
+    def _wypelnij_lata(self):
+        biezacy = self.rok.currentData()
+        lata = sorted(set(self.okno.baza.lata()) | {date.today().year}, reverse=True)
+        self.rok.blockSignals(True)
+        self.rok.clear()
+        self.rok.addItem("Wszystkie lata", 0)
+        for r in lata:
+            self.rok.addItem(str(r), r)
+        i = self.rok.findData(biezacy) if biezacy is not None else 0
+        self.rok.setCurrentIndex(max(i, 0))
+        self.rok.blockSignals(False)
+
+    def ten_miesiac(self):
+        dzis = date.today()
+        self.rok.blockSignals(True)
+        self.rok.setCurrentIndex(max(self.rok.findData(dzis.year), 0))
+        self.rok.blockSignals(False)
+        self.miesiac.setCurrentIndex(dzis.month)
+        self.filtruj()
+
+    def wyczysc_filtry(self):
+        self.szukaj.blockSignals(True)
+        self.szukaj.clear()
+        self.szukaj.blockSignals(False)
+        for pole in (self.rok, self.miesiac):
+            pole.blockSignals(True)
+            pole.setCurrentIndex(0)
+            pole.blockSignals(False)
+        self.filtruj()
+
+    def opis_okresu(self) -> str:
+        rok, mies = self.rok.currentData() or 0, self.miesiac.currentData() or 0
+        if rok and mies:
+            return f"{MIESIACE[mies - 1].capitalize()} {rok}"
+        if rok:
+            return f"Rok {rok}"
+        if mies:
+            return f"{MIESIACE[mies - 1].capitalize()} (wszystkie lata)"
+        return "Wszystkie dokumenty"
+
     def _stan_akcji(self):
+        d = self.wybrany()
         for b in self.akcje:
-            b.setEnabled(self.wybrany() is not None)
+            b.setEnabled(d is not None)
+        self.btn_anuluj.setEnabled(d is not None and d.wazny)
 
     def odswiez(self):
-        self.docs = self.okno.baza.dokumenty(self.szukaj.text())
+        self._wypelnij_lata()
+        self.filtruj()
+
+    def filtruj(self, *_):
+        self.docs = self.okno.baza.dokumenty(self.szukaj.text(), self.rok.currentData() or None,
+                                             self.miesiac.currentData() or None)
         self.tabela.setRowCount(len(self.docs))
+        szary = Qt.GlobalColor.gray
         for r, d in enumerate(self.docs):
-            for kol, tekst in enumerate([d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, f"{druk.zl(d.suma)} zł"]):
+            kwota = f"{druk.zl(d.suma)} zł" + (" · anulowany" if d.anulowano else "")
+            for kol, tekst in enumerate([d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, d.platnosc, kwota]):
                 item = QTableWidgetItem(tekst)
                 if kol == 0:
                     item.setFont(QFont("Inter", -1, QFont.Weight.Medium))
+                if d.anulowano:
+                    item.setForeground(szary)
+                    f = item.font()
+                    f.setStrikeOut(kol != 4)
+                    item.setFont(f)
                 self.tabela.setItem(r, kol, item)
         self.tabela.clearSelection()
         self._stan_akcji()
-        miesiac = date.today().isoformat()[:7]
-        w_miesiacu = [d for d in self.docs if d.data_wystawienia.startswith(miesiac)]
-        self.podsumowanie.setText(f"W tym miesiącu: {len(w_miesiacu)} • {druk.zl(sum(d.suma for d in w_miesiacu))} zł")
-
-    def eksport(self):
-        sciezka, _ = QFileDialog.getSaveFileName(
-            self, "Eksport do Excela", str(Path.home() / f"rachunki-{date.today().isoformat()}.csv"), "CSV (*.csv)")
-        if sciezka:
-            n = self.okno.baza.eksport_csv(sciezka, self.docs)
-            self.okno.dziennik.zapisz(f"eksport CSV ({n} dokumentów)")
-            self.okno.komunikat(f"Wyeksportowano dokumenty ({n}): {sciezka}")
+        p = podsumuj(self.docs)
+        czesci = [f"{self.opis_okresu()}: {liczba_dokumentow(p.liczba)}", f"{druk.zl(p.suma)} zł"]
+        czesci += [f"{k} {druk.zl(v)} zł" for k, v in sorted(p.wg_platnosci.items())]
+        if p.anulowanych:
+            czesci.append(f"anulowane: {p.anulowanych}")
+        self.podsumowanie.setText("   •   ".join(czesci))
 
     def wybrany(self) -> Dokument | None:
         wiersze = self.tabela.selectionModel().selectedRows() if self.tabela.selectionModel() else []
         r = wiersze[0].row() if wiersze else -1
         return self.docs[r] if 0 <= r < len(self.docs) else None
 
+    # ---- akcje na dokumencie
     def drukuj(self):
         if d := self.wybrany():
             u = self.okno.baza.ustawienia()
-            druk.drukuj(druk.html_dokumentu(d, u), druk.przygotuj_drukarke(u))
-            self.okno.komunikat(f"Wydrukowano ponownie nr {d.numer}")
+            druk.drukuj(druk.html_dokumentu(d, u, duplikat=True), druk.przygotuj_drukarke(u))
+            self.okno.dziennik.zapisz(f"wydruk duplikatu nr {d.numer}")
+            self.okno.komunikat(f"Wydrukowano duplikat nr {d.numer}")
 
     def podglad(self, *_):
         if d := self.wybrany():
-            self.okno.podglad(d)
+            self.okno.podglad(d, duplikat=True)
 
     def wzor(self):
         if d := self.wybrany():
@@ -768,6 +944,59 @@ class StronaHistoria(Strona):
             for p in d.pozycje:
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
             self.okno.przejdz(0, odswiez=False)
+
+    def anuluj(self):
+        d = self.wybrany()
+        if not d or not d.wazny:
+            return
+        powod, ok = QInputDialog.getText(
+            self, "Anuluj dokument",
+            f"Dokument nr {d.numer} ({d.nabywca}, {druk.zl(d.suma)} zł) zostanie oznaczony jako anulowany.\n"
+            "Zostaje w historii, a jego numer nie zostanie użyty ponownie.\n\nPowód (opcjonalnie):")
+        if not ok:
+            return
+        self.okno.baza.anuluj(d.id, powod)
+        self.okno.dziennik.zapisz(f"anulowanie dokumentu nr {d.numer}")
+        self.okno.komunikat(f"Anulowano dokument nr {d.numer}")
+        self.filtruj()
+
+    # ---- zestawienie wyników
+    def _html_zestawienia(self) -> str:
+        filtr = self.szukaj.text().strip()
+        return druk.html_zestawienia(self.docs, self.okno.baza.ustawienia(), self.opis_okresu(),
+                                     f"„{filtr}”" if filtr else "")
+
+    def drukuj_zestawienie(self):
+        if not self.docs:
+            QMessageBox.information(self, "Zestawienie", "Brak dokumentów do zestawienia.")
+            return
+        u = self.okno.baza.ustawienia()
+        drukarka = druk.przygotuj_drukarke(u)
+        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+            return
+        druk.drukuj(self._html_zestawienia(), drukarka)
+        self.okno.komunikat("Wydrukowano zestawienie")
+
+    def zestawienie_pdf(self):
+        if not self.docs:
+            QMessageBox.information(self, "Zestawienie", "Brak dokumentów do zestawienia.")
+            return
+        nazwa = "zestawienie-" + self.opis_okresu().lower().replace(" ", "-").replace("(", "").replace(")", "")
+        sciezka, _ = QFileDialog.getSaveFileName(self, "Zapisz zestawienie", str(Path.home() / f"{nazwa}.pdf"),
+                                                 "PDF (*.pdf)")
+        if sciezka:
+            druk.drukuj(self._html_zestawienia(), druk.przygotuj_drukarke(self.okno.baza.ustawienia(), sciezka))
+            self.okno.dziennik.zapisz(f"zestawienie PDF ({self.opis_okresu()})")
+            self.okno.komunikat(f"Zapisano zestawienie: {sciezka}")
+
+    def eksport(self):
+        nazwa = "rachunki-" + self.opis_okresu().lower().replace(" ", "-").replace("(", "").replace(")", "")
+        sciezka, _ = QFileDialog.getSaveFileName(self, "Eksport do Excela", str(Path.home() / f"{nazwa}.csv"),
+                                                 "CSV (*.csv)")
+        if sciezka:
+            n = self.okno.baza.eksport_csv(sciezka, self.docs)
+            self.okno.dziennik.zapisz(f"eksport CSV ({n} dokumentów)")
+            self.okno.komunikat(f"Wyeksportowano: {liczba_dokumentow(n)} → {sciezka}")
 
 
 class StronaUstawienia(Strona):
@@ -1226,11 +1455,11 @@ class OknoGlowne(QMainWindow):
     def komunikat(self, tekst: str):
         self.statusBar().showMessage(tekst, 6000)
 
-    def podglad(self, dok: Dokument, z_kopia=False):
+    def podglad(self, dok: Dokument, z_kopia=False, duplikat=False):
         u = self.baza.ustawienia()
         dialog = QPrintPreviewDialog(druk.przygotuj_drukarke(u), self)
         dialog.setWindowTitle(f"Podgląd: {dok.numer}")
-        dialog.paintRequested.connect(lambda p: druk.drukuj(druk.html_dokumentu(dok, u, z_kopia), p))
+        dialog.paintRequested.connect(lambda p: druk.drukuj(druk.html_dokumentu(dok, u, z_kopia, duplikat), p))
         dialog.resize(900, 1000)
         dialog.exec()
 
