@@ -12,7 +12,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QSize, QStandardPaths, Qt, QThread,
+    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QProcess, QRect, QSize, QStandardPaths, Qt,
+    QThread,
     QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
@@ -39,7 +40,7 @@ from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identy
 from .wersja import WERSJA
 from .widzety import DwuliniowyDelegate, OknoPowiadomienia, PigulkaDelegate, PodgladKartki, PodgladStron, Powiadomienie, WykresMiesiecy
 
-STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
+STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_INTERNET, STRONA_USTAWIENIA = range(6)
 MIN_DLUGOSC_HASLA = 8
 ZASOBY = Path(__file__).parent / "zasoby"
 
@@ -2074,6 +2075,81 @@ class StronaHistoria(Strona):
             self.okno.komunikat(f"Wyeksportowano: {liczba_dokumentow(n)} → {sciezka}")
 
 
+class StronaInternet(Strona):
+    """Karta „Internet”: uruchamia bezpieczną przeglądarkę jako osobny, odizolowany proces Fakturnika.
+    Proces przeglądarki nie ma dostępu do odszyfrowanych danych pacjentów, a blokada programu go kończy."""
+
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno)
+        self.procesy: list[QProcess] = []
+        u = self.uklad
+        u.addLayout(naglowek_strony("Internet", "Bezpieczna przeglądarka do KSeF, e-Urzędu, CEIDG i banku"))
+        u.addSpacing(8)
+        k, ku = karta()
+        rzad = QHBoxLayout()
+        self.adres = QLineEdit(placeholderText="Adres strony (np. twój bank) albo szukane słowa")
+        self.adres.returnPressed.connect(lambda: self.otworz(self.adres.text()))
+        rzad.addWidget(self.adres, 1)
+        rzad.addWidget(przycisk("Otwórz bezpiecznie", "globus", "glowny", lambda: self.otworz(self.adres.text())))
+        ku.addLayout(rzad)
+        siatka = QGridLayout()
+        siatka.setSpacing(10)
+        from .przegladarka import ZAKLADKI
+        for i, (nazwa, adres) in enumerate(ZAKLADKI):
+            b = przycisk(f"  {nazwa}", "globus", akcja=lambda _=False, a=adres: self.otworz(a))
+            b.setMinimumHeight(44)
+            siatka.addWidget(b, i // 3, i % 3)
+        ku.addLayout(siatka)
+        u.addWidget(k)
+        u.addSpacing(10)
+        k, ku = karta()
+        t = QLabel("Jak chroni przeglądarka Fakturnika")
+        t.setStyleSheet("font-weight: 650;")
+        ku.addWidget(t)
+        for linia in ("Działa w osobnym procesie: strony nie mają dostępu do danych pacjentów w programie.",
+                      "Odizolowana sesja: ciasteczka i historia są tylko w pamięci, nic nie trafia na dysk; "
+                      "blokada Fakturnika kończy sesję (wylogowuje z banku).",
+                      "Tylko HTTPS, błędne certyfikaty odrzucane; kamera, mikrofon i lokalizacja zablokowane.",
+                      "Pliki wykonywalne nie do pobrania; pobrane pliki są oznaczone jako z internetu, więc "
+                      "sprawdza je antywirus; PDF jednym kliknięciem trafia do zaszyfrowanych Plików.",
+                      "Okno ukryte przed zrzutami ekranu (gdy ta ochrona jest włączona)."):
+            r = QHBoxLayout()
+            znak = QLabel()
+            znak.setPixmap(pixmapa("ok", ZIELONY, 15))
+            r.addWidget(znak, alignment=Qt.AlignmentFlag.AlignTop)
+            r.addWidget(QLabel(linia, wordWrap=True, objectName="podtytul"), 1)
+            ku.addLayout(r)
+        u.addWidget(k)
+        u.addStretch()
+
+    def odswiez(self):
+        self.procesy = [p for p in self.procesy if p.state() != QProcess.ProcessState.NotRunning]
+
+    def otworz(self, adres: str):
+        from .przegladarka import polecenie_przegladarki
+        u = self.okno.baza.ustawienia()
+        argumenty = polecenie_przegladarki(adres.strip() or u["przegladarka_start"], u["przegladarka_tylko_zaufane"] == "1",
+                                           u["przegladarka_zaufane"], u["ochrona_ekranu"] == "1")
+        proces = QProcess(self)
+        if getattr(sys, "frozen", False):
+            proces.setProgram(sys.executable)
+            proces.setArguments(argumenty)
+        else:
+            proces.setProgram(sys.executable)
+            proces.setArguments([str(Path(__file__).resolve().parent.parent / "main.py"), *argumenty])
+        proces.start()
+        self.procesy.append(proces)
+        self.okno.dziennik.zapisz("bezpieczna przeglądarka: otwarto")
+
+    def zamknij_przegladarki(self):
+        """Koniec sesji przeglądarki (np. przy blokadzie): proces znika razem z logowaniami."""
+        for p in self.procesy:
+            if p.state() != QProcess.ProcessState.NotRunning:
+                p.kill()
+                p.waitForFinished(2000)
+        self.procesy.clear()
+
+
 class StronaUstawienia(Strona):
     POLA = [("nazwa", "Nazwa"), ("nip", "NIP"), ("regon", "REGON"), ("miejsce", "Miejsce wystawienia"),
             ("konto", "Nr konta do przelewów"),
@@ -2320,6 +2396,39 @@ class StronaUstawienia(Strona):
         rzad.addWidget(self.btn_instaluj_admin)
         rzad.addStretch()
         ku.addLayout(rzad)
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
+        # --- powiadomienia i przeglądarka
+        prawa.addWidget(sekcja("Powiadomienia i przeglądarka"))
+        k, ku = karta()
+        self.op_start = QCheckBox("Powiadomienie „Komputer zweryfikowany” przy każdym uruchomieniu")
+        self.op_dzwiek = QCheckBox("Dźwięk przy powiadomieniach")
+        self.op_blokada_pc = QCheckBox("Blokuj Fakturnik razem z komputerem (Win + L)")
+        for w in (self.op_start, self.op_dzwiek, self.op_blokada_pc):
+            ku.addWidget(w)
+        rzad = QHBoxLayout()
+        rzad.addWidget(QLabel("Pokazuj powiadomienia przez", objectName="etykieta"))
+        self.op_sekundy = QSpinBox(minimum=3, maximum=60, suffix=" s")
+        self.op_sekundy.setFixedWidth(100)
+        rzad.addWidget(self.op_sekundy)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        ku.addWidget(separator())
+        self.op_przegladarka = QCheckBox("Karta „Internet”: bezpieczna przeglądarka w osobnym, odizolowanym procesie")
+        self.op_zaufane = QCheckBox("Tylko zaufane strony (gov.pl, zakładki i strony z listy poniżej)")
+        self.op_czysc = QCheckBox("Blokada programu zamyka przeglądarkę i kończy jej sesję (wylogowuje ze stron)")
+        for w in (self.op_przegladarka, self.op_zaufane, self.op_czysc):
+            ku.addWidget(w)
+        f = self._formularz(ku)
+        self.op_lista = QLineEdit(placeholderText="np. mbank.pl, ing.pl, pkobp.pl")
+        f.addRow("Zaufane strony", self.op_lista)
+        self.op_strona_start = QComboBox()
+        self.op_strona_start.addItem("Pusta strona", "")
+        from .przegladarka import ZAKLADKI
+        for nazwa, adres in ZAKLADKI:
+            self.op_strona_start.addItem(nazwa, adres)
+        f.addRow("Strona startowa", self.op_strona_start)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -2608,6 +2717,15 @@ class StronaUstawienia(Strona):
         self.druk_qr.setChecked(u["druk_qr"] == "1")
         self.ochrona_ekranu.setChecked(u["ochrona_ekranu"] == "1")
         self.kopia_folder.setText(u["kopia_folder"])
+        self.op_start.setChecked(u["powiadomienie_startowe"] == "1")
+        self.op_dzwiek.setChecked(u["powiadomienia_dzwiek"] == "1")
+        self.op_blokada_pc.setChecked(u["blokuj_z_komputerem"] == "1")
+        self.op_sekundy.setValue(int(liczba(u["powiadomienia_sekund"]) or 6))
+        self.op_przegladarka.setChecked(u["przegladarka"] == "1")
+        self.op_zaufane.setChecked(u["przegladarka_tylko_zaufane"] == "1")
+        self.op_czysc.setChecked(u["przegladarka_czysc"] == "1")
+        self.op_lista.setText(u["przegladarka_zaufane"])
+        self.op_strona_start.setCurrentIndex(max(self.op_strona_start.findData(u["przegladarka_start"]), 0))
         self._pokaz_stan_kopii()
         self._pokaz_stan_komputera()
         self._pokaz_miniatury_tapet()
@@ -2676,6 +2794,17 @@ class StronaUstawienia(Strona):
         wartosci["druk_qr"] = "1" if self.druk_qr.isChecked() else "0"
         wartosci["ochrona_ekranu"] = "1" if self.ochrona_ekranu.isChecked() else "0"
         wartosci["kopia_folder"] = self.kopia_folder.text().strip()
+        wartosci.update({
+            "powiadomienie_startowe": "1" if self.op_start.isChecked() else "0",
+            "powiadomienia_dzwiek": "1" if self.op_dzwiek.isChecked() else "0",
+            "blokuj_z_komputerem": "1" if self.op_blokada_pc.isChecked() else "0",
+            "powiadomienia_sekund": str(self.op_sekundy.value()),
+            "przegladarka": "1" if self.op_przegladarka.isChecked() else "0",
+            "przegladarka_tylko_zaufane": "1" if self.op_zaufane.isChecked() else "0",
+            "przegladarka_czysc": "1" if self.op_czysc.isChecked() else "0",
+            "przegladarka_zaufane": ",".join(d.strip() for d in self.op_lista.text().split(",") if d.strip()),
+            "przegladarka_start": self.op_strona_start.currentData() or "",
+        })
         wartosci["rodo_lat"] = str(self.rodo_lat.value())
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
@@ -3633,7 +3762,7 @@ class OknoGlowne(QMainWindow):
 
         self.grupa = QButtonGroup(self)
         for i, (nazwa, ik) in enumerate([("Nowy dokument", "nowy"), ("Historia", "historia"), ("Przychody", "wzrost"),
-                                         ("Pliki", "archiwum"), ("Ustawienia", "ustawienia")]):
+                                         ("Pliki", "archiwum"), ("Internet", "globus"), ("Ustawienia", "ustawienia")]):
             b = QPushButton(f"   {nazwa}", checkable=True, cursor=Qt.CursorShape.PointingHandCursor)
             b.setIcon(ikona(ik, MENU_TEKST, aktywny="#ffffff"))
             b.clicked.connect(lambda _=False, i=i: self.przejdz(i))
@@ -3677,9 +3806,10 @@ class OknoGlowne(QMainWindow):
         self.strona_nowy = StronaNowy(self)
         self.strona_historia = StronaHistoria(self)
         self.strona_pliki = StronaPliki(self)
+        self.strona_internet = StronaInternet(self)
         self.strona_ustawienia = StronaUstawienia(self)
         for s in (self.strona_nowy, self.strona_historia, self.strona_pulpit, self.strona_pliki,
-                  self.strona_ustawienia):
+                  self.strona_internet, self.strona_ustawienia):
             self.strony.addWidget(s)
         prawa.addWidget(self.strony, 1)
         uklad.addLayout(prawa, 1)
@@ -3756,6 +3886,7 @@ class OknoGlowne(QMainWindow):
         if odswiez:
             self.strony.currentWidget().odswiez()
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
+        self.grupa.button(STRONA_INTERNET).setVisible(self.baza.ustawienia()["przegladarka"] == "1")
         self._ustaw_nazwe_gabinetu()
 
     def ustaw_czas_blokady(self):
@@ -3832,7 +3963,7 @@ class OknoGlowne(QMainWindow):
             self.powiadom(f"Kontrola komputera: {len(pokaz)} do sprawdzenia",
                           "\n".join(f"• {w.nazwa}: {w.opis}" for w in pokaz[:4]) + "\nKliknij, aby zobaczyć szczegóły.",
                           "uwaga", self._otworz_kontrole, 12000)
-        else:
+        elif self.baza.ustawienia()["powiadomienie_startowe"] == "1":
             self.powiadom("Komputer zweryfikowany", "Szyfrowanie, kopie i ochrona programu działają.", "ok",
                           self._otworz_kontrole, 4500)
 
@@ -3854,7 +3985,7 @@ class OknoGlowne(QMainWindow):
         self.dziennik.zapisz(f"Windows: {opis}" + (f" ({uzytkownik})" if uzytkownik else ""))
         if zdarzenie == windows.BLOKADA:
             self._zablokowano_windows = datetime.now()
-            if self.baza.ma_haslo:
+            if self.baza.ma_haslo and self.baza.ustawienia()["blokuj_z_komputerem"] == "1":
                 self.zablokuj()  # komputer zablokowany: Fakturnik też
         elif zdarzenie == windows.ODBLOKOWANIE:
             od = self._zablokowano_windows or datetime.now() - timedelta(hours=1)
@@ -3883,6 +4014,10 @@ class OknoGlowne(QMainWindow):
         """Własne powiadomienie Fakturnika w rogu ekranu (zamiast dymków Windows)."""
         if not QApplication.instance().platformName() or QApplication.instance().platformName() == "minimal":
             return
+        u = self.baza.ustawienia()
+        czas_ms = max(czas_ms, int(liczba(u["powiadomienia_sekund"]) or 6) * 1000)
+        if u["powiadomienia_dzwiek"] == "1":
+            QApplication.beep()
         OknoPowiadomienia(tytul, tekst, typ, akcja, czas_ms,
                           QPixmap(str(ZASOBY / "ikona.png")).scaled(
                               30, 30, Qt.AspectRatioMode.KeepAspectRatio,
@@ -4124,6 +4259,8 @@ class OknoGlowne(QMainWindow):
 
     def ukryj_do_zasobnika(self):
         self._zamknij_okna_podrzedne()
+        if self.baza.ustawienia()["przegladarka_czysc"] == "1":
+            self.strona_internet.zamknij_przegladarki()  # sesje (np. logowanie do banku) nie przetrwają blokady
         self.strona_pulpit.zaslon()
         self.hide()
         self._ukryty = True
@@ -4241,6 +4378,8 @@ class OknoGlowne(QMainWindow):
             self.ukryj_do_zasobnika()  # odblokowanie hasłem po kliknięciu ikony
             return
         self._zamknij_okna_podrzedne()
+        if self.baza.ustawienia()["przegladarka_czysc"] == "1":
+            self.strona_internet.zamknij_przegladarki()
         self.hide()
         okno = OknoHasla(self.baza.sprawdz_haslo, "Fakturnik jest zablokowany", dziennik=self.dziennik,
                          cel="odblokowanie", opis="Podaj hasło, aby wrócić do pracy.")
@@ -4258,6 +4397,7 @@ class OknoGlowne(QMainWindow):
             self.ukryj_do_zasobnika()
             return
         self.zegar_straznika.stop()
+        self.strona_internet.zamknij_przegladarki()
         if hasattr(self, "zasobnik"):
             self.zasobnik.hide()
         QApplication.instance().removeEventFilter(self.straznik)

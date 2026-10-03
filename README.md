@@ -158,6 +158,15 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   połączenia zdalne trafiają do dziennika Fakturnika. Gdy komputer się blokuje, Fakturnik też.
   Nieudane próby odblokowania lub logowania do Windows (z dziennika zabezpieczeń, gdy program ma do
   niego dostęp) są zapisywane i zgłaszane powiadomieniem; połączenie zdalne zgłaszane od razu.
+- **Bezpieczna przeglądarka** (karta „Internet”): zakładki KSeF, e-Urząd Skarbowy, biała lista VAT,
+  CEIDG, REGON i ZUS oraz dowolny adres (np. bank). Działa w osobnym, odizolowanym procesie (strony nie
+  mają dostępu do danych pacjentów), w sesji bez zapisu na dysku, tylko przez HTTPS, z odrzucaniem
+  błędnych certyfikatów i zablokowaną kamerą, mikrofonem i lokalizacją. Plików wykonywalnych nie da się
+  pobrać, a pobrane pliki są oznaczone jako pochodzące z internetu (sprawdza je antywirus); pobrany PDF
+  jednym kliknięciem trafia do zaszyfrowanych Plików. Blokada Fakturnika zamyka przeglądarkę i kończy
+  sesję. Opcjonalnie tylko zaufane strony (gov.pl, zakładki i dopisane domeny).
+- **Powiadomienia do ustawienia**: czas wyświetlania, dźwięk, powiadomienie startowe, blokada razem
+  z komputerem.
 - **Tapeta pulpitu** (Ustawienia → Tapeta pulpitu): trzy warianty w kolorach Fakturnika z nazwą
   gabinetu, rysowane w rozdzielczości ekranu; polecana „Turkus nocą”. Poprzednią tapetę można przywrócić.
 - **Odporność na awarie**: dane zapisują się po każdej zmianie (atomowo), a plik jest sprawdzany przy
