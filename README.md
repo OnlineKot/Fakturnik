@@ -28,13 +28,24 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   zaszyfrowane (AES-256), a podmiana pliku poza programem jest wykrywana.
 - **Wybór pacjenta** z listy wszystkich pacjentów (przycisk „Wybierz…” lub F2), alfabetycznie
   po nazwisku, z wyszukiwaniem po nazwisku, imieniu lub PESEL; dane pacjenta wpisują się same.
-- **Płatności przelewem**: termin płatności (domyślnie 14 dni, do zmiany w Ustawieniach), status
-  opłacony / nieopłacony / po terminie, przycisk „Oznacz jako opłacony”, filtr „Tylko nieopłacone”
-  i kafelek „Czeka na zapłatę” na Pulpicie. Na wydruku: termin płatności i numer konta.
 - **Sprawdzanie numerów**: PESEL i NIP nabywcy oraz NIP i numer konta gabinetu są sprawdzane
   sumą kontrolną, więc literówka nie trafi na dokument.
 - **Cennik usług** edytowany w tabeli (dodawanie, usuwanie, kolejność).
-- **Pulpit**: przychód w miesiącu i od początku roku, wykres 12 miesięcy, ostatnie dokumenty.
+- **Przychody na osobnej karcie**, domyślnie zasłonięte (pacjent przy biurku nie widzi zarobków):
+  kwoty, wykres 12 miesięcy i ostatnie dokumenty pokazują się po kliknięciu i haśle,
+  a po wyjściu z zakładki znów się chowają.
+- **Dwa tryby wystawiania**: prowadzący (krok po kroku: pacjent, usługi, sprawdź i drukuj)
+  i zaawansowany (wszystko w jednym oknie); przełączane jednym kliknięciem.
+- **Kreator pierwszego uruchomienia**: dane gabinetu (ze sprawdzaniem NIP i konta), hasło
+  (obowiązkowe, ze wskaźnikiem siły), cennik, tryb pracy i integracja z Windows.
+  Program startuje bez żadnych wpisanych danych.
+- **Działanie w tle**: ikona obok zegara, zamknięcie okna chowa program, start razem z Windows,
+  jedna działająca kopia (kolejne uruchomienie otwiera okno). Wyłączenie programu wymaga hasła.
+- **Menu prawego przycisku**: „Dodaj do Fakturnika” przy plikach PDF i zdjęciach w Eksploratorze.
+- **Strażnik integralności** (co minutę): wykrywa zmieniony lub usunięty plik danych i odtwarza go
+  z aktualnych danych programu, przywraca usunięte pliki z kopii, sprawdza dziennik logowań.
+- **Hasło chroni**: ustawienia (zablokowane do odblokowania), przychody, usuwanie plików,
+  anulowanie dokumentów, przywracanie kopii, eksport odszyfrowany i wyłączenie programu.
 - **Podgląd wydruku na żywo** przy wystawianiu dokumentu. Skróty: Ctrl+N nowy dokument,
   F5 / Ctrl+P drukuj, F2 wybór pacjenta.
 - **Historia** z wyszukiwaniem po nazwisku, imieniu, numerze lub PESEL (bez względu na polskie

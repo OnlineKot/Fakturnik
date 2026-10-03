@@ -20,24 +20,26 @@ from .ochrona import BlokadaPliku, tylko_do_odczytu
 from .szyfrowanie import Szyfr, czy_zaszyfrowane, nowy_klucz, odszyfruj_plik, zaszyfruj_plik
 
 DOMYSLNE_USTAWIENIA = {
-    "nazwa": "Szymon Frydrych, Indywidualna Praktyka Stomatologiczna",
-    "adres": "ul. Ocicka 7\n47-400 Racibórz",
+    "nazwa": "",
+    "adres": "",
     "nip": "",
     "regon": "",
-    "miejsce": "Racibórz",
+    "miejsce": "",
     "konto": "",
     "tytul": "Rachunek",     # domyślny rodzaj nowego dokumentu: "Rachunek" albo "Faktura"
     "logo": "domyslne",      # "domyslne", "" (bez logo) albo obraz zapisany w base64
     "format_numeru": "{n}/{mm}/{rrrr}",
     "adnotacja": "Zwolnienie z VAT na podstawie art. 43 ust. 1 pkt 19 ustawy z dnia "
                  "11 marca 2004 r. o podatku od towarów i usług.",
-    "uslugi": "Leczenie kanałowe;0\nKonsultacja;0",
+    "uslugi": "",
     "drukarka": "",          # pusta = domyślna drukarka systemu
     "okno_drukarki": "0",    # "1" = pokazuj okno wyboru drukarki przed drukiem
     "kopia": "0",            # "1" = drukuj oryginał i kopię
     "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
+    "skonfigurowano": "0",   # "1" = kreator pierwszego uruchomienia zakończony
+    "tryb": "prowadzacy",    # "prowadzacy" (krok po kroku) albo "zaawansowany" (wszystko w jednym oknie)
+    "w_tle": "1",            # "1" = zamknięcie okna chowa program do zasobnika zamiast go wyłączać
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
-    "termin_dni": "14",      # domyślny termin płatności przelewem (dni)
 }
 
 
@@ -63,9 +65,6 @@ class Dokument:
     nabywca_id: str = ""         # PESEL lub NIP
     pozycje: list[Pozycja] = field(default_factory=list)
     rodzaj: str = ""             # "Rachunek" albo "Faktura"; puste w dokumentach z wersji sprzed faktur
-    termin_platnosci: str = ""   # RRRR-MM-DD, przy przelewie
-    nieoplacony: bool = False    # True = czeka na zapłatę (przelew); starsze dokumenty traktujemy jako opłacone
-    oplacono: str = ""           # data zaksięgowania wpłaty
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     id: int | None = None
@@ -82,14 +81,6 @@ class Dokument:
     def tytul(self) -> str:
         return self.rodzaj or "Rachunek"
 
-    @property
-    def czeka_na_zaplate(self) -> bool:
-        return self.wazny and self.nieoplacony
-
-    def po_terminie(self, dzis: date | None = None) -> bool:
-        dzis = dzis or date.today()
-        return self.czeka_na_zaplate and bool(self.termin_platnosci) and \
-            date.fromisoformat(self.termin_platnosci) < dzis
 
 
 @dataclass
@@ -133,9 +124,6 @@ class Podsumowanie:
     suma: float
     wg_platnosci: dict[str, float]
     anulowanych: int
-    nieoplaconych: int = 0
-    do_zaplaty: float = 0.0
-    po_terminie: int = 0
 
 
 def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
@@ -143,15 +131,20 @@ def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
     wg: dict[str, float] = {}
     for d in wazne:
         wg[d.platnosc] = round(wg.get(d.platnosc, 0) + d.suma, 2)
-    czekajace = [d for d in wazne if d.nieoplacony]
-    return Podsumowanie(len(wazne), round(sum(d.suma for d in wazne), 2), wg, len(dokumenty) - len(wazne),
-                        len(czekajace), round(sum(d.suma for d in czekajace), 2),
-                        sum(1 for d in czekajace if d.po_terminie()))
+    return Podsumowanie(len(wazne), round(sum(d.suma for d in wazne), 2), wg, len(dokumenty) - len(wazne))
 
 
 def _bez_ogonkow(tekst: str) -> str:
     """Wyszukiwanie nie zależy od polskich znaków ani wielkości liter ("wisniewski" znajdzie "Wiśniewski")."""
     return tekst.lower().translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
+
+
+def dokument_z_danych(id_: int, d: dict) -> Dokument:
+    """Dokument z zapisanego JSON-a; pomija pola nieznane tej wersji (np. dodane w innej wersji programu)."""
+    znane = {f for f in Dokument.__dataclass_fields__ if f != "id"}
+    d = {k: v for k, v in d.items() if k in znane}
+    d["pozycje"] = [Pozycja(nazwa=p["nazwa"], ilosc=p["ilosc"], cena=p["cena"]) for p in d.get("pozycje", [])]
+    return Dokument(id=id_, **d)
 
 
 def numer_z_wzoru(wzor: str, numer: str) -> int | None:
@@ -229,6 +222,7 @@ class Baza:
         self.sciezka = Path(sciezka)
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.szyfr: Szyfr | None = None
+        self._skrot_zapisu = ""  # SHA-256 ostatnio zapisanego pliku danych (do wykrywania zmian z zewnątrz)
         self.katalog_plikow = self.sciezka.parent / "pliki"
         self.blokada = BlokadaPliku(self.sciezka)
         self.db = sqlite3.connect(":memory:")
@@ -302,6 +296,7 @@ class Baza:
         if self.szyfr:
             dane = self.szyfr.zaszyfruj(dane)
         tymczasowy = self.sciezka.with_suffix(".tmp")
+        self._skrot_zapisu = hashlib.sha256(dane).hexdigest()
         with open(tymczasowy, "wb") as f:
             f.write(dane)
             f.flush()
@@ -383,15 +378,10 @@ class Baza:
         for id_, dane in self.db.execute(
                 "SELECT id, dane FROM dokumenty WHERE data_wystawienia LIKE ? ORDER BY data_wystawienia DESC, id DESC",
                 (prefiks + "%",)):
-            d = json.loads(dane)
-            d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
-            dok = Dokument(id=id_, **d)
+            dok = dokument_z_danych(id_, json.loads(dane))
             if miesiac and not rok and int(dok.data_wystawienia[5:7]) != miesiac:
                 continue
-            if rodzaj == "nieoplacone":
-                if not dok.czeka_na_zaplate:
-                    continue
-            elif rodzaj and dok.tytul != rodzaj:
+            if rodzaj and dok.tytul != rodzaj:
                 continue
             if wzor and not all(slowo in _bez_ogonkow(f"{dok.numer} {dok.nabywca} {dok.nabywca_id}")
                                 for slowo in wzor.split()):
@@ -403,9 +393,7 @@ class Baza:
         wiersz = self.db.execute("SELECT dane FROM dokumenty WHERE id = ?", (id_,)).fetchone()
         if not wiersz:
             return None
-        d = json.loads(wiersz[0])
-        d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
-        return Dokument(id=id_, **d)
+        return dokument_z_danych(id_, json.loads(wiersz[0]))
 
     def _zapisz_zmiane(self, dok: Dokument) -> Dokument:
         dane = asdict(dok)
@@ -423,18 +411,7 @@ class Baza:
         dok.powod_anulowania = powod.strip()
         return self._zapisz_zmiane(dok)
 
-    def oznacz_oplacony(self, id_: int, dnia: str | None = None) -> Dokument:
-        dok = self.dokument(id_)
-        if dok is None:
-            raise KeyError(id_)
-        dok.nieoplacony = False
-        dok.oplacono = dnia or date.today().isoformat()
-        return self._zapisz_zmiane(dok)
 
-    def nieoplacone(self) -> list[Dokument]:
-        """Dokumenty czekające na zapłatę, od najstarszego terminu."""
-        return sorted((d for d in self.dokumenty() if d.czeka_na_zaplate),
-                      key=lambda d: (d.termin_platnosci or "9999", d.data_wystawienia))
 
     def lata(self) -> list[int]:
         return [int(r[0]) for r in self.db.execute(
@@ -478,8 +455,7 @@ class Baza:
                             d.nabywca_adres.replace("\n", ", "),
                             " | ".join(f"{p.nazwa} x{p.ilosc:g}" for p in d.pozycje),
                             d.platnosc, f"{d.suma:.2f}".replace(".", ","),
-                            f"anulowany {d.anulowano}" if d.anulowano
-                            else (f"nieopłacony, termin {d.termin_platnosci}" if d.nieoplacony else "opłacony")])
+                            f"anulowany {d.anulowano}" if d.anulowano else "ważny"])
         return len(dokumenty)
 
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:
@@ -524,6 +500,37 @@ class Baza:
                 sciezka = self.katalog_plikow / nazwa
                 if sciezka.exists():
                     z.write(sciezka, f"pliki/{nazwa}")
+
+    def sprawdz_integralnosc(self, katalog_kopii_plikow: Path | None = None) -> list[str]:
+        """Sprawdza, czy nikt nie zmienił ani nie usunął danych poza programem, i naprawia, co się da.
+
+        Plik danych: program ma w pamięci aktualną bazę, więc zmieniony lub usunięty plik odtwarza.
+        Wrzucone pliki: brakujące przywraca z kopii automatycznych (jeśli tam są).
+        Zwraca listę komunikatów o tym, co wykryto (pusta = wszystko w porządku).
+        """
+        problemy = []
+        try:
+            na_dysku = hashlib.sha256(self.sciezka.read_bytes()).hexdigest() if self.sciezka.exists() else ""
+        except OSError:
+            na_dysku = None  # plik chwilowo zablokowany przez system – sprawdzimy następnym razem
+        if na_dysku is not None and na_dysku != self._skrot_zapisu:
+            self._utrwal()
+            problemy.append("Plik danych został " + ("usunięty" if not na_dysku else "zmieniony")
+                            + " poza programem. Odtworzono go z aktualnych danych programu.")
+        for nazwa, plik in self.db.execute("SELECT plik, nazwa FROM pliki"):
+            sciezka = self.katalog_plikow / nazwa
+            if sciezka.exists():
+                continue
+            kopia = katalog_kopii_plikow / nazwa if katalog_kopii_plikow else None
+            if kopia and kopia.exists():
+                self.katalog_plikow.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(kopia, sciezka)
+                tylko_do_odczytu(sciezka, True)
+                problemy.append(f"Plik „{plik}” został usunięty poza programem. Przywrócono go z kopii.")
+            else:
+                problemy.append(f"Brak pliku „{plik}” i nie ma go w kopiach. Przywróć pełną kopię zapasową.")
+        self.blokada.zaloz()
+        return problemy
 
     def kopia_plikow(self, katalog: Path) -> int:
         """Dokłada do `katalog` pliki, których tam jeszcze nie ma (pliki nigdy się nie zmieniają)."""

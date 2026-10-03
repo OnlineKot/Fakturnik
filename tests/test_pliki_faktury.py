@@ -117,3 +117,29 @@ def test_kopia_plikow_doklada_tylko_nowe(tmp_path, skan):
     b.dodaj_plik(skan)
     assert b.kopia_plikow(tmp_path / "kopie") == 1
     assert b.kopia_plikow(tmp_path / "kopie") == 0
+
+
+def test_straznik_odtwarza_zmieniony_plik_danych_i_brakujace_pliki(tmp_path, skan):
+    from fakturnik.ochrona import tylko_do_odczytu
+    b = Baza(tmp_path / "dane" / "d.db")
+    b.zapisz_dokument(faktura("FV/1/10/2026"))
+    p = b.dodaj_plik(skan)
+    b.kopia_plikow(tmp_path / "kopie")
+    assert b.sprawdz_integralnosc(tmp_path / "kopie") == []
+
+    # ktoś podmienia plik danych z zewnątrz
+    tylko_do_odczytu(b.sciezka, False)
+    b.sciezka.write_bytes(b"SQLite format 3\0 podrobka")
+    problemy = b.sprawdz_integralnosc(tmp_path / "kopie")
+    assert len(problemy) == 1 and "zmieniony" in problemy[0]
+    b.zamknij()
+    assert [d.numer for d in Baza(b.sciezka).dokumenty()] == ["FV/1/10/2026"]  # dane wróciły
+
+    # ktoś usuwa wrzucony plik
+    b = Baza(b.sciezka)
+    plik = next(b.katalog_plikow.glob("*.bin"))
+    tylko_do_odczytu(plik, False)
+    plik.unlink()
+    problemy = b.sprawdz_integralnosc(tmp_path / "kopie")
+    assert "Przywrócono go z kopii" in problemy[0]
+    assert b.tresc_pliku(p.id) == skan.read_bytes()

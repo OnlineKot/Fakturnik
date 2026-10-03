@@ -67,10 +67,6 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     if dok.platnosc == "przelew":
         if u["konto"]:
             platnosc += f"<br>Nr konta: {escape(formatuj_konto(u['konto']))}"
-        if dok.nieoplacony and dok.termin_platnosci:
-            platnosc += f"<br><b>Termin płatności: {data_pl(dok.termin_platnosci)}</b>"
-        elif not dok.nieoplacony:
-            platnosc += " (zapłacono)"
     else:
         platnosc += " (zapłacono)"
 

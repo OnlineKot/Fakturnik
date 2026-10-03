@@ -3,11 +3,11 @@
 import base64
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QByteArray, QDate, QEvent, QIODevice, QObject, QPoint, QRect, QSize, QStandardPaths, Qt, QThread,
+    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QSize, QStandardPaths, Qt, QThread,
     QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
@@ -17,20 +17,24 @@ from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
-    QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import aktualizacje, druk
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
-from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
+from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna
+from .system import (
+    JednaKopia, autostart_wlaczony, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
+    ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
+)
 from .szyfrowanie import BledneHaslo
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
 from .wersja import WERSJA
 from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, Powiadomienie, WykresMiesiecy
 
-STRONA_PULPIT, STRONA_NOWY, STRONA_HISTORIA, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
+STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
 MIN_DLUGOSC_HASLA = 8
 BLOKADA_PO_MINUTACH = 10
 ZASOBY = Path(__file__).parent / "zasoby"
@@ -72,6 +76,12 @@ QFrame#karta QLabel {{ background: transparent; }}
 QFrame#papier {{ background: transparent; }}
 QFrame#separator {{ background: {LINIA}; max-height: 1px; border: none; }}
 QFrame#stopka {{ background: white; border: none; border-top: 1px solid {LINIA}; }}
+QLabel#krok_numer {{ background: #e9ecee; color: {TEKST_2}; border-radius: 12px; font-size: 12px; font-weight: 600; }}
+QLabel#krok_numer[stan="aktywny"] {{ background: {AKCENT}; color: white; }}
+QLabel#krok_numer[stan="zrobiony"] {{ background: {AKCENT_TLO}; color: {AKCENT}; }}
+QLabel#krok_tekst {{ color: {TEKST_3}; font-weight: 500; }}
+QLabel#krok_tekst[stan="aktywny"] {{ color: {TEKST}; font-weight: 600; }}
+QLabel#krok_tekst[stan="zrobiony"] {{ color: {TEKST_2}; }}
 
 QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
     background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 7px 10px;
@@ -493,36 +503,56 @@ def kafelek(etykieta: str) -> tuple[QFrame, QLabel, QLabel]:
 
 
 class StronaPulpit(Strona):
-    """Ekran startowy: najważniejsze liczby, wykres przychodu i ostatnie dokumenty."""
+    """Przychody: liczby, wykres i ostatnie dokumenty. Domyślnie zasłonięte, żeby pacjent przy biurku
+    nie zobaczył zarobków; kwoty pokazują się po kliknięciu (i haśle, jeśli jest ustawione)."""
 
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
-        u = self.uklad
-        u.setSpacing(16)
+        self.uklad.setSpacing(16)
         gora = QHBoxLayout()
         nag = QVBoxLayout()
         nag.setSpacing(2)
-        self.powitanie = QLabel(objectName="tytul")
+        self.powitanie = QLabel("Przychody", objectName="tytul")
         self.data = QLabel(objectName="podtytul")
         nag.addWidget(self.powitanie)
         nag.addWidget(self.data)
         gora.addLayout(nag)
         gora.addStretch()
-        gora.addWidget(przycisk("Nowa faktura", "faktura", akcja=lambda: self._nowy("Faktura")),
-                       alignment=Qt.AlignmentFlag.AlignBottom)
-        gora.addWidget(przycisk("Nowy rachunek", "plus", "glowny", lambda: self._nowy("Rachunek")),
-                       alignment=Qt.AlignmentFlag.AlignBottom)
-        u.addLayout(gora)
+        self.btn_ukryj = przycisk("Ukryj", "klodka", akcja=self.zaslon)
+        gora.addWidget(self.btn_ukryj, alignment=Qt.AlignmentFlag.AlignBottom)
+        self.uklad.addLayout(gora)
+
+        # zasłona: widoczna, dopóki ktoś świadomie nie odsłoni kwot
+        self.zaslona, zu = karta()
+        zu.setContentsMargins(40, 56, 40, 56)
+        zu.setSpacing(10)
+        znak = QLabel(alignment=Qt.AlignmentFlag.AlignHCenter)
+        znak.setPixmap(pixmapa("podglad", TEKST_3, 34))
+        zu.addWidget(znak)
+        t = QLabel("Przychody są ukryte", alignment=Qt.AlignmentFlag.AlignHCenter)
+        t.setStyleSheet("font-size: 17px; font-weight: 600;")
+        zu.addWidget(t)
+        zu.addWidget(QLabel("Kwoty pokazują się dopiero po kliknięciu, żeby pacjent przy biurku ich nie zobaczył.\n"
+                            "Po wyjściu z tej zakładki znów się chowają.",
+                            objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
+        zu.addSpacing(8)
+        zu.addWidget(przycisk("Pokaż przychody", "podglad", "glowny", self.odslon), alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.uklad.addWidget(self.zaslona)
+
+        self.zawartosc = QWidget()
+        u = QVBoxLayout(self.zawartosc)
+        u.setContentsMargins(0, 0, 0, 0)
+        u.setSpacing(16)
+        self.uklad.addWidget(self.zawartosc, 1)
+        self.uklad.addStretch(0)  # luz pod zasłoną, żeby nie rozciągała nagłówka
+        self._indeks_luzu = self.uklad.count() - 1
 
         # --- liczby
         kafle = QHBoxLayout()
         kafle.setSpacing(14)
         k1, self.k_przychod, self.k_przychod_zm = kafelek("Przychód w tym miesiącu")
         k2, self.k_liczba, self.k_liczba_zm = kafelek("Wystawione dokumenty")
-        k3, self.k_zaplata, self.k_zaplata_zm = kafelek("Czeka na zapłatę")
-        k3.setCursor(Qt.CursorShape.PointingHandCursor)
-        k3.setToolTip("Pokaż nieopłacone dokumenty")
-        k3.mousePressEvent = lambda _e: self._pokaz_nieoplacone()
+        k3, self.k_srednia, self.k_srednia_zm = kafelek("Średnio na dokument")
         k4, self.k_rok, self.k_rok_zm = kafelek("Przychód od początku roku")
         self.k_przychod_et = k1.findChild(QLabel, "kpi_etykieta")
         for k in (k1, k2, k3, k4):
@@ -580,19 +610,37 @@ class StronaPulpit(Strona):
         self.okno.strona_nowy.ustaw_rodzaj(rodzaj)
         self.okno.strona_nowy.nabywca.setFocus()
 
-    def _pokaz_nieoplacone(self):
-        self.okno.przejdz(STRONA_HISTORIA)
-        self.okno.strona_historia.pokaz_nieoplacone()
-
     def _pokaz(self, wiersz: int, _kol: int):
         if 0 <= wiersz < len(self._docs):
             self.okno.podglad(self._docs[wiersz], duplikat=True)
 
     def odswiez(self):
         dzis = date.today()
-        godz = datetime.now().hour
-        self.powitanie.setText("Dzień dobry" if 5 <= godz < 18 else "Dobry wieczór")
         self.data.setText(f"{DNI[dzis.weekday()].capitalize()}, {dzis.day} {MIESIACE_DOP[dzis.month - 1]} {dzis.year}")
+        self.zaslon()
+
+    def zaslon(self):
+        self.zawartosc.hide()
+        self.btn_ukryj.hide()
+        self.zaslona.show()
+        self.uklad.setStretch(self._indeks_luzu, 1)
+        self.wykres.ustaw([])
+        self.ostatnie.setRowCount(0)
+
+    def odslon(self):
+        baza = self.okno.baza
+        if baza.ma_haslo and OknoHasla(baza.sprawdz_haslo, "Pokaż przychody", self, self.okno.dziennik,
+                                       "podgląd przychodów", "Podaj hasło, aby zobaczyć kwoty.").exec() \
+                != QDialog.DialogCode.Accepted:
+            return
+        self._wypelnij()
+        self.zaslona.hide()
+        self.uklad.setStretch(self._indeks_luzu, 0)
+        self.zawartosc.show()
+        self.btn_ukryj.show()
+
+    def _wypelnij(self):
+        dzis = date.today()
         baza = self.okno.baza
 
         teraz = podsumuj(baza.dokumenty(rok=dzis.year, miesiac=dzis.month))
@@ -614,16 +662,10 @@ class StronaPulpit(Strona):
         faktur = sum(1 for d in wszystkie_teraz if d.wazny and d.tytul == "Faktura")
         self.k_liczba.setText(str(teraz.liczba))
         self.k_liczba_zm.setText(f"rachunki: {teraz.liczba - faktur}, faktury: {faktur}")
-        czekajace = podsumuj(baza.nieoplacone())
-        self.k_zaplata.setText(f"{druk.zl(czekajace.do_zaplaty)} zł")
-        if not czekajace.nieoplaconych:
-            self.k_zaplata_zm.setText("wszystko zapłacone")
-        elif czekajace.po_terminie:
-            self.k_zaplata_zm.setText(f'{liczba_dokumentow(czekajace.nieoplaconych)}, '
-                                      f'<span style="color:{CZERWONY}; font-weight:600;">po terminie: '
-                                      f'{czekajace.po_terminie}</span>')
-        else:
-            self.k_zaplata_zm.setText(f"{liczba_dokumentow(czekajace.nieoplaconych)}, w terminie")
+        wczesniej = podsumuj(baza.dokumenty(rok=pr, miesiac=pm))
+        self.k_srednia.setText(f"{druk.zl(teraz.suma / teraz.liczba) if teraz.liczba else '0,00'} zł")
+        self.k_srednia_zm.setText(f"w {MIESIACE_MIEJSC[pm - 1]}: "
+                                  f"{druk.zl(wczesniej.suma / wczesniej.liczba) if wczesniej.liczba else '0,00'} zł")
         rok = podsumuj(baza.dokumenty(rok=dzis.year))
         self.k_rok.setText(f"{druk.zl(rok.suma)} zł")
         self.k_rok_zm.setText(f"{liczba_dokumentow(rok.liczba)} w {dzis.year} r.")
@@ -641,9 +683,7 @@ class StronaPulpit(Strona):
         for r, d in enumerate(self._docs):
             opis = QTableWidgetItem(f"{d.nabywca}\n{d.numer}  ·  {druk.data_pl(d.data_wystawienia)}")
             self.ostatnie.setItem(r, 0, opis)
-            etykieta = "Anulowany" if d.anulowano else ("Po terminie" if d.po_terminie() else
-                                                       ("Nieopłacony" if d.nieoplacony else d.tytul))
-            self.ostatnie.setItem(r, 1, QTableWidgetItem(etykieta))
+            self.ostatnie.setItem(r, 1, QTableWidgetItem("Anulowany" if d.anulowano else d.tytul))
             kwota = QTableWidgetItem(f"{druk.zl(d.suma)} zł")
             kwota.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
             kwota.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -672,37 +712,38 @@ class StronaNowy(Strona):
             self.rodzaj_grupa.addButton(b, i)
             pu.addWidget(b)
         self.rodzaj_grupa.idClicked.connect(lambda _: self.zmien_rodzaj())
+        self.btn_tryb = przycisk("", styl="plaski", akcja=self.przelacz_tryb)
+        gora.addWidget(self.btn_tryb, alignment=Qt.AlignmentFlag.AlignBottom)
+        gora.addSpacing(6)
         gora.addWidget(przelacznik, alignment=Qt.AlignmentFlag.AlignBottom)
         u.addLayout(gora)
-        u.addSpacing(10)
+        u.addSpacing(8)
 
-        # formularz po lewej, podgląd kartki po prawej
-        kolumny = QHBoxLayout()
-        kolumny.setSpacing(22)
-        self.uklad.addLayout(kolumny, 1)
-        u = QVBoxLayout()
-        u.setSpacing(8)
-        kolumny.addLayout(u, 3)
-        self.ramka_podgladu = QWidget()
-        rp = QVBoxLayout(self.ramka_podgladu)
-        rp.setContentsMargins(0, 0, 0, 0)
-        rp.setSpacing(6)
-        naglowek_podgladu = QHBoxLayout()
-        naglowek_podgladu.addWidget(QLabel("Podgląd wydruku", objectName="sekcja"))
-        naglowek_podgladu.addStretch()
-        naglowek_podgladu.addWidget(QLabel("aktualizuje się na bieżąco", objectName="drobny"))
-        rp.addLayout(naglowek_podgladu)
-        self.kartka = PodgladKartki()
-        self.kartka.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.kartka.setToolTip("Kliknij, aby zobaczyć pełny podgląd")
-        self.kartka.mousePressEvent = lambda _e: self.podglad()
-        rp.addWidget(self.kartka, 1)
-        kolumny.addWidget(self.ramka_podgladu, 2)
+        # --- pasek kroków (tryb prowadzący)
+        self.pasek_krokow = QWidget()
+        pk = QHBoxLayout(self.pasek_krokow)
+        pk.setContentsMargins(0, 0, 0, 6)
+        pk.setSpacing(8)
+        self.kroki: list[tuple[QLabel, QLabel]] = []
+        for i, nazwa in enumerate(["Pacjent", "Usługi", "Sprawdź i drukuj"]):
+            if i:
+                linia = QFrame(objectName="separator")
+                linia.setFixedWidth(36)
+                pk.addWidget(linia)
+            numer = QLabel(str(i + 1), alignment=Qt.AlignmentFlag.AlignCenter, objectName="krok_numer")
+            numer.setFixedSize(24, 24)
+            tekst = QLabel(nazwa, objectName="krok_tekst")
+            pk.addWidget(numer)
+            pk.addWidget(tekst)
+            self.kroki.append((numer, tekst))
+        pk.addStretch()
+        u.addWidget(self.pasek_krokow)
+
         self._zegar_podgladu = QTimer(self, singleShot=True, interval=150)
         self._zegar_podgladu.timeout.connect(self.odswiez_podglad)
 
-        # --- dokument i nabywca w jednej karcie
-        k, ku = karta()
+        # --- karta dokumentu: numer, daty, płatność
+        self.karta_dokumentu, kd = karta()
         siatka = QGridLayout()
         siatka.setHorizontalSpacing(14)
         siatka.setVerticalSpacing(12)
@@ -713,34 +754,17 @@ class StronaNowy(Strona):
         self.platnosc = QComboBox()
         self.platnosc.addItems(["gotówka", "karta", "przelew"])
         self.data_wyst.dateChanged.connect(self.odswiez_numer)
-        self.data_wyst.dateChanged.connect(lambda _: self._zmiana_platnosci(self.platnosc.currentText()))
         for kol, (etykieta, w) in enumerate([("Numer", self.numer), ("Data wystawienia", self.data_wyst),
                                              ("Data usługi", self.data_uslugi), ("Płatność", self.platnosc)]):
             siatka.addLayout(pole(etykieta, w), 0, kol)
         siatka.setColumnStretch(4, 1)
-        ku.addLayout(siatka)
-        # termin płatności tylko przy przelewie
-        self.wiersz_terminu = QWidget()
-        wt = QHBoxLayout(self.wiersz_terminu)
-        wt.setContentsMargins(0, 0, 0, 0)
-        wt.setSpacing(10)
-        wt.addWidget(QLabel("Termin płatności", objectName="etykieta"))
-        self.termin = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
-        self.termin.setFixedWidth(130)
-        wt.addWidget(self.termin)
-        wt.addSpacing(10)
-        self.juz_oplacone = QCheckBox("Przelew już zaksięgowany")
-        wt.addWidget(self.juz_oplacone)
-        wt.addStretch()
-        self.wiersz_terminu.hide()
-        ku.addWidget(self.wiersz_terminu)
-        self.platnosc.currentTextChanged.connect(self._zmiana_platnosci)
-        self.juz_oplacone.toggled.connect(lambda zaznaczone: self.termin.setEnabled(not zaznaczone))
-        ku.addWidget(separator())
+        kd.addLayout(siatka)
 
+        # --- karta nabywcy
+        self.karta_nabywcy, kn = karta()
         self.nabywca = QLineEdit(placeholderText="Imię i nazwisko lub nazwa firmy")
         self.nabywca_id = QLineEdit(placeholderText="Opcjonalnie")
-        self.nabywca_adres = QLineEdit(placeholderText="Opcjonalnie, np. ul. Długa 1, 47-400 Racibórz")
+        self.nabywca_adres = QLineEdit(placeholderText="Opcjonalnie, np. ul. Długa 1, 00-001 Miasto")
         nab = QGridLayout()
         nab.setHorizontalSpacing(14)
         nab.setVerticalSpacing(12)
@@ -765,14 +789,16 @@ class StronaNowy(Strona):
         nab.addLayout(pole("Adres", self.nabywca_adres), 1, 0, 1, 2)
         nab.setColumnStretch(0, 3)
         nab.setColumnStretch(1, 2)
-        ku.addLayout(nab)
+        kn.addLayout(nab)
         self.ostatni = UkladPlynny()
-        ku.addLayout(self.ostatni)
-        u.addWidget(k)
-        u.addSpacing(8)
+        kn.addLayout(self.ostatni)
 
-        # --- usługi
-        u.addWidget(sekcja("Usługi"))
+        # --- blok usług
+        self.blok_uslug = QWidget()
+        bu = QVBoxLayout(self.blok_uslug)
+        bu.setContentsMargins(0, 0, 0, 0)
+        bu.setSpacing(8)
+        bu.addWidget(sekcja("Usługi"))
         k, ku = karta()
         ku.setContentsMargins(0, 12, 0, 12)
         self.przyciski_uslug = UkladPlynny()
@@ -804,11 +830,71 @@ class StronaNowy(Strona):
         rzad.addSpacing(10)
         rzad.addWidget(self.suma)
         ku.addLayout(rzad)
-        u.addWidget(k, 1)
-        u.addSpacing(10)
+        bu.addWidget(k, 1)
 
-        # --- akcje: stały pasek na dole, zawsze widoczny
+        # --- podgląd kartki
+        self.ramka_podgladu = QWidget()
+        rp = QVBoxLayout(self.ramka_podgladu)
+        rp.setContentsMargins(0, 0, 0, 0)
+        rp.setSpacing(6)
+        naglowek_podgladu = QHBoxLayout()
+        naglowek_podgladu.addWidget(QLabel("Podgląd wydruku", objectName="sekcja"))
+        naglowek_podgladu.addStretch()
+        naglowek_podgladu.addWidget(QLabel("aktualizuje się na bieżąco", objectName="drobny"))
+        rp.addLayout(naglowek_podgladu)
+        self.kartka = PodgladKartki()
+        self.kartka.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.kartka.setToolTip("Kliknij, aby zobaczyć pełny podgląd")
+        self.kartka.mousePressEvent = lambda _e: self.podglad()
+        rp.addWidget(self.kartka, 1)
+
+        # --- tryb zaawansowany: wszystko w jednym oknie
+        self.widok_zaawansowany = QWidget()
+        wz = QHBoxLayout(self.widok_zaawansowany)
+        wz.setContentsMargins(0, 0, 0, 0)
+        wz.setSpacing(22)
+        self.zaaw_lewa = QVBoxLayout()
+        self.zaaw_lewa.setSpacing(10)
+        wz.addLayout(self.zaaw_lewa, 3)
+        self.zaaw_prawa = QVBoxLayout()
+        wz.addLayout(self.zaaw_prawa, 2)
+
+        # --- tryb prowadzący: trzy kroki
+        self.widok_prowadzony = QStackedWidget()
+        self.kroki_uklady = []
+        for tytul, opis in (("Komu wystawiasz dokument?", "Wpisz pacjenta albo wybierz go z listy (F2)."),
+                            ("Za jakie usługi?", "Kliknij usługę z cennika albo dodaj pozycję ręcznie."),
+                            ("Sprawdź i wydrukuj", "Tak będzie wyglądał wydruk. Możesz jeszcze zmienić datę albo płatność.")):
+            strona = QWidget()
+            su = QVBoxLayout(strona)
+            su.setContentsMargins(0, 0, 0, 0)
+            su.setSpacing(10)
+            t = QLabel(tytul)
+            t.setStyleSheet("font-size: 18px; font-weight: 600;")
+            su.addWidget(t)
+            su.addWidget(QLabel(opis, objectName="podtytul"))
+            su.addSpacing(4)
+            self.kroki_uklady.append(su)
+            self.widok_prowadzony.addWidget(strona)
+        krok3 = QHBoxLayout()
+        krok3.setSpacing(22)
+        self.krok3_lewa = QVBoxLayout()
+        self.krok3_lewa.setSpacing(10)
+        krok3.addLayout(self.krok3_lewa, 3)
+        self.krok3_prawa = QVBoxLayout()
+        krok3.addLayout(self.krok3_prawa, 2)
+        self.kroki_uklady[2].addLayout(krok3, 1)
+        self.podsumowanie_kroku, ps = karta()
+        self.podsumowanie_tekst = QLabel(wordWrap=True)
+        ps.addWidget(self.podsumowanie_tekst)
+
+        u.addWidget(self.widok_zaawansowany, 1)
+        u.addWidget(self.widok_prowadzony, 1)
+
+        # --- stały pasek na dole, zawsze widoczny
         dol = self.stopka()
+        self.btn_wstecz = przycisk("Wstecz", akcja=lambda: self.pokaz_krok(self.krok - 1))
+        dol.addWidget(self.btn_wstecz)
         self.kopia = QCheckBox("Drukuj też kopię")
         dol.addWidget(self.kopia)
         dol.addStretch()
@@ -818,11 +904,18 @@ class StronaNowy(Strona):
         self.suma_stopka.setFont(czcionka_cyfr(18, QFont.Weight.DemiBold))
         dol.addWidget(self.suma_stopka)
         dol.addSpacing(18)
-        dol.addWidget(przycisk("Podgląd", "podglad", akcja=self.podglad))
-        dol.addWidget(przycisk("Zapisz PDF", "pdf", akcja=self.zapisz_pdf))
+        self.btn_podglad = przycisk("Podgląd", "podglad", akcja=self.podglad)
+        self.btn_pdf = przycisk("Zapisz PDF", "pdf", akcja=self.zapisz_pdf)
+        dol.addWidget(self.btn_podglad)
+        dol.addWidget(self.btn_pdf)
         self.drukuj_btn = przycisk("Drukuj", "drukarka", "glowny", self.drukuj)
         self.drukuj_btn.setToolTip("F5 lub Ctrl+P")
         dol.addWidget(self.drukuj_btn)
+        self.btn_dalej = przycisk("Dalej", "dalej", "glowny", lambda: self.pokaz_krok(self.krok + 1))
+        self.btn_dalej.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        dol.addWidget(self.btn_dalej)
+        self.krok = 0
+        self.tryb = ""
 
         QShortcut(QKeySequence("F5"), self, self.drukuj)
         QShortcut(QKeySequence("Ctrl+P"), self, self.drukuj)
@@ -833,25 +926,9 @@ class StronaNowy(Strona):
         for pole_daty in (self.data_wyst, self.data_uslugi):
             pole_daty.dateChanged.connect(self.zaplanuj_podglad)
         self.platnosc.currentIndexChanged.connect(self.zaplanuj_podglad)
-        self.termin.dateChanged.connect(self.zaplanuj_podglad)
-        self.juz_oplacone.toggled.connect(self.zaplanuj_podglad)
         self.tabela.itemChanged.connect(self.zaplanuj_podglad)
         self.tabela.model().rowsRemoved.connect(self.zaplanuj_podglad)
         self.kopia.toggled.connect(self.zaplanuj_podglad)
-
-    def _zmiana_platnosci(self, tekst: str):
-        przelew = tekst == "przelew"
-        self.wiersz_terminu.setVisible(przelew)
-        if przelew:
-            dni = int(liczba(self.okno.baza.ustawienia()["termin_dni"]) or 14)
-            self.termin.setDate(self.data_wyst.date().addDays(dni))
-
-    def _platnosc_pola(self) -> dict:
-        if self.platnosc.currentText() != "przelew":
-            return {}
-        if self.juz_oplacone.isChecked():
-            return {"oplacono": self.data_wyst.date().toPython().isoformat()}
-        return {"nieoplacony": True, "termin_platnosci": self.termin.date().toPython().isoformat()}
 
     def _sprawdz_id(self, tekst: str):
         wynik = opis_identyfikatora(tekst)
@@ -861,6 +938,72 @@ class StronaNowy(Strona):
         komunikat, ok = wynik
         self.podpowiedz_id.setText(komunikat)
         self.podpowiedz_id.setStyleSheet(f"color: {ZIELONY if ok else CZERWONY};")
+
+    # ---- tryby pracy
+    def ustaw_tryb(self, tryb: str):
+        """Prowadzący: trzy kroki z przyciskami Dalej/Wstecz. Zaawansowany: wszystko w jednym oknie."""
+        self.tryb = tryb
+        if tryb == "zaawansowany":
+            for w in (self.karta_dokumentu, self.karta_nabywcy):
+                self.zaaw_lewa.addWidget(w)
+            self.zaaw_lewa.addWidget(self.blok_uslug, 1)
+            self.zaaw_prawa.addWidget(self.ramka_podgladu)
+            self.widok_prowadzony.hide()
+            self.widok_zaawansowany.show()
+        else:
+            self.kroki_uklady[0].addWidget(self.karta_nabywcy)
+            self.kroki_uklady[0].addStretch()
+            self.kroki_uklady[1].addWidget(self.blok_uslug, 1)
+            self.krok3_lewa.addWidget(self.karta_dokumentu)
+            self.krok3_lewa.addWidget(self.podsumowanie_kroku)
+            self.krok3_lewa.addStretch()
+            self.krok3_prawa.addWidget(self.ramka_podgladu)
+            self.widok_zaawansowany.hide()
+            self.widok_prowadzony.show()
+        self.btn_tryb.setText("Wszystko w jednym oknie" if tryb != "zaawansowany" else "Krok po kroku")
+        self.btn_tryb.setToolTip("Przełącz tryb wystawiania")
+        self.pasek_krokow.setVisible(tryb != "zaawansowany")
+        self.pokaz_krok(0)
+
+    def przelacz_tryb(self):
+        nowy = "prowadzacy" if self.tryb == "zaawansowany" else "zaawansowany"
+        self.okno.baza.zapisz_ustawienia({"tryb": nowy})
+        self.ustaw_tryb(nowy)
+
+    def pokaz_krok(self, krok: int):
+        prowadzony = self.tryb != "zaawansowany"
+        if prowadzony and krok > self.krok:
+            # nie przepuszczaj dalej bez potrzebnych danych
+            if self.krok == 0 and not self.nabywca.text().strip():
+                self.okno.komunikat("Wpisz pacjenta, żeby przejść dalej", blad=True)
+                self.nabywca.setFocus()
+                return
+            if self.krok == 1 and not self.pozycje():
+                self.okno.komunikat("Dodaj przynajmniej jedną usługę", blad=True)
+                return
+        self.krok = max(0, min(2, krok)) if prowadzony else 2
+        if prowadzony:
+            self.widok_prowadzony.setCurrentIndex(self.krok)
+            for i, (numer, tekst) in enumerate(self.kroki):
+                stan = "aktywny" if i == self.krok else ("zrobiony" if i < self.krok else "")
+                numer.setProperty("stan", stan)
+                tekst.setProperty("stan", stan)
+                for w in (numer, tekst):
+                    w.style().unpolish(w)
+                    w.style().polish(w)
+        ostatni = self.krok == 2
+        self.btn_wstecz.setVisible(prowadzony and self.krok > 0)
+        self.btn_dalej.setVisible(prowadzony and not ostatni)
+        for w in (self.drukuj_btn, self.btn_podglad, self.btn_pdf, self.kopia):
+            w.setVisible(ostatni)
+        if ostatni:
+            ile = len(self.pozycje())
+            self.podsumowanie_tekst.setText(
+                f"<b>{self.rodzaj}</b> dla <b>{self.nabywca.text().strip() or '…'}</b><br>"
+                f"Pozycji: {ile}, razem <b>{druk.zl(sum(p.wartosc for p in self.pozycje()))} zł</b>")
+            self.zaplanuj_podglad()
+        elif self.krok == 0:
+            self.nabywca.setFocus()
 
     def zaplanuj_podglad(self, *_):
         self._zegar_podgladu.start()
@@ -876,7 +1019,6 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
-            **self._platnosc_pola(),
             pozycje=self.pozycje())
 
     def odswiez_podglad(self):
@@ -1025,7 +1167,6 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
-            **self._platnosc_pola(),
             pozycje=pozycje)
 
     def wyczysc(self):
@@ -1036,10 +1177,10 @@ class StronaNowy(Strona):
         self.data_wyst.setDate(QDate.currentDate())
         self.data_uslugi.setDate(QDate.currentDate())
         self.platnosc.setCurrentIndex(0)
-        self.juz_oplacone.setChecked(False)
         self.rodzaj_grupa.button(1 if self.okno.baza.ustawienia()["tytul"] == "Faktura" else 0).setChecked(True)
         self.odswiez()
         self.zmien_rodzaj()
+        self.pokaz_krok(0)
         self.nabywca.setFocus()
 
     # ---- akcje
@@ -1202,8 +1343,7 @@ class StronaHistoria(Strona):
         self.miesiac.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.miesiac)
         self.rodzaj = QComboBox(minimumWidth=150)
-        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura"),
-                            ("Tylko nieopłacone", "nieoplacone")):
+        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura")):
             self.rodzaj.addItem(tekst, dane)
         self.rodzaj.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.rodzaj)
@@ -1218,9 +1358,8 @@ class StronaHistoria(Strona):
         self.akcje = [przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
                       przycisk("Podgląd", "podglad", akcja=self.podglad),
                       przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor)]
-        self.btn_oplacony = przycisk("Oznacz jako opłacony", "ok", akcja=self.oznacz_oplacony)
         self.btn_anuluj = przycisk("Anuluj dokument", "anuluj", "niebezpieczny", self.anuluj)
-        for b in self.akcje + [self.btn_oplacony, self.btn_anuluj]:
+        for b in self.akcje + [self.btn_anuluj]:
             akcje.addWidget(b)
         akcje.addStretch()
         u.addLayout(akcje)
@@ -1228,16 +1367,15 @@ class StronaHistoria(Strona):
 
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
-        self.tabela = QTableWidget(0, 7)
-        self.tabela.setHorizontalHeaderLabels(["Numer", "Data", "Pacjent", "Rodzaj", "Płatność", "Status", "Kwota"])
+        self.tabela = QTableWidget(0, 6)
+        self.tabela.setHorizontalHeaderLabels(["Numer", "Data", "Pacjent", "Rodzaj", "Płatność", "Kwota"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.tabela.horizontalHeaderItem(6).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        for kol, szer in ((0, 130), (1, 100), (3, 110), (4, 100), (5, 130), (6, 130)):
+        self.tabela.horizontalHeaderItem(5).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for kol, szer in ((0, 130), (1, 110), (3, 120), (4, 110), (5, 140)):
             self.tabela.setColumnWidth(kol, szer)
         self.tabela.setItemDelegateForColumn(3, PigulkaDelegate(self.tabela))
-        self.tabela.setItemDelegateForColumn(5, PigulkaDelegate(self.tabela))
         self.tabela.setWordWrap(False)
         self.tabela.verticalHeader().setVisible(False)
         self.tabela.verticalHeader().setDefaultSectionSize(36)
@@ -1299,7 +1437,6 @@ class StronaHistoria(Strona):
         for b in self.akcje:
             b.setEnabled(d is not None)
         self.btn_anuluj.setEnabled(d is not None and d.wazny)
-        self.btn_oplacony.setVisible(d is not None and d.czeka_na_zaplate)
 
     def odswiez(self):
         self._wypelnij_lata()
@@ -1310,26 +1447,16 @@ class StronaHistoria(Strona):
                                              self.miesiac.currentData() or None, self.rodzaj.currentData())
         self.tabela.setRowCount(len(self.docs))
         for r, d in enumerate(self.docs):
-            if d.anulowano:
-                status = "Anulowany"
-            elif d.po_terminie():
-                status = "Po terminie"
-            elif d.nieoplacony:
-                status = "Nieopłacony"
-            else:
-                status = "Opłacony"
-            wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, d.tytul, d.platnosc, status,
-                      f"{druk.zl(d.suma)} zł"]
+            wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, "Anulowany" if d.anulowano else d.tytul,
+                      d.platnosc, f"{druk.zl(d.suma)} zł"]
             for kol, tekst in enumerate(wiersz):
                 item = QTableWidgetItem(tekst)
                 if kol == 0:
                     item.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
-                if kol == 5 and d.nieoplacony and d.termin_platnosci and not d.anulowano:
-                    item.setToolTip(f"Termin płatności: {druk.data_pl(d.termin_platnosci)}")
-                if kol == 6:
+                if kol == 5:
                     item.setFont(czcionka_cyfr(13, QFont.Weight.Medium))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if d.anulowano and kol not in (3, 5):
+                if d.anulowano and kol != 3:
                     item.setForeground(QColor(TEKST_3))
                     f = item.font()
                     f.setStrikeOut(True)
@@ -1340,8 +1467,6 @@ class StronaHistoria(Strona):
         p = podsumuj(self.docs)
         czesci = [f"{self.opis_okresu()}: {liczba_dokumentow(p.liczba)}", f"{druk.zl(p.suma)} zł"]
         czesci += [f"{k} {druk.zl(v)} zł" for k, v in sorted(p.wg_platnosci.items())]
-        if p.nieoplaconych:
-            czesci.append(f"nieopłacone: {p.nieoplaconych} ({druk.zl(p.do_zaplaty)} zł)")
         if p.anulowanych:
             czesci.append(f"anulowane: {p.anulowanych}")
         self.podsumowanie.setText("   •   ".join(czesci))
@@ -1375,23 +1500,13 @@ class StronaHistoria(Strona):
             for p in d.pozycje:
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
             self.okno.przejdz(STRONA_NOWY, odswiez=False)
-
-    def oznacz_oplacony(self):
-        d = self.wybrany()
-        if not d or not d.czeka_na_zaplate:
-            return
-        self.okno.baza.oznacz_oplacony(d.id)
-        self.okno.dziennik.zapisz(f"oznaczenie jako opłacony: nr {d.numer}")
-        self.okno.komunikat(f"Dokument nr {d.numer} oznaczony jako opłacony")
-        self.filtruj()
-
-    def pokaz_nieoplacone(self):
-        self.wyczysc_filtry()
-        self.rodzaj.setCurrentIndex(self.rodzaj.findData("nieoplacone"))
+            s.pokaz_krok(2)
 
     def anuluj(self):
         d = self.wybrany()
         if not d or not d.wazny:
+            return
+        if not self.okno.potwierdz_haslem("anulowanie dokumentu", f"Anulowanie dokumentu nr {d.numer} wymaga hasła."):
             return
         powod, ok = QInputDialog.getText(
             self, "Anuluj dokument",
@@ -1446,7 +1561,7 @@ class StronaHistoria(Strona):
 
 class StronaUstawienia(Strona):
     POLA = [("nazwa", "Nazwa"), ("nip", "NIP"), ("regon", "REGON"), ("miejsce", "Miejsce wystawienia"),
-            ("konto", "Nr konta do przelewów"), ("termin_dni", "Termin przelewu (dni)"),
+            ("konto", "Nr konta do przelewów"),
             ("format_numeru", "Numer rachunku"),
             ("format_numeru_faktury", "Numer faktury")]
 
@@ -1459,12 +1574,33 @@ class StronaUstawienia(Strona):
         naglowek.setContentsMargins(0, 0, 0, 0)
         naglowek.addLayout(naglowek_strony("Ustawienia", "Dane gabinetu, wydruk i bezpieczeństwo."))
         naglowek.addStretch()
-        naglowek.addWidget(przycisk("Zapisz zmiany", styl="glowny", akcja=self.zapisz),
-                           alignment=Qt.AlignmentFlag.AlignBottom)
+        self.btn_zablokuj_ust = przycisk("Zablokuj", "klodka", akcja=self.zablokuj_ustawienia)
+        naglowek.addWidget(self.btn_zablokuj_ust, alignment=Qt.AlignmentFlag.AlignBottom)
+        self.btn_zapisz = przycisk("Zapisz zmiany", styl="glowny", akcja=self.zapisz)
+        naglowek.addWidget(self.btn_zapisz, alignment=Qt.AlignmentFlag.AlignBottom)
         u.addWidget(gora)
         u.addSpacing(10)
 
+        # zasłona: ustawienia otwierają się dopiero po podaniu hasła
+        self.zaslona, zu = karta()
+        self.zaslona.setMaximumWidth(760)
+        zu.setContentsMargins(40, 48, 40, 48)
+        zu.setSpacing(10)
+        znak = QLabel(alignment=Qt.AlignmentFlag.AlignHCenter)
+        znak.setPixmap(pixmapa("klodka", TEKST_3, 32))
+        zu.addWidget(znak)
+        t = QLabel("Ustawienia są zablokowane", alignment=Qt.AlignmentFlag.AlignHCenter)
+        t.setStyleSheet("font-size: 17px; font-weight: 600;")
+        zu.addWidget(t)
+        zu.addWidget(QLabel("Zmiana danych gabinetu, hasła i kopii zapasowych wymaga hasła.",
+                            objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
+        zu.addSpacing(8)
+        zu.addWidget(przycisk("Odblokuj", "klucz", "glowny", self.odblokuj), alignment=Qt.AlignmentFlag.AlignHCenter)
+        u.addWidget(self.zaslona)
+        self.odblokowane = False
+
         kolumna = QWidget()
+        self.kolumna = kolumna
         kolumna.setMaximumWidth(760)
         lewa = QVBoxLayout(kolumna)
         lewa.setContentsMargins(0, 0, 0, 0)
@@ -1588,6 +1724,30 @@ class StronaUstawienia(Strona):
         prawa.addSpacing(10)
 
         # --- aktualizacje
+        prawa.addWidget(sekcja("Praca w tle i Windows"))
+        k, ku = karta()
+        f = self._formularz(ku)
+        self.tryb = QComboBox()
+        self.tryb.addItem("Prowadzący: krok po kroku", "prowadzacy")
+        self.tryb.addItem("Zaawansowany: wszystko w jednym oknie", "zaawansowany")
+        f.addRow("Wystawianie", self.tryb)
+        self.w_tle = QCheckBox("Działaj w tle: zamknięcie okna chowa program obok zegara")
+        self.autostart = QCheckBox("Uruchamiaj razem z Windows")
+        self.menu_kontekstowe = QCheckBox("„Dodaj do Fakturnika” w menu prawego przycisku myszy (PDF i zdjęcia)")
+        for w in (self.w_tle, self.autostart, self.menu_kontekstowe):
+            ku.addWidget(w)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Utwórz skrót na pulpicie", "plus", akcja=self._skrot))
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        if not integracja_dostepna():
+            for w in (self.autostart, self.menu_kontekstowe):
+                w.setEnabled(False)
+            ku.addWidget(QLabel("Autostart, menu prawego przycisku i skrót działają w wersji .exe na Windows.",
+                                objectName="drobny", wordWrap=True))
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
         prawa.addWidget(sekcja("Aktualizacje"))
         k, ku = karta()
         rzad = QHBoxLayout()
@@ -1619,7 +1779,30 @@ class StronaUstawienia(Strona):
         uklad.addLayout(f)
         return f
 
+    def _skrot(self):
+        if utworz_skrot_na_pulpicie():
+            self.okno.komunikat("Utworzono skrót na pulpicie")
+        else:
+            self.okno.komunikat("Skrót można utworzyć tylko w wersji .exe na Windows", blad=True)
+
+    def zablokuj_ustawienia(self):
+        self.odblokowane = False
+        self._pokaz_stan_blokady()
+
+    def odblokuj(self):
+        if self.okno.potwierdz_haslem("odblokowanie ustawień", "Podaj hasło, aby zmienić ustawienia."):
+            self.odblokowane = True
+            self._pokaz_stan_blokady()
+
+    def _pokaz_stan_blokady(self):
+        zablokowane = self.okno.baza.ma_haslo and not self.odblokowane
+        self.zaslona.setVisible(zablokowane)
+        self.kolumna.setVisible(not zablokowane)
+        self.btn_zapisz.setVisible(not zablokowane)
+        self.btn_zablokuj_ust.setVisible(self.okno.baza.ma_haslo and not zablokowane)
+
     def odswiez(self):
+        self._pokaz_stan_blokady()
         u = self.okno.baza.ustawienia()
         drukarki = self.pola["drukarka"]
         drukarki.clear()
@@ -1642,6 +1825,10 @@ class StronaUstawienia(Strona):
                 self._dodaj_do_cennika(nazwa.strip(), liczba(cena))
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
+        self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
+        self.w_tle.setChecked(u["w_tle"] == "1")
+        self.autostart.setChecked(autostart_wlaczony())
+        self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
         self.ustaw_logo(u["logo"])
         ma = self.okno.baza.ma_haslo
         self.ikona_stanu.setPixmap(pixmapa("tarcza" if ma else "uwaga", ZIELONY if ma else CZERWONY, 18))
@@ -1680,16 +1867,20 @@ class StronaUstawienia(Strona):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
             wartosci["konto"] = formatuj_konto(konto)
-        if not liczba(wartosci["termin_dni"]) > 0:
-            wartosci["termin_dni"] = "14"
         wartosci["uslugi"] = self._tekst_cennika()
         wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
+        wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
+        wartosci["tryb"] = self.tryb.currentData()
+        if integracja_dostepna():
+            ustaw_autostart(self.autostart.isChecked())
+            ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
-        self.okno.przejdz(STRONA_PULPIT)
+        self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
+        self.okno.przejdz(STRONA_NOWY)
 
     def _dodaj_do_cennika(self, nazwa: str = "", cena: float = 0.0):
         r = self.cennik.rowCount()
@@ -1820,6 +2011,8 @@ class StronaUstawienia(Strona):
         okno.exec()
 
     def przywroc(self):
+        if not self.okno.potwierdz_haslem("przywracanie kopii", "Przywrócenie danych z kopii wymaga hasła."):
+            return
         sciezka, _ = QFileDialog.getOpenFileName(self, "Przywróć z kopii", str(katalog_kopii()),
                                                  "Kopia Fakturnika (*.zip *.db)")
         if not sciezka:
@@ -2190,6 +2383,8 @@ class StronaPliki(Strona):
         p = self.wybrany()
         if not p:
             return
+        if not self.okno.potwierdz_haslem("usunięcie pliku", f"Usunięcie pliku „{p.nazwa}” wymaga hasła."):
+            return
         if QMessageBox.warning(self, "Usuń plik", f"Usunąć plik „{p.nazwa}” z programu?\n\n"
                                "Zostanie jeszcze w kopiach zapasowych.",
                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) \
@@ -2235,15 +2430,15 @@ class OknoGlowne(QMainWindow):
         opis = QVBoxLayout()
         opis.setSpacing(1)
         opis.addWidget(QLabel("Fakturnik", objectName="nazwa_programu"))
-        nazwa = self.baza.ustawienia()["nazwa"].split(",")[0].strip()
-        self.etykieta_gabinetu = QLabel(nazwa, objectName="gabinet")
+        self.etykieta_gabinetu = QLabel(objectName="gabinet")
+        self.etykieta_gabinetu.setFixedWidth(150)
         opis.addWidget(self.etykieta_gabinetu)
         marka.addLayout(opis)
         marka.addStretch()
         m.addLayout(marka)
 
         self.grupa = QButtonGroup(self)
-        for i, (nazwa, ik) in enumerate([("Pulpit", "pulpit"), ("Nowy dokument", "nowy"), ("Historia", "historia"),
+        for i, (nazwa, ik) in enumerate([("Nowy dokument", "nowy"), ("Historia", "historia"), ("Przychody", "wzrost"),
                                          ("Pliki", "archiwum"), ("Ustawienia", "ustawienia")]):
             b = QPushButton(f"   {nazwa}", checkable=True, cursor=Qt.CursorShape.PointingHandCursor)
             b.setIcon(ikona(ik, MENU_TEKST, aktywny="#ffffff"))
@@ -2285,7 +2480,7 @@ class OknoGlowne(QMainWindow):
         self.strona_historia = StronaHistoria(self)
         self.strona_pliki = StronaPliki(self)
         self.strona_ustawienia = StronaUstawienia(self)
-        for s in (self.strona_pulpit, self.strona_nowy, self.strona_historia, self.strona_pliki,
+        for s in (self.strona_nowy, self.strona_historia, self.strona_pulpit, self.strona_pliki,
                   self.strona_ustawienia):
             self.strony.addWidget(s)
         prawa.addWidget(self.strony, 1)
@@ -2294,8 +2489,9 @@ class OknoGlowne(QMainWindow):
         self.powiadomienie = Powiadomienie(tlo)
         QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.strona_pulpit._nowy(self.baza.ustawienia()["tytul"]))
 
+        self.strona_nowy.ustaw_tryb(self.baza.ustawienia()["tryb"])
         self.strona_nowy.wyczysc()
-        self.przejdz(STRONA_PULPIT)
+        self.przejdz(STRONA_NOWY)
 
         # automatyczna blokada po bezczynności (tylko gdy jest hasło)
         self.timer = QTimer(self, interval=BLOKADA_PO_MINUTACH * 60 * 1000, singleShot=True)
@@ -2304,19 +2500,40 @@ class OknoGlowne(QMainWindow):
         QApplication.instance().installEventFilter(self.straznik)
         self.timer.start()
 
+        # praca w tle i strażnik integralności (co minutę)
+        self._wyjscie = False
+        self._ukryty = False
+        self._podpowiedz_zasobnika = False
+        self._dziennik_zgloszony = False
+        self._utworz_zasobnik()
+        self.zegar_straznika = QTimer(self, interval=60 * 1000)
+        self.zegar_straznika.timeout.connect(self.sprawdz_integralnosc)
+        self.zegar_straznika.start()
+        QTimer.singleShot(3000, self.sprawdz_integralnosc)
+
         self.wydanie: aktualizacje.Wydanie | None = None
         if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1":
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
-        if not self.baza.ustawienia()["nip"]:
-            QTimer.singleShot(300, self.pierwsze_uruchomienie)
+        if self.baza.ustawienia()["skonfigurowano"] != "1":
+            QTimer.singleShot(200, self.pierwsze_uruchomienie)
 
     def przejdz(self, i: int, odswiez: bool = True):
+        if i != STRONA_PRZYCHODY:
+            self.strona_pulpit.zaslon()  # kwoty chowają się zawsze po wyjściu z zakładki
+        if i != STRONA_USTAWIENIA:
+            self.strona_ustawienia.odblokowane = False  # ustawienia blokują się po wyjściu
         self.grupa.button(i).setChecked(True)
         self.strony.setCurrentIndex(i)
         if odswiez:
             self.strony.currentWidget().odswiez()
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
-        self.etykieta_gabinetu.setText(self.baza.ustawienia()["nazwa"].split(",")[0].strip())
+        self._ustaw_nazwe_gabinetu()
+
+    def _ustaw_nazwe_gabinetu(self):
+        nazwa = self.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        miara = self.etykieta_gabinetu.fontMetrics()
+        self.etykieta_gabinetu.setText(miara.elidedText(nazwa, Qt.TextElideMode.ElideRight, 150))
+        self.etykieta_gabinetu.setToolTip(nazwa)
 
     def komunikat(self, tekst: str, blad: bool = False):
         self.powiadomienie.pokaz(tekst, blad)
@@ -2403,25 +2620,133 @@ class OknoGlowne(QMainWindow):
             return
         self.dziennik.zapisz(f"aktualizacja do {self.wydanie.wersja}: zainstalowana")
         QMessageBox.information(self, "Aktualizacja", "Aktualizacja zainstalowana. Program uruchomi się ponownie.")
+        self._wyjscie = True
         self.close()
 
     # ---- blokada i zamykanie
+    # ---- hasło do ważnych operacji
+    def potwierdz_haslem(self, cel: str, opis: str = "Ta operacja wymaga hasła.") -> bool:
+        if not self.baza.ma_haslo:
+            return True
+        return OknoHasla(self.baza.sprawdz_haslo, "Potwierdź hasłem", self, self.dziennik, cel, opis).exec() \
+            == QDialog.DialogCode.Accepted
+
+    # ---- praca w tle (zasobnik obok zegara)
+    def _utworz_zasobnik(self):
+        self.zasobnik = QSystemTrayIcon(QIcon(str(ZASOBY / "ikona.png")), self)
+        self.zasobnik.setToolTip("Fakturnik: działa w tle i pilnuje danych")
+        menu = QMenu()
+        menu.addAction(ikona("nowy", TEKST_2), "Otwórz Fakturnik", self.pokaz_okno)
+        menu.addAction(ikona("plus", TEKST_2), "Nowy rachunek", lambda: self._nowy_z_zasobnika("Rachunek"))
+        menu.addAction(ikona("faktura", TEKST_2), "Nowa faktura", lambda: self._nowy_z_zasobnika("Faktura"))
+        menu.addSeparator()
+        menu.addAction(ikona("klodka", TEKST_2), "Zablokuj", self.zablokuj)
+        menu.addAction(ikona("zamknij", TEKST_2), "Zakończ program…", self.zakoncz)
+        self._menu_zasobnika = menu
+        self.zasobnik.setContextMenu(menu)
+        self.zasobnik.activated.connect(
+            lambda powod: self.pokaz_okno() if powod in (QSystemTrayIcon.ActivationReason.Trigger,
+                                                         QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.zasobnik.show()
+
+    def _w_tle_dostepne(self) -> bool:
+        return self.baza.ustawienia()["w_tle"] == "1" and QSystemTrayIcon.isSystemTrayAvailable()
+
+    def ukryj_do_zasobnika(self):
+        self.strona_pulpit.zaslon()
+        self.hide()
+        self._ukryty = True
+        if not self._podpowiedz_zasobnika:
+            self._podpowiedz_zasobnika = True
+            self.zasobnik.showMessage("Fakturnik działa w tle",
+                                      "Pilnuje bezpieczeństwa danych. Kliknij ikonę obok zegara, aby go otworzyć.",
+                                      QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    def pokaz_okno(self):
+        if self._ukryty and self.baza.ma_haslo:
+            if OknoHasla(self.baza.sprawdz_haslo, "Fakturnik", dziennik=self.dziennik, cel="otwarcie z zasobnika",
+                         opis="Podaj hasło, aby otworzyć program.").exec() != QDialog.DialogCode.Accepted:
+                return
+        self._ukryty = False
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.timer.start()
+
+    def _nowy_z_zasobnika(self, rodzaj: str):
+        self.pokaz_okno()
+        if self.isVisible():
+            self.przejdz(STRONA_NOWY)
+            self.strona_nowy.ustaw_rodzaj(rodzaj)
+
+    def obsluz_polecenie(self, polecenie: dict):
+        """Polecenie od drugiej kopii programu: pokaż okno albo dodaj pliki (menu prawego przycisku)."""
+        if polecenie.get("akcja") == "w_tle":
+            return
+        self.pokaz_okno()
+        if not self.isVisible():
+            return
+        if polecenie.get("akcja") == "dodaj" and polecenie.get("pliki"):
+            self.przejdz(STRONA_PLIKI)
+            self.strona_pliki._dodaj_sciezki([Path(p) for p in polecenie["pliki"]])
+
+    def zakoncz(self):
+        if self.baza.ma_haslo:
+            if not self.potwierdz_haslem("zakończenie programu", "Podaj hasło, aby wyłączyć Fakturnik.\n"
+                                         "Po wyłączeniu program przestaje pilnować danych."):
+                return
+        elif QMessageBox.question(None, "Fakturnik", "Wyłączyć Fakturnik? Program przestanie pilnować danych.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self._wyjscie = True
+        self.close()
+        QApplication.quit()
+
+    # ---- strażnik integralności
+    def sprawdz_integralnosc(self):
+        problemy = self.baza.sprawdz_integralnosc(katalog_kopii() / "pliki")
+        if not self.dziennik.nienaruszony() and not self._dziennik_zgloszony:
+            self._dziennik_zgloszony = True
+            problemy.append("Dziennik logowań został zmieniony lub usunięto z niego wpisy.")
+        for p in problemy:
+            self.dziennik.zapisz(f"STRAŻNIK: {p}")
+        if problemy:
+            self.zasobnik.showMessage("Fakturnik: wykryto problem z danymi", "\n".join(problemy)[:400],
+                                      QSystemTrayIcon.MessageIcon.Warning, 10000)
+            if self.isVisible():
+                self.komunikat(problemy[0], blad=True)
+
     def zablokuj(self):
-        if not self.baza.ma_haslo or not self.isVisible():
+        if not self.baza.ma_haslo:
             self.timer.start()
             return
-        self.hide()
+        if not self.isVisible():
+            self._ukryty = True
+            return
         self.dziennik.zapisz("blokada programu")
+        if self._w_tle_dostepne():
+            self.ukryj_do_zasobnika()  # odblokowanie hasłem po kliknięciu ikony
+            return
+        self.hide()
         okno = OknoHasla(self.baza.sprawdz_haslo, "Fakturnik jest zablokowany", dziennik=self.dziennik,
                          cel="odblokowanie", opis="Podaj hasło, aby wrócić do pracy.")
         if okno.exec() == QDialog.DialogCode.Accepted:
             self.show()
             self.timer.start()
         else:
+            self._wyjscie = True
             self.close()
             QApplication.quit()
 
     def closeEvent(self, event):
+        if not self._wyjscie and self._w_tle_dostepne():
+            event.ignore()  # zamknięcie okna = schowanie do zasobnika; program dalej pilnuje danych
+            self.ukryj_do_zasobnika()
+            return
+        self.zegar_straznika.stop()
+        if hasattr(self, "zasobnik"):
+            self.zasobnik.hide()
         QApplication.instance().removeEventFilter(self.straznik)
         self.timer.stop()
         self.dziennik.zapisz("zamknięcie programu")
@@ -2434,11 +2759,11 @@ class OknoGlowne(QMainWindow):
         event.accept()
 
     def pierwsze_uruchomienie(self):
-        QMessageBox.information(
-            self, "Witaj w Fakturniku",
-            "Uzupełnij dane gabinetu (przede wszystkim NIP) i ceny usług.\n\n"
-            "Ustaw też hasło w sekcji Bezpieczeństwo: dane pacjentów będą wtedy zaszyfrowane.")
-        self.przejdz(STRONA_USTAWIENIA)
+        from .kreator import Kreator
+        Kreator(self).exec()
+        self.strona_nowy.ustaw_tryb(self.baza.ustawienia()["tryb"])
+        self.strona_nowy.wyczysc()
+        self.przejdz(STRONA_NOWY)
 
 
 def uruchom() -> int:
@@ -2446,6 +2771,7 @@ def uruchom() -> int:
     app.setApplicationName("Fakturnik")
     app.setOrganizationName("Fakturnik")
     app.setWindowIcon(QIcon(str(ZASOBY / "ikona.png")))
+    app.setQuitOnLastWindowClosed(False)  # program może działać w tle bez otwartego okna
     zaladuj_czcionki()
     app.setStyle("Fusion")
     czcionka = QFont("Inter")
@@ -2455,10 +2781,17 @@ def uruchom() -> int:
     app.setStyleSheet(STYL)
     aktualizacje.posprzataj()
 
+    # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
+    polecenie = polecenie_z_argumentow(sys.argv[1:])
+    jedna = JednaKopia()
+    if jedna.wyslij_do_dzialajacej(polecenie):
+        return 0
+    jedna.nasluchuj()
+
     plik = sciezka_danych()
     dziennik = Dziennik(plik.parent / "dziennik.log")
     try:
-        kod, okno = _otworz(app, plik, dziennik)
+        kod, okno = _otworz(app, plik, dziennik, jedna, polecenie)
     except PlikZajety as e:
         QMessageBox.warning(None, "Fakturnik", str(e))
         return 1
@@ -2470,7 +2803,59 @@ def uruchom() -> int:
     return kod
 
 
-def _otworz(app: QApplication, plik: Path, dziennik: Dziennik) -> tuple[int, OknoGlowne | None]:
+def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polecenie: dict) -> dict | None:
+    """Start z Windows przy danych chronionych hasłem: program siedzi w zasobniku i już blokuje plik danych,
+    a o hasło pyta dopiero, gdy ktoś go otworzy. Zwraca polecenie do wykonania albo None (zakończ)."""
+    blokada = BlokadaPliku(plik)
+    blokada.zaloz()
+    wynik: dict = {}
+    petla = QEventLoop()
+    zasobnik = QSystemTrayIcon(QIcon(str(ZASOBY / "ikona.png")))
+    zasobnik.setToolTip("Fakturnik: działa w tle i pilnuje danych")
+    menu = QMenu()
+
+    def otworz(p=None):
+        wynik["polecenie"] = p or {"akcja": "pokaz"}
+        petla.quit()
+
+    def zakoncz():
+        def sprawdz(haslo: str) -> bool:
+            try:
+                blokada.zwolnij()
+                Baza(plik, haslo).zamknij()
+                return True
+            except BledneHaslo:
+                return False
+            finally:
+                blokada.zaloz()
+        if OknoHasla(sprawdz, "Wyłącz Fakturnik", opis="Podaj hasło, aby wyłączyć program.").exec() \
+                == QDialog.DialogCode.Accepted:
+            wynik["polecenie"] = None
+            petla.quit()
+
+    menu.addAction("Otwórz Fakturnik", otworz)
+    menu.addSeparator()
+    menu.addAction("Zakończ program…", zakoncz)
+    zasobnik.setContextMenu(menu)
+    zasobnik.activated.connect(lambda powod: otworz() if powod in (QSystemTrayIcon.ActivationReason.Trigger,
+                                                                   QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+    jedna.polecenie.connect(lambda p: otworz(p) if p.get("akcja") != "w_tle" else None)
+    zasobnik.show()
+    petla.exec()
+    zasobnik.hide()
+    jedna.polecenie.disconnect()
+    blokada.zwolnij()
+    return wynik.get("polecenie")
+
+
+def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia,
+            polecenie: dict) -> tuple[int, OknoGlowne | None]:
+    w_tle = polecenie.get("akcja") == "w_tle" and QSystemTrayIcon.isSystemTrayAvailable()
+    if w_tle and Baza.wymaga_hasla(plik):
+        polecenie = _czekaj_w_zasobniku(app, plik, jedna, polecenie)
+        if polecenie is None:
+            return 0, None
+        w_tle = False
     if Baza.wymaga_hasla(plik):
         wynik: dict[str, Baza] = {}
 
@@ -2500,5 +2885,11 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik) -> tuple[int, Okn
         pass
 
     okno = OknoGlowne(baza, dziennik)
-    okno.show()
+    jedna.polecenie.connect(okno.obsluz_polecenie)
+    if w_tle and okno._w_tle_dostepne() and baza.ustawienia()["skonfigurowano"] == "1":
+        okno._ukryty = baza.ma_haslo
+    else:
+        okno.show()
+        if polecenie.get("akcja") == "dodaj":
+            QTimer.singleShot(300, lambda: okno.obsluz_polecenie(polecenie))
     return app.exec(), okno
