@@ -82,6 +82,9 @@ STYLE_PIGULEK = {
     "Rachunek": ("#eef1f3", "#3b4650"),
     "Faktura": ("#e3eff1", "#16525f"),
     "Anulowany": ("#fbeaec", "#a4303d"),
+    "Opłacony": ("#e7f4ec", "#1b6e48"),
+    "Nieopłacony": ("#fdf3e1", "#8a5a00"),
+    "Po terminie": ("#fbeaec", "#a4303d"),
 }
 
 

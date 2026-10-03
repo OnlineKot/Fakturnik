@@ -17,7 +17,7 @@ from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,7 @@ from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety
 from .ikony import ikona, pixmapa
 from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
 from .szyfrowanie import BledneHaslo
+from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
 from .wersja import WERSJA
 from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, Powiadomienie, WykresMiesiecy
 
@@ -70,6 +71,7 @@ QFrame#karta {{ background: white; border: 1px solid {LINIA}; border-radius: 12p
 QFrame#karta QLabel {{ background: transparent; }}
 QFrame#papier {{ background: transparent; }}
 QFrame#separator {{ background: {LINIA}; max-height: 1px; border: none; }}
+QFrame#stopka {{ background: white; border: none; border-top: 1px solid {LINIA}; }}
 
 QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
     background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 7px 10px;
@@ -180,6 +182,7 @@ class UkladPlynny(QLayout):
         super().__init__()
         self.elementy: list = []
         self.odstep = odstep
+        self._wysokosc = 0  # wysokość przy ostatniej szerokości; zgłaszana rodzicowi, żeby niczego nie ściskał
 
     def addItem(self, element):
         self.elementy.append(element)
@@ -204,7 +207,10 @@ class UkladPlynny(QLayout):
 
     def setGeometry(self, prostokat):
         super().setGeometry(prostokat)
-        self._uloz(prostokat, tylko_licz=False)
+        wysokosc = self._uloz(prostokat, tylko_licz=False)
+        if wysokosc != self._wysokosc:
+            self._wysokosc = wysokosc
+            QTimer.singleShot(0, self.invalidate)  # liczba wierszy się zmieniła: przelicz układ rodzica
 
     def sizeHint(self):
         return self.minimumSize()
@@ -214,7 +220,8 @@ class UkladPlynny(QLayout):
         for e in self.elementy:
             rozmiar = rozmiar.expandedTo(e.minimumSize())
         m = self.contentsMargins()
-        return rozmiar + QSize(m.left() + m.right(), m.top() + m.bottom())
+        rozmiar += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return QSize(rozmiar.width(), max(rozmiar.height(), self._wysokosc))
 
     def _uloz(self, prostokat, tylko_licz):
         m = self.contentsMargins()
@@ -444,6 +451,15 @@ class Strona(QWidget):
             zewn.addWidget(obszar)
         else:
             zewn.addWidget(tresc)
+        self._zewn = zewn
+
+    def stopka(self) -> QHBoxLayout:
+        """Pasek na dole strony, zawsze widoczny (poza przewijaną treścią)."""
+        pasek = QFrame(objectName="stopka")
+        uklad = QHBoxLayout(pasek)
+        uklad.setContentsMargins(32, 12, 32, 12)
+        self._zewn.addWidget(pasek)
+        return uklad
 
     def odswiez(self):
         pass
@@ -503,7 +519,10 @@ class StronaPulpit(Strona):
         kafle.setSpacing(14)
         k1, self.k_przychod, self.k_przychod_zm = kafelek("Przychód w tym miesiącu")
         k2, self.k_liczba, self.k_liczba_zm = kafelek("Wystawione dokumenty")
-        k3, self.k_srednia, self.k_srednia_zm = kafelek("Średnio na dokument")
+        k3, self.k_zaplata, self.k_zaplata_zm = kafelek("Czeka na zapłatę")
+        k3.setCursor(Qt.CursorShape.PointingHandCursor)
+        k3.setToolTip("Pokaż nieopłacone dokumenty")
+        k3.mousePressEvent = lambda _e: self._pokaz_nieoplacone()
         k4, self.k_rok, self.k_rok_zm = kafelek("Przychód od początku roku")
         self.k_przychod_et = k1.findChild(QLabel, "kpi_etykieta")
         for k in (k1, k2, k3, k4):
@@ -561,6 +580,10 @@ class StronaPulpit(Strona):
         self.okno.strona_nowy.ustaw_rodzaj(rodzaj)
         self.okno.strona_nowy.nabywca.setFocus()
 
+    def _pokaz_nieoplacone(self):
+        self.okno.przejdz(STRONA_HISTORIA)
+        self.okno.strona_historia.pokaz_nieoplacone()
+
     def _pokaz(self, wiersz: int, _kol: int):
         if 0 <= wiersz < len(self._docs):
             self.okno.podglad(self._docs[wiersz], duplikat=True)
@@ -574,7 +597,6 @@ class StronaPulpit(Strona):
 
         teraz = podsumuj(baza.dokumenty(rok=dzis.year, miesiac=dzis.month))
         pr, pm = poprzedni_miesiac(dzis.year, dzis.month)
-        wczesniej = podsumuj(baza.dokumenty(rok=pr, miesiac=pm))
         # uczciwe porównanie: te same dni poprzedniego miesiąca (np. 1–3 października z 1–3 września)
         do_dnia = podsumuj([d for d in baza.dokumenty(rok=pr, miesiac=pm) if int(d.data_wystawienia[8:10]) <= dzis.day])
         self.k_przychod_et.setText(f"Przychód w {MIESIACE_MIEJSC[dzis.month - 1]}")
@@ -592,9 +614,16 @@ class StronaPulpit(Strona):
         faktur = sum(1 for d in wszystkie_teraz if d.wazny and d.tytul == "Faktura")
         self.k_liczba.setText(str(teraz.liczba))
         self.k_liczba_zm.setText(f"rachunki: {teraz.liczba - faktur}, faktury: {faktur}")
-        self.k_srednia.setText(f"{druk.zl(teraz.suma / teraz.liczba) if teraz.liczba else '0,00'} zł")
-        self.k_srednia_zm.setText(f"w {MIESIACE_MIEJSC[pm - 1]}: "
-                                  f"{druk.zl(wczesniej.suma / wczesniej.liczba) if wczesniej.liczba else '0,00'} zł")
+        czekajace = podsumuj(baza.nieoplacone())
+        self.k_zaplata.setText(f"{druk.zl(czekajace.do_zaplaty)} zł")
+        if not czekajace.nieoplaconych:
+            self.k_zaplata_zm.setText("wszystko zapłacone")
+        elif czekajace.po_terminie:
+            self.k_zaplata_zm.setText(f'{liczba_dokumentow(czekajace.nieoplaconych)}, '
+                                      f'<span style="color:{CZERWONY}; font-weight:600;">po terminie: '
+                                      f'{czekajace.po_terminie}</span>')
+        else:
+            self.k_zaplata_zm.setText(f"{liczba_dokumentow(czekajace.nieoplaconych)}, w terminie")
         rok = podsumuj(baza.dokumenty(rok=dzis.year))
         self.k_rok.setText(f"{druk.zl(rok.suma)} zł")
         self.k_rok_zm.setText(f"{liczba_dokumentow(rok.liczba)} w {dzis.year} r.")
@@ -612,7 +641,9 @@ class StronaPulpit(Strona):
         for r, d in enumerate(self._docs):
             opis = QTableWidgetItem(f"{d.nabywca}\n{d.numer}  ·  {druk.data_pl(d.data_wystawienia)}")
             self.ostatnie.setItem(r, 0, opis)
-            self.ostatnie.setItem(r, 1, QTableWidgetItem("Anulowany" if d.anulowano else d.tytul))
+            etykieta = "Anulowany" if d.anulowano else ("Po terminie" if d.po_terminie() else
+                                                       ("Nieopłacony" if d.nieoplacony else d.tytul))
+            self.ostatnie.setItem(r, 1, QTableWidgetItem(etykieta))
             kwota = QTableWidgetItem(f"{druk.zl(d.suma)} zł")
             kwota.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
             kwota.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -625,7 +656,7 @@ class StronaPulpit(Strona):
 
 class StronaNowy(Strona):
     def __init__(self, okno: "OknoGlowne"):
-        super().__init__(okno)
+        super().__init__(okno, przewijana=True)
         u = self.uklad
         gora = QHBoxLayout()
         self.naglowek = naglowek_strony("Nowy rachunek", "Numer nadaje się sam: kolejny w danym miesiącu.")
@@ -682,11 +713,29 @@ class StronaNowy(Strona):
         self.platnosc = QComboBox()
         self.platnosc.addItems(["gotówka", "karta", "przelew"])
         self.data_wyst.dateChanged.connect(self.odswiez_numer)
+        self.data_wyst.dateChanged.connect(lambda _: self._zmiana_platnosci(self.platnosc.currentText()))
         for kol, (etykieta, w) in enumerate([("Numer", self.numer), ("Data wystawienia", self.data_wyst),
                                              ("Data usługi", self.data_uslugi), ("Płatność", self.platnosc)]):
             siatka.addLayout(pole(etykieta, w), 0, kol)
         siatka.setColumnStretch(4, 1)
         ku.addLayout(siatka)
+        # termin płatności tylko przy przelewie
+        self.wiersz_terminu = QWidget()
+        wt = QHBoxLayout(self.wiersz_terminu)
+        wt.setContentsMargins(0, 0, 0, 0)
+        wt.setSpacing(10)
+        wt.addWidget(QLabel("Termin płatności", objectName="etykieta"))
+        self.termin = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
+        self.termin.setFixedWidth(130)
+        wt.addWidget(self.termin)
+        wt.addSpacing(10)
+        self.juz_oplacone = QCheckBox("Przelew już zaksięgowany")
+        wt.addWidget(self.juz_oplacone)
+        wt.addStretch()
+        self.wiersz_terminu.hide()
+        ku.addWidget(self.wiersz_terminu)
+        self.platnosc.currentTextChanged.connect(self._zmiana_platnosci)
+        self.juz_oplacone.toggled.connect(lambda zaznaczone: self.termin.setEnabled(not zaznaczone))
         ku.addWidget(separator())
 
         self.nabywca = QLineEdit(placeholderText="Imię i nazwisko lub nazwa firmy")
@@ -702,12 +751,17 @@ class StronaNowy(Strona):
         wybierz.setToolTip("Lista wszystkich pacjentów (F2)")
         wiersz_pacjenta.addWidget(wybierz)
         kontener = QWidget()
+        kontener.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         kontener.setLayout(wiersz_pacjenta)
         wiersz_pacjenta.setContentsMargins(0, 0, 0, 0)
         uklad_pacjenta = pole("Pacjent", kontener)
         self.etykieta_nabywcy = uklad_pacjenta.itemAt(0).widget()
-        nab.addLayout(uklad_pacjenta, 0, 0)
-        nab.addLayout(pole("PESEL lub NIP", self.nabywca_id), 0, 1)
+        nab.addLayout(uklad_pacjenta, 0, 0, Qt.AlignmentFlag.AlignTop)
+        pole_id = pole("PESEL lub NIP", self.nabywca_id)
+        self.podpowiedz_id = QLabel(objectName="drobny")
+        pole_id.addWidget(self.podpowiedz_id)
+        self.nabywca_id.textChanged.connect(self._sprawdz_id)
+        nab.addLayout(pole_id, 0, 1, Qt.AlignmentFlag.AlignTop)
         nab.addLayout(pole("Adres", self.nabywca_adres), 1, 0, 1, 2)
         nab.setColumnStretch(0, 3)
         nab.setColumnStretch(1, 2)
@@ -753,17 +807,22 @@ class StronaNowy(Strona):
         u.addWidget(k, 1)
         u.addSpacing(10)
 
-        # --- akcje
-        dol = QHBoxLayout()
+        # --- akcje: stały pasek na dole, zawsze widoczny
+        dol = self.stopka()
         self.kopia = QCheckBox("Drukuj też kopię")
         dol.addWidget(self.kopia)
         dol.addStretch()
+        dol.addWidget(QLabel("Do zapłaty", objectName="podtytul"))
+        dol.addSpacing(6)
+        self.suma_stopka = QLabel("0,00 zł")
+        self.suma_stopka.setFont(czcionka_cyfr(18, QFont.Weight.DemiBold))
+        dol.addWidget(self.suma_stopka)
+        dol.addSpacing(18)
         dol.addWidget(przycisk("Podgląd", "podglad", akcja=self.podglad))
         dol.addWidget(przycisk("Zapisz PDF", "pdf", akcja=self.zapisz_pdf))
         self.drukuj_btn = przycisk("Drukuj", "drukarka", "glowny", self.drukuj)
         self.drukuj_btn.setToolTip("F5 lub Ctrl+P")
         dol.addWidget(self.drukuj_btn)
-        u.addLayout(dol)
 
         QShortcut(QKeySequence("F5"), self, self.drukuj)
         QShortcut(QKeySequence("Ctrl+P"), self, self.drukuj)
@@ -774,9 +833,34 @@ class StronaNowy(Strona):
         for pole_daty in (self.data_wyst, self.data_uslugi):
             pole_daty.dateChanged.connect(self.zaplanuj_podglad)
         self.platnosc.currentIndexChanged.connect(self.zaplanuj_podglad)
+        self.termin.dateChanged.connect(self.zaplanuj_podglad)
+        self.juz_oplacone.toggled.connect(self.zaplanuj_podglad)
         self.tabela.itemChanged.connect(self.zaplanuj_podglad)
         self.tabela.model().rowsRemoved.connect(self.zaplanuj_podglad)
         self.kopia.toggled.connect(self.zaplanuj_podglad)
+
+    def _zmiana_platnosci(self, tekst: str):
+        przelew = tekst == "przelew"
+        self.wiersz_terminu.setVisible(przelew)
+        if przelew:
+            dni = int(liczba(self.okno.baza.ustawienia()["termin_dni"]) or 14)
+            self.termin.setDate(self.data_wyst.date().addDays(dni))
+
+    def _platnosc_pola(self) -> dict:
+        if self.platnosc.currentText() != "przelew":
+            return {}
+        if self.juz_oplacone.isChecked():
+            return {"oplacono": self.data_wyst.date().toPython().isoformat()}
+        return {"nieoplacony": True, "termin_platnosci": self.termin.date().toPython().isoformat()}
+
+    def _sprawdz_id(self, tekst: str):
+        wynik = opis_identyfikatora(tekst)
+        if not wynik:
+            self.podpowiedz_id.clear()
+            return
+        komunikat, ok = wynik
+        self.podpowiedz_id.setText(komunikat)
+        self.podpowiedz_id.setStyleSheet(f"color: {ZIELONY if ok else CZERWONY};")
 
     def zaplanuj_podglad(self, *_):
         self._zegar_podgladu.start()
@@ -792,6 +876,7 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
+            **self._platnosc_pola(),
             pozycje=self.pozycje())
 
     def odswiez_podglad(self):
@@ -919,6 +1004,8 @@ class StronaNowy(Strona):
             suma += w
         self.tabela.blockSignals(False)
         self.suma.setText(f"{druk.zl(suma)} zł")
+        if hasattr(self, "suma_stopka"):
+            self.suma_stopka.setText(f"{druk.zl(suma)} zł")
 
     def dokument(self) -> Dokument | None:
         if not self.nabywca.text().strip():
@@ -938,6 +1025,7 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
+            **self._platnosc_pola(),
             pozycje=pozycje)
 
     def wyczysc(self):
@@ -948,6 +1036,7 @@ class StronaNowy(Strona):
         self.data_wyst.setDate(QDate.currentDate())
         self.data_uslugi.setDate(QDate.currentDate())
         self.platnosc.setCurrentIndex(0)
+        self.juz_oplacone.setChecked(False)
         self.rodzaj_grupa.button(1 if self.okno.baza.ustawienia()["tytul"] == "Faktura" else 0).setChecked(True)
         self.odswiez()
         self.zmien_rodzaj()
@@ -1113,7 +1202,8 @@ class StronaHistoria(Strona):
         self.miesiac.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.miesiac)
         self.rodzaj = QComboBox(minimumWidth=150)
-        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura")):
+        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura"),
+                            ("Tylko nieopłacone", "nieoplacone")):
             self.rodzaj.addItem(tekst, dane)
         self.rodzaj.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.rodzaj)
@@ -1128,8 +1218,9 @@ class StronaHistoria(Strona):
         self.akcje = [przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
                       przycisk("Podgląd", "podglad", akcja=self.podglad),
                       przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor)]
+        self.btn_oplacony = przycisk("Oznacz jako opłacony", "ok", akcja=self.oznacz_oplacony)
         self.btn_anuluj = przycisk("Anuluj dokument", "anuluj", "niebezpieczny", self.anuluj)
-        for b in self.akcje + [self.btn_anuluj]:
+        for b in self.akcje + [self.btn_oplacony, self.btn_anuluj]:
             akcje.addWidget(b)
         akcje.addStretch()
         u.addLayout(akcje)
@@ -1137,15 +1228,16 @@ class StronaHistoria(Strona):
 
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
-        self.tabela = QTableWidget(0, 6)
-        self.tabela.setHorizontalHeaderLabels(["Numer", "Data", "Pacjent", "Rodzaj", "Płatność", "Kwota"])
+        self.tabela = QTableWidget(0, 7)
+        self.tabela.setHorizontalHeaderLabels(["Numer", "Data", "Pacjent", "Rodzaj", "Płatność", "Status", "Kwota"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.tabela.horizontalHeaderItem(5).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        for kol, szer in ((0, 130), (1, 110), (3, 120), (4, 110), (5, 140)):
+        self.tabela.horizontalHeaderItem(6).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for kol, szer in ((0, 130), (1, 100), (3, 110), (4, 100), (5, 130), (6, 130)):
             self.tabela.setColumnWidth(kol, szer)
         self.tabela.setItemDelegateForColumn(3, PigulkaDelegate(self.tabela))
+        self.tabela.setItemDelegateForColumn(5, PigulkaDelegate(self.tabela))
         self.tabela.setWordWrap(False)
         self.tabela.verticalHeader().setVisible(False)
         self.tabela.verticalHeader().setDefaultSectionSize(36)
@@ -1207,6 +1299,7 @@ class StronaHistoria(Strona):
         for b in self.akcje:
             b.setEnabled(d is not None)
         self.btn_anuluj.setEnabled(d is not None and d.wazny)
+        self.btn_oplacony.setVisible(d is not None and d.czeka_na_zaplate)
 
     def odswiez(self):
         self._wypelnij_lata()
@@ -1217,16 +1310,26 @@ class StronaHistoria(Strona):
                                              self.miesiac.currentData() or None, self.rodzaj.currentData())
         self.tabela.setRowCount(len(self.docs))
         for r, d in enumerate(self.docs):
-            wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca,
-                      "Anulowany" if d.anulowano else d.tytul, d.platnosc, f"{druk.zl(d.suma)} zł"]
+            if d.anulowano:
+                status = "Anulowany"
+            elif d.po_terminie():
+                status = "Po terminie"
+            elif d.nieoplacony:
+                status = "Nieopłacony"
+            else:
+                status = "Opłacony"
+            wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, d.tytul, d.platnosc, status,
+                      f"{druk.zl(d.suma)} zł"]
             for kol, tekst in enumerate(wiersz):
                 item = QTableWidgetItem(tekst)
                 if kol == 0:
                     item.setFont(czcionka_cyfr(13, QFont.Weight.DemiBold))
-                if kol == 5:
+                if kol == 5 and d.nieoplacony and d.termin_platnosci and not d.anulowano:
+                    item.setToolTip(f"Termin płatności: {druk.data_pl(d.termin_platnosci)}")
+                if kol == 6:
                     item.setFont(czcionka_cyfr(13, QFont.Weight.Medium))
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if d.anulowano and kol != 3:
+                if d.anulowano and kol not in (3, 5):
                     item.setForeground(QColor(TEKST_3))
                     f = item.font()
                     f.setStrikeOut(True)
@@ -1237,6 +1340,8 @@ class StronaHistoria(Strona):
         p = podsumuj(self.docs)
         czesci = [f"{self.opis_okresu()}: {liczba_dokumentow(p.liczba)}", f"{druk.zl(p.suma)} zł"]
         czesci += [f"{k} {druk.zl(v)} zł" for k, v in sorted(p.wg_platnosci.items())]
+        if p.nieoplaconych:
+            czesci.append(f"nieopłacone: {p.nieoplaconych} ({druk.zl(p.do_zaplaty)} zł)")
         if p.anulowanych:
             czesci.append(f"anulowane: {p.anulowanych}")
         self.podsumowanie.setText("   •   ".join(czesci))
@@ -1270,6 +1375,19 @@ class StronaHistoria(Strona):
             for p in d.pozycje:
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
             self.okno.przejdz(STRONA_NOWY, odswiez=False)
+
+    def oznacz_oplacony(self):
+        d = self.wybrany()
+        if not d or not d.czeka_na_zaplate:
+            return
+        self.okno.baza.oznacz_oplacony(d.id)
+        self.okno.dziennik.zapisz(f"oznaczenie jako opłacony: nr {d.numer}")
+        self.okno.komunikat(f"Dokument nr {d.numer} oznaczony jako opłacony")
+        self.filtruj()
+
+    def pokaz_nieoplacone(self):
+        self.wyczysc_filtry()
+        self.rodzaj.setCurrentIndex(self.rodzaj.findData("nieoplacone"))
 
     def anuluj(self):
         d = self.wybrany()
@@ -1328,7 +1446,8 @@ class StronaHistoria(Strona):
 
 class StronaUstawienia(Strona):
     POLA = [("nazwa", "Nazwa"), ("nip", "NIP"), ("regon", "REGON"), ("miejsce", "Miejsce wystawienia"),
-            ("konto", "Nr konta do przelewów"), ("format_numeru", "Numer rachunku"),
+            ("konto", "Nr konta do przelewów"), ("termin_dni", "Termin przelewu (dni)"),
+            ("format_numeru", "Numer rachunku"),
             ("format_numeru_faktury", "Numer faktury")]
 
     def __init__(self, okno: "OknoGlowne"):
@@ -1401,12 +1520,29 @@ class StronaUstawienia(Strona):
         lewa.addSpacing(10)
 
         # --- usługi
-        prawa.addWidget(sekcja("Szybkie usługi"))
+        prawa.addWidget(sekcja("Cennik usług"))
         k, ku = karta()
-        ku.addWidget(QLabel("Jedna usługa w wierszu, w formacie: nazwa;cena", objectName="drobny"))
-        self.pola["uslugi"] = QPlainTextEdit()
-        self.pola["uslugi"].setMinimumHeight(110)
-        ku.addWidget(self.pola["uslugi"])
+        ku.setContentsMargins(0, 8, 0, 12)
+        self.cennik = QTableWidget(0, 2)
+        self.cennik.setHorizontalHeaderLabels(["Usługa", "Cena (zł)"])
+        self.cennik.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.cennik.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.cennik.setColumnWidth(1, 140)
+        self.cennik.verticalHeader().setVisible(False)
+        self.cennik.verticalHeader().setDefaultSectionSize(36)
+        self.cennik.setShowGrid(False)
+        self.cennik.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.cennik.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.cennik.setMinimumHeight(290)
+        ku.addWidget(self.cennik)
+        rzad = QHBoxLayout()
+        rzad.setContentsMargins(12, 0, 12, 0)
+        rzad.addWidget(przycisk("Dodaj usługę", "plus", "plaski", lambda: self._dodaj_do_cennika()))
+        rzad.addWidget(przycisk("Usuń", "kosz", "plaski", self._usun_z_cennika))
+        rzad.addStretch()
+        rzad.addWidget(przycisk("W górę", styl="plaski", akcja=lambda: self._przesun_w_cenniku(-1)))
+        rzad.addWidget(przycisk("W dół", styl="plaski", akcja=lambda: self._przesun_w_cenniku(1)))
+        ku.addLayout(rzad)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -1499,6 +1635,11 @@ class StronaUstawienia(Strona):
             else:
                 p.setText(u[klucz])
         self.okno_drukarki.setChecked(u["okno_drukarki"] == "1")
+        self.cennik.setRowCount(0)
+        for linia in u["uslugi"].splitlines():
+            nazwa, _, cena = linia.partition(";")
+            if nazwa.strip():
+                self._dodaj_do_cennika(nazwa.strip(), liczba(cena))
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
         self.ustaw_logo(u["logo"])
@@ -1526,6 +1667,22 @@ class StronaUstawienia(Strona):
             QMessageBox.warning(self, "Format numeru", "Rachunki i faktury muszą mieć różne formaty numeru, "
                                 "np. faktury z przedrostkiem FV/.")
             return
+        nip = wartosci["nip"]
+        if nip and not nip_poprawny(nip) and QMessageBox.warning(
+                self, "NIP", f"NIP „{nip}” ma złą cyfrę kontrolną. Zapisać mimo to?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        konto = wartosci["konto"]
+        if konto:
+            if not konto_poprawne(konto) and QMessageBox.warning(
+                    self, "Numer konta", f"Numer konta „{konto}” wygląda na błędny (zła suma kontrolna). "
+                    "Zapisać mimo to?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+            wartosci["konto"] = formatuj_konto(konto)
+        if not liczba(wartosci["termin_dni"]) > 0:
+            wartosci["termin_dni"] = "14"
+        wartosci["uslugi"] = self._tekst_cennika()
         wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
@@ -1533,6 +1690,42 @@ class StronaUstawienia(Strona):
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
         self.okno.przejdz(STRONA_PULPIT)
+
+    def _dodaj_do_cennika(self, nazwa: str = "", cena: float = 0.0):
+        r = self.cennik.rowCount()
+        self.cennik.insertRow(r)
+        self.cennik.setItem(r, 0, QTableWidgetItem(nazwa))
+        cena_item = QTableWidgetItem(druk.zl(cena) if cena else "")
+        cena_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.cennik.setItem(r, 1, cena_item)
+        if not nazwa:
+            self.cennik.setCurrentCell(r, 0)
+            self.cennik.editItem(self.cennik.item(r, 0))
+
+    def _usun_z_cennika(self):
+        r = self.cennik.currentRow()
+        if r >= 0:
+            self.cennik.removeRow(r)
+
+    def _przesun_w_cenniku(self, kierunek: int):
+        r = self.cennik.currentRow()
+        cel = r + kierunek
+        if r < 0 or not 0 <= cel < self.cennik.rowCount():
+            return
+        for kol in range(2):
+            a, b = self.cennik.takeItem(r, kol), self.cennik.takeItem(cel, kol)
+            self.cennik.setItem(r, kol, b)
+            self.cennik.setItem(cel, kol, a)
+        self.cennik.setCurrentCell(cel, 0)
+
+    def _tekst_cennika(self) -> str:
+        wiersze = []
+        for r in range(self.cennik.rowCount()):
+            nazwa = (self.cennik.item(r, 0).text() if self.cennik.item(r, 0) else "").strip().replace(";", ",")
+            cena = liczba(self.cennik.item(r, 1).text()) if self.cennik.item(r, 1) else 0
+            if nazwa:
+                wiersze.append(f"{nazwa};{cena:g}")
+        return "\n".join(wiersze)
 
     def ustaw_logo(self, wartosc: str):
         self.logo = wartosc
@@ -2099,6 +2292,7 @@ class OknoGlowne(QMainWindow):
         uklad.addLayout(prawa, 1)
         self.setCentralWidget(tlo)
         self.powiadomienie = Powiadomienie(tlo)
+        QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.strona_pulpit._nowy(self.baza.ustawienia()["tytul"]))
 
         self.strona_nowy.wyczysc()
         self.przejdz(STRONA_PULPIT)

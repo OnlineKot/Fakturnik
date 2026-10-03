@@ -11,6 +11,7 @@ from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 from datetime import date
 
 from .baza import Dokument, podsumuj
+from .walidacja import formatuj_konto
 from .slownie import kwota_slownie
 
 
@@ -63,9 +64,14 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
         for i, p in enumerate(dok.pozycje, 1))
 
     platnosc = escape(dok.platnosc)
-    if dok.platnosc == "przelew" and u["konto"]:
-        platnosc += f", nr konta: {escape(u['konto'])}"
-    elif dok.platnosc != "przelew":
+    if dok.platnosc == "przelew":
+        if u["konto"]:
+            platnosc += f"<br>Nr konta: {escape(formatuj_konto(u['konto']))}"
+        if dok.nieoplacony and dok.termin_platnosci:
+            platnosc += f"<br><b>Termin płatności: {data_pl(dok.termin_platnosci)}</b>"
+        elif not dok.nieoplacony:
+            platnosc += " (zapłacono)"
+    else:
         platnosc += " (zapłacono)"
 
     podzial = "page-break-before: always;" if nowa_strona else ""

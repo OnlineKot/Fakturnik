@@ -37,6 +37,7 @@ DOMYSLNE_USTAWIENIA = {
     "kopia": "0",            # "1" = drukuj oryginał i kopię
     "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
+    "termin_dni": "14",      # domyślny termin płatności przelewem (dni)
 }
 
 
@@ -62,6 +63,9 @@ class Dokument:
     nabywca_id: str = ""         # PESEL lub NIP
     pozycje: list[Pozycja] = field(default_factory=list)
     rodzaj: str = ""             # "Rachunek" albo "Faktura"; puste w dokumentach z wersji sprzed faktur
+    termin_platnosci: str = ""   # RRRR-MM-DD, przy przelewie
+    nieoplacony: bool = False    # True = czeka na zapłatę (przelew); starsze dokumenty traktujemy jako opłacone
+    oplacono: str = ""           # data zaksięgowania wpłaty
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     id: int | None = None
@@ -77,6 +81,15 @@ class Dokument:
     @property
     def tytul(self) -> str:
         return self.rodzaj or "Rachunek"
+
+    @property
+    def czeka_na_zaplate(self) -> bool:
+        return self.wazny and self.nieoplacony
+
+    def po_terminie(self, dzis: date | None = None) -> bool:
+        dzis = dzis or date.today()
+        return self.czeka_na_zaplate and bool(self.termin_platnosci) and \
+            date.fromisoformat(self.termin_platnosci) < dzis
 
 
 @dataclass
@@ -120,6 +133,9 @@ class Podsumowanie:
     suma: float
     wg_platnosci: dict[str, float]
     anulowanych: int
+    nieoplaconych: int = 0
+    do_zaplaty: float = 0.0
+    po_terminie: int = 0
 
 
 def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
@@ -127,7 +143,10 @@ def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
     wg: dict[str, float] = {}
     for d in wazne:
         wg[d.platnosc] = round(wg.get(d.platnosc, 0) + d.suma, 2)
-    return Podsumowanie(len(wazne), round(sum(d.suma for d in wazne), 2), wg, len(dokumenty) - len(wazne))
+    czekajace = [d for d in wazne if d.nieoplacony]
+    return Podsumowanie(len(wazne), round(sum(d.suma for d in wazne), 2), wg, len(dokumenty) - len(wazne),
+                        len(czekajace), round(sum(d.suma for d in czekajace), 2),
+                        sum(1 for d in czekajace if d.po_terminie()))
 
 
 def _bez_ogonkow(tekst: str) -> str:
@@ -369,7 +388,10 @@ class Baza:
             dok = Dokument(id=id_, **d)
             if miesiac and not rok and int(dok.data_wystawienia[5:7]) != miesiac:
                 continue
-            if rodzaj and dok.tytul != rodzaj:
+            if rodzaj == "nieoplacone":
+                if not dok.czeka_na_zaplate:
+                    continue
+            elif rodzaj and dok.tytul != rodzaj:
                 continue
             if wzor and not all(slowo in _bez_ogonkow(f"{dok.numer} {dok.nabywca} {dok.nabywca_id}")
                                 for slowo in wzor.split()):
@@ -385,6 +407,13 @@ class Baza:
         d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
         return Dokument(id=id_, **d)
 
+    def _zapisz_zmiane(self, dok: Dokument) -> Dokument:
+        dane = asdict(dok)
+        dane.pop("id")
+        self.db.execute("UPDATE dokumenty SET dane = ? WHERE id = ?", (json.dumps(dane, ensure_ascii=False), dok.id))
+        self._utrwal()
+        return dok
+
     def anuluj(self, id_: int, powod: str = "") -> Dokument:
         """Oznacza dokument jako anulowany. Nie usuwa go, żeby numeracja nie miała dziur."""
         dok = self.dokument(id_)
@@ -392,11 +421,20 @@ class Baza:
             raise KeyError(id_)
         dok.anulowano = date.today().isoformat()
         dok.powod_anulowania = powod.strip()
-        dane = asdict(dok)
-        dane.pop("id")
-        self.db.execute("UPDATE dokumenty SET dane = ? WHERE id = ?", (json.dumps(dane, ensure_ascii=False), id_))
-        self._utrwal()
-        return dok
+        return self._zapisz_zmiane(dok)
+
+    def oznacz_oplacony(self, id_: int, dnia: str | None = None) -> Dokument:
+        dok = self.dokument(id_)
+        if dok is None:
+            raise KeyError(id_)
+        dok.nieoplacony = False
+        dok.oplacono = dnia or date.today().isoformat()
+        return self._zapisz_zmiane(dok)
+
+    def nieoplacone(self) -> list[Dokument]:
+        """Dokumenty czekające na zapłatę, od najstarszego terminu."""
+        return sorted((d for d in self.dokumenty() if d.czeka_na_zaplate),
+                      key=lambda d: (d.termin_platnosci or "9999", d.data_wystawienia))
 
     def lata(self) -> list[int]:
         return [int(r[0]) for r in self.db.execute(
@@ -440,7 +478,8 @@ class Baza:
                             d.nabywca_adres.replace("\n", ", "),
                             " | ".join(f"{p.nazwa} x{p.ilosc:g}" for p in d.pozycje),
                             d.platnosc, f"{d.suma:.2f}".replace(".", ","),
-                            f"anulowany {d.anulowano}" if d.anulowano else "ważny"])
+                            f"anulowany {d.anulowano}" if d.anulowano
+                            else (f"nieopłacony, termin {d.termin_platnosci}" if d.nieoplacony else "opłacony")])
         return len(dokumenty)
 
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:
