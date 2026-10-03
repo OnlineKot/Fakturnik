@@ -146,3 +146,22 @@ def test_straznik_odtwarza_zmieniony_plik_danych_i_brakujace_pliki(tmp_path, ska
     problemy = b.sprawdz_integralnosc(tmp_path / "kopie")
     assert "Przywrócono go z kopii" in problemy[0]
     assert b.tresc_pliku(p.id) == skan.read_bytes()
+
+
+def test_szyfrowana_kopia_wlasnym_haslem(tmp_path, skan):
+    from fakturnik.szyfrowanie import BledneHaslo
+    b = Baza(tmp_path / "a" / "d.db")
+    b.ustaw_haslo("haslo-programu")
+    b.zapisz_dokument(faktura("FV/1/10/2026"))
+    p = b.dodaj_plik(skan, osoba="Tauron")
+    b.kopia_zaszyfrowana(tmp_path / "kopia.fkopia", "inne-haslo-kopii")
+    b.zamknij()
+    surowe = (tmp_path / "kopia.fkopia").read_bytes()
+    assert b"Firma" not in surowe and b"SQLite" not in surowe and Baza.czy_kopia_szyfrowana(tmp_path / "kopia.fkopia")
+
+    nowa = Baza(tmp_path / "b" / "d.db")
+    with pytest.raises(BledneHaslo):
+        nowa.przywroc(tmp_path / "kopia.fkopia", "haslo-programu")  # potrzebne hasło kopii, nie programu
+    nowa.przywroc(tmp_path / "kopia.fkopia", "inne-haslo-kopii")
+    assert [d.numer for d in nowa.dokumenty()] == ["FV/1/10/2026"]
+    assert nowa.tresc_pliku(p.id) == skan.read_bytes()

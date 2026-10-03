@@ -4,6 +4,7 @@ import base64
 import csv
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -17,7 +18,10 @@ from datetime import date
 from pathlib import Path
 
 from .ochrona import BlokadaPliku, tylko_do_odczytu
-from .szyfrowanie import Szyfr, czy_zaszyfrowane, nowy_klucz, odszyfruj_plik, zaszyfruj_plik
+from .szyfrowanie import (
+    Szyfr, czy_kopia_szyfrowana, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
+    zaszyfruj_plik,
+)
 
 DOMYSLNE_USTAWIENIA = {
     "nazwa": "",
@@ -38,10 +42,16 @@ DOMYSLNE_USTAWIENIA = {
     "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
     "skonfigurowano": "0",   # "1" = kreator pierwszego uruchomienia zakończony
     "tryb": "prowadzacy",    # "prowadzacy" (krok po kroku) albo "zaawansowany" (wszystko w jednym oknie)
+    "druk_data_wydruku": "0",        # "1" = na dokumencie drukuje się data i godzina wydruku
+    "druk_data_wygenerowania": "1",  # "1" = na zestawieniach drukuje się data i godzina wygenerowania
     "blokada_minut": "10",   # automatyczna blokada po tylu minutach bezczynności (gdy jest hasło)
     "w_tle": "1",            # "1" = zamknięcie okna chowa program do zasobnika zamiast go wyłączać
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
+    "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
+    "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach
+    "ostatni_wpis_dziennika": "",  # skrót ostatniego wpisu dziennika (wykrywa ucięcie dziennika)
 }
+ZANONIMIZOWANO = "[dane usunięte – RODO]"
 
 
 @dataclass
@@ -139,6 +149,12 @@ def podsumuj(dokumenty: list[Dokument]) -> Podsumowanie:
 def _bez_ogonkow(tekst: str) -> str:
     """Wyszukiwanie nie zależy od polskich znaków ani wielkości liter ("wisniewski" znajdzie "Wiśniewski")."""
     return tekst.lower().translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
+
+
+def bezpieczna_komorka(wartosc) -> str:
+    """Chroni przed „CSV injection”: tekst zaczynający się od =, +, -, @ Excel wykonałby jako formułę."""
+    tekst = str(wartosc)
+    return "'" + tekst if tekst[:1] in ("=", "+", "-", "@", "\t", "\r") else tekst
 
 
 def dokument_z_danych(id_: int, d: dict) -> Dokument:
@@ -343,6 +359,10 @@ class Baza:
         self.db.executemany("INSERT OR REPLACE INTO ustawienia VALUES (?, ?)", wartosci.items())
         self._utrwal()
 
+    def zapamietaj_wpis_dziennika(self, skrot: str) -> None:
+        """Bez osobnego zapisu na dysk: trafi do pliku przy najbliższej zmianie danych."""
+        self.db.execute("INSERT OR REPLACE INTO ustawienia VALUES ('ostatni_wpis_dziennika', ?)", (skrot,))
+
     # ---------- numeracja ----------
     @staticmethod
     def _klucz_licznika(d: date, rodzaj: str) -> str:
@@ -477,6 +497,56 @@ class Baza:
         dok.powod_anulowania = powod.strip()
         return self._zapisz_zmiane(dok)
 
+    # ---------- RODO ----------
+    @staticmethod
+    def granica_retencji(lat: int, dzis: date | None = None) -> int:
+        """Ostatni rok, którego dokumenty można już zanonimizować (rok wystawienia + `lat` pełnych lat)."""
+        return (dzis or date.today()).year - lat - 1
+
+    def do_anonimizacji(self, lat: int, dzis: date | None = None) -> int:
+        granica = self.granica_retencji(lat, dzis)
+        return sum(1 for d in self.dokumenty() if int(d.data_wystawienia[:4]) <= granica
+                   and d.nabywca != ZANONIMIZOWANO)
+
+    def anonimizuj_starsze(self, lat: int, dzis: date | None = None) -> int:
+        """Usuwa dane osobowe z dokumentów po okresie przechowywania (numery i kwoty zostają do rozliczeń).
+
+        Czyści nabywcę, PESEL/NIP i adres w dokumentach, ich wcześniejszych wersjach, kartotece
+        pacjentów (gdy pacjent nie ma nowszych dokumentów) i opisach wrzuconych plików z tych lat.
+        Zwraca liczbę zanonimizowanych dokumentów.
+        """
+        if lat < 1:
+            raise ValueError("Okres przechowywania musi wynosić co najmniej rok.")
+        granica = self.granica_retencji(lat, dzis)
+        stare, nowsi = [], set()
+        for d in self.dokumenty():
+            if int(d.data_wystawienia[:4]) > granica:
+                nowsi.add(d.nabywca)
+            elif d.nabywca != ZANONIMIZOWANO:
+                stare.append(d)
+        for d in stare:
+            nazwa = d.nabywca
+            d.nabywca, d.nabywca_id, d.nabywca_adres = ZANONIMIZOWANO, "", ""
+            dane = asdict(d)
+            dane.pop("id")
+            self.db.execute("UPDATE dokumenty SET dane = ? WHERE id = ?", (json.dumps(dane, ensure_ascii=False), d.id))
+            for id_wersji, surowe in list(self.db.execute(
+                    "SELECT id, dane FROM wersje_dokumentow WHERE dokument_id = ?", (d.id,))):
+                w = json.loads(surowe)
+                w.update(nabywca=ZANONIMIZOWANO, nabywca_id="", nabywca_adres="")
+                self.db.execute("UPDATE wersje_dokumentow SET dane = ? WHERE id = ?",
+                                (json.dumps(w, ensure_ascii=False), id_wersji))
+            if nazwa not in nowsi:
+                self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (nazwa,))
+                self.db.execute("DELETE FROM ustawienia WHERE klucz = ?", (f"ukryty_pacjent:{nazwa}",))
+        self.db.execute("UPDATE pliki SET osoba = '' WHERE CAST(substr(data, 1, 4) AS INTEGER) <= ?", (granica,))
+        self._utrwal()
+        return len(stare)
+
+    def dokumenty_pacjenta(self, nazwa: str) -> list[Dokument]:
+        """Wszystkie dokumenty jednej osoby (prawo dostępu do danych, art. 15 RODO)."""
+        return [d for d in self.dokumenty() if d.nabywca == nazwa]
+
 
 
     def lata(self) -> list[int]:
@@ -496,7 +566,7 @@ class Baza:
             "SELECT klucz FROM ustawienia WHERE klucz LIKE 'ukryty_pacjent:%'")}
         zebrani: dict[str, Pacjent] = {}
         for dok in self.dokumenty():
-            if dok.nabywca in ukryci:
+            if dok.nabywca in ukryci or dok.nabywca == ZANONIMIZOWANO:
                 continue
             p = zebrani.get(dok.nabywca)
             if p is None:
@@ -520,9 +590,6 @@ class Baza:
     def pacjent(self, nazwa: str) -> Pacjent | None:
         return next((p for p in self.pacjenci() if p.nazwa == nazwa), None)
 
-    def ostatni_nabywcy(self, ile: int = 8) -> list[Dokument]:
-        return list(self.nabywcy().values())[:ile]
-
     def eksport_odszyfrowany(self, cel: Path | str) -> None:
         """Zwykły, niezaszyfrowany plik SQLite (do archiwum lub innego programu)."""
         Path(cel).write_bytes(self.db.serialize())
@@ -534,17 +601,30 @@ class Baza:
             w.writerow(["Numer", "Data wystawienia", "Data usługi", "Nabywca", "PESEL/NIP", "Adres",
                         "Usługi", "Płatność", "Kwota", "Status"])
             for d in reversed(dokumenty):
-                w.writerow([d.numer, d.data_wystawienia, d.data_uslugi, d.nabywca, d.nabywca_id,
+                w.writerow([bezpieczna_komorka(x) for x in [d.numer, d.data_wystawienia, d.data_uslugi, d.nabywca, d.nabywca_id,
                             d.nabywca_adres.replace("\n", ", "),
                             " | ".join(f"{p.nazwa} x{p.ilosc:g}" for p in d.pozycje),
                             d.platnosc, f"{d.suma:.2f}".replace(".", ","),
-                            f"anulowany {d.anulowano}" if d.anulowano else "ważny"])
+                            f"anulowany {d.anulowano}" if d.anulowano else "ważny"]])
         return len(dokumenty)
 
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:
         """Zastępuje dane kopią zapasową; obecne hasło (szyfrowanie) zostaje."""
         zrodlo = Path(zrodlo)
-        if zipfile.is_zipfile(zrodlo):
+        if self.czy_kopia_szyfrowana(zrodlo):
+            if haslo is None:
+                raise PermissionError("Kopia jest zaszyfrowana hasłem.")
+            zawartosc = io.BytesIO(odszyfruj_kopie(zrodlo.read_bytes(), haslo))
+            with zipfile.ZipFile(zawartosc) as z:
+                dane = z.read("fakturnik.db")
+                if not dane.startswith(b"SQLite format 3"):
+                    raise ValueError("To nie jest kopia Fakturnika.")
+                self.katalog_plikow.mkdir(parents=True, exist_ok=True)
+                for nazwa in z.namelist():
+                    cel = self.katalog_plikow / Path(nazwa).name
+                    if nazwa.startswith("pliki/") and nazwa.endswith(".bin") and not cel.exists():
+                        cel.write_bytes(z.read(nazwa))
+        elif zipfile.is_zipfile(zrodlo):
             with zipfile.ZipFile(zrodlo) as z:
                 tymczasowy = self.sciezka.with_name("przywracanie.tmp")
                 tymczasowy.write_bytes(z.read("fakturnik.db"))
@@ -614,6 +694,25 @@ class Baza:
                 problemy.append(f"Brak pliku „{plik}” i nie ma go w kopiach. Przywróć pełną kopię zapasową.")
         self.blokada.zaloz()
         return problemy
+
+    def kopia_zaszyfrowana(self, cel: Path | str, haslo: str) -> None:
+        """Jeden plik .fkopia: dane i wrzucone pliki zaszyfrowane AES-256 osobnym hasłem kopii."""
+        bufor = io.BytesIO()
+        with zipfile.ZipFile(bufor, "w", zipfile.ZIP_DEFLATED) as z:
+            self.db.commit()
+            z.writestr("fakturnik.db", self.db.serialize())  # w środku jawna baza; chroni ją hasło kopii
+            for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+                sciezka = self.katalog_plikow / nazwa
+                if sciezka.exists():
+                    z.write(sciezka, f"pliki/{nazwa}")
+        tymczasowy = Path(str(cel) + ".tmp")
+        tymczasowy.write_bytes(zaszyfruj_kopie(bufor.getvalue(), haslo))
+        os.replace(tymczasowy, cel)
+
+    @staticmethod
+    def czy_kopia_szyfrowana(sciezka: Path | str) -> bool:
+        with open(sciezka, "rb") as f:
+            return czy_kopia_szyfrowana(f.read(32))
 
     def kopia_plikow(self, katalog: Path) -> int:
         """Dokłada do `katalog` pliki, których tam jeszcze nie ma (pliki nigdy się nie zmieniają)."""

@@ -9,7 +9,9 @@ a stary plik jest usuwany przy następnym uruchomieniu.
 
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -108,11 +110,73 @@ def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None) -> Path:
     return cel
 
 
+def skrot_pliku(sciezka: Path) -> str:
+    skrot = hashlib.sha256()
+    with open(sciezka, "rb") as f:
+        while blok := f.read(1024 * 1024):
+            skrot.update(blok)
+    return skrot.hexdigest()
+
+
+def sprawdz_wlasny_plik(obecny: Path | None = None, wersja: str = WERSJA) -> bool | None:
+    """Porównuje działający Fakturnik.exe z sumą SHA-256 opublikowaną przy jego wydaniu.
+
+    True = plik jest oryginalny, False = ktoś go zmienił, None = nie da się sprawdzić
+    (wersja ze źródeł, brak internetu albo wydania).
+    """
+    if obecny is None:
+        if not czy_spakowany():
+            return None
+        obecny = Path(sys.executable)
+    try:
+        with _pobierz(f"https://api.github.com/repos/{REPOZYTORIUM}/releases/tags/v{wersja}") as o:
+            dane = json.load(o)
+        pliki = {a["name"]: a for a in dane.get("assets", [])}
+        if NAZWA_PLIKU + ".sha256" not in pliki:
+            return None
+        with _pobierz(pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"]) as o:
+            oczekiwany = o.read().decode("ascii", "replace").split()[0].strip().lower()
+    except Exception:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", oczekiwany):
+        return None
+    return skrot_pliku(obecny) == oczekiwany
+
+
+# ---------------------------------------------------------------- blokada działającego programu
+
+_blokada_programu = None
+
+
+def zablokuj_program() -> None:
+    """Gdy program działa, jego .exe jest otwarty bez zgody na zapis, zmianę nazwy i usunięcie (Windows)."""
+    global _blokada_programu
+    if not czy_spakowany() or _blokada_programu is not None:
+        return
+    from .ochrona import BlokadaPliku
+    _blokada_programu = BlokadaPliku(Path(sys.executable))
+    _blokada_programu.zaloz()
+
+
+def odblokuj_program() -> None:
+    global _blokada_programu
+    if _blokada_programu is not None:
+        _blokada_programu.zwolnij()
+        _blokada_programu = None
+
+
+def _usun(sciezka: Path) -> None:
+    if sciezka.exists():
+        os.chmod(sciezka, stat.S_IREAD | stat.S_IWRITE)  # zdejmij „tylko do odczytu”
+        sciezka.unlink()
+
+
 def zainstaluj(nowy: Path, obecny: Path | None = None) -> Path:
     """Podmienia działający .exe na nowy; zwraca ścieżkę do uruchomienia."""
     obecny = obecny or Path(sys.executable)
+    odblokuj_program()  # inaczej Windows nie pozwoli zmienić nazwy
     stary = obecny.with_name(obecny.stem + ".old" + obecny.suffix)
-    stary.unlink(missing_ok=True)
+    _usun(stary)
     obecny.rename(stary)
     try:
         nowy.rename(obecny)
@@ -129,6 +193,25 @@ def posprzataj(obecny: Path | None = None) -> None:
     obecny = obecny or Path(sys.executable)
     for nazwa in (obecny.stem + ".old" + obecny.suffix, obecny.stem + ".new" + obecny.suffix):
         try:
-            obecny.with_name(nazwa).unlink(missing_ok=True)
+            _usun(obecny.with_name(nazwa))
         except OSError:
             pass
+
+
+def uruchom_nowa_wersje(exe: Path, opoznienie_s: int = 3) -> None:
+    """Uruchamia zaktualizowany program dopiero po zamknięciu bieżącego.
+
+    Nowy proces dostaje czyste środowisko: bez zmiennych PyInstallera, które wskazywałyby mu folder
+    tymczasowy starej wersji (stara wersja usuwa go przy zamykaniu, co kończyło się błędem krytycznym).
+    Opóźnienie daje starej wersji czas na zwolnienie pliku danych i nasłuchu „jednej kopii”.
+    """
+    import subprocess
+    srodowisko = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
+    srodowisko["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    if sys.platform == "win32":
+        polecenie = f'ping -n {opoznienie_s + 1} 127.0.0.1 >nul & start "" "{exe}"'
+        flagi = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        subprocess.Popen(["cmd", "/c", polecenie], env=srodowisko, creationflags=flagi, close_fds=True)
+    else:
+        subprocess.Popen(["sh", "-c", f'sleep {opoznienie_s}; "{exe}" &'], env=srodowisko,
+                         start_new_session=True, close_fds=True)

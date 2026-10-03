@@ -8,7 +8,7 @@ from PySide6.QtCore import QMarginsF
 from PySide6.QtGui import QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 
-from datetime import date
+from datetime import date, datetime
 
 from .baza import Dokument, podsumuj
 from .walidacja import formatuj_konto
@@ -55,7 +55,10 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     nabywca = [f"<b>{escape(dok.nabywca)}</b>", _wiersze(dok.nabywca_adres)]
     if dok.nabywca_id:
         cyfry = "".join(c for c in dok.nabywca_id if c.isdigit())
-        nabywca.append(("PESEL: " if len(cyfry) == 11 else "NIP: ") + escape(dok.nabywca_id))
+        if len(cyfry) != 11:
+            nabywca.append("NIP: " + escape(dok.nabywca_id))
+        elif u.get("druk_pesel") == "1":  # PESEL nie jest wymagany na rachunku (minimalizacja danych)
+            nabywca.append("PESEL: " + escape(dok.nabywca_id))
 
     pozycje = "".join(
         f"<tr><td align='right'>{i}</td><td>{escape(p.nazwa)}</td>"
@@ -112,7 +115,15 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
   <td width="20%"></td>
   <td width="40%" align="center" style="border-top: 1px dotted black;">podpis osoby upoważnionej do wystawienia</td>
 </tr></table>
+{_stopka_wydruku(u)}
 </div>"""
+
+
+def _stopka_wydruku(u: dict[str, str]) -> str:
+    if u.get("druk_data_wydruku") != "1":
+        return ""
+    return (f'<p style="font-size:7.5pt; color:#666666; margin-top:18px;">'
+            f'Wydrukowano {datetime.now():%d.%m.%Y, %H:%M}</p>')
 
 
 def html_dokumentu(dok: Dokument, u: dict[str, str], z_kopia: bool = False, duplikat: bool = False) -> str:
@@ -146,7 +157,7 @@ def html_zestawienia(dokumenty: list[Dokument], u: dict[str, str], okres: str, f
       {f'<br><span style="font-size:9pt;">Filtr: {escape(filtr)}</span>' if filtr else ''}</td>
   <td align="right" valign="top" style="font-size:9pt;"><b>{escape(u['nazwa'])}</b><br>
       {('NIP: ' + escape(u['nip']) + '<br>') if u['nip'] else ''}
-      Wygenerowano {data_pl(date.today().isoformat())}</td>
+      {f"Wygenerowano {datetime.now():%d.%m.%Y, %H:%M}" if u.get("druk_data_wygenerowania", "1") == "1" else ""}</td>
 </tr></table>
 <br>
 <table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black;">
@@ -162,6 +173,36 @@ def html_zestawienia(dokumenty: list[Dokument], u: dict[str, str], okres: str, f
   {platnosci or '<tr><td>brak</td><td></td></tr>'}
 </table>
 <p style="font-size:10pt;">Suma: <b>{zl(pods.suma)} zł</b>{anul}</p>
+</body></html>"""
+
+
+def html_danych_osoby(nazwa: str, identyfikator: str, adres: str, dokumenty: list[Dokument],
+                      u: dict[str, str]) -> str:
+    """Informacja o przetwarzanych danych jednej osoby (art. 15 RODO): dane i lista jej dokumentów."""
+    wiersze = "".join(
+        f"<tr><td>{escape(d.numer)}</td><td>{escape(d.tytul)}</td><td>{data_pl(d.data_wystawienia)}</td>"
+        f"<td>{escape(', '.join(p.nazwa for p in d.pozycje))}</td>"
+        f"<td align='right'>{'anulowany' if d.anulowano else zl(d.suma)}</td></tr>"
+        for d in sorted(dokumenty, key=lambda d: (d.data_wystawienia, d.id or 0)))
+    return f"""<html><body style='font-family: Inter, Arial; font-size:9.5pt;'>
+<p style="font-size:15pt; font-weight:bold;">Informacja o przetwarzanych danych osobowych</p>
+<p>Administrator danych: <b>{escape(u['nazwa'])}</b><br>{_wiersze(u['adres'])}</p>
+<p><b>Dane osoby</b><br>Imię i nazwisko / nazwa: {escape(nazwa)}<br>
+PESEL / NIP: {escape(identyfikator) or '—'}<br>Adres: {escape(adres.replace(chr(10), ', ')) or '—'}</p>
+<p><b>Cel i podstawa:</b> wystawianie i przechowywanie rachunków oraz faktur – obowiązek prawny
+(art. 6 ust. 1 lit. c RODO, przepisy podatkowe i o rachunkowości).<br>
+<b>Okres przechowywania:</b> {escape(u.get('rodo_lat', '5'))} lat po końcu roku wystawienia dokumentu,
+potem dane osobowe są usuwane.<br>
+<b>Odbiorcy:</b> biuro rachunkowe i organy podatkowe – tylko w zakresie wymaganym przepisami.<br>
+Przysługuje Pani/Panu prawo dostępu do danych, ich sprostowania, ograniczenia przetwarzania
+oraz skargi do Prezesa UODO.</p>
+<p><b>Dokumenty ({len(dokumenty)})</b></p>
+<table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black;">
+  <tr style="background:#e8e8e8;"><th>Numer</th><th>Rodzaj</th><th>Data</th><th width="45%">Usługi</th>
+      <th>Kwota (zł)</th></tr>
+  {wiersze or '<tr><td colspan="5" align="center">Brak dokumentów</td></tr>'}
+</table>
+<p style="font-size:8pt; color:#666666;">Sporządzono {date.today():%d.%m.%Y}</p>
 </body></html>"""
 
 

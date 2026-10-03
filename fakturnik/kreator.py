@@ -1,6 +1,7 @@
 """Kreator pierwszego uruchomienia: dane gabinetu, hasło, cennik, tryb pracy i integracja z Windows."""
 
 import re
+from html import escape
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
@@ -69,8 +70,11 @@ class Kreator(QDialog):
             40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         b.addWidget(znak)
         nazwa = QLabel("Fakturnik")
-        nazwa.setStyleSheet("color: white; font-size: 16px; font-weight: 600; padding: 8px 0 18px;")
+        nazwa.setStyleSheet("color: white; font-size: 16px; font-weight: 600; padding: 8px 0 0;")
         b.addWidget(nazwa)
+        autor = QLabel("by TeodorTeo.com")
+        autor.setStyleSheet("font-size: 11px; padding: 0 0 18px;")
+        b.addWidget(autor)
         self.etykiety = []
         for i, k in enumerate(KROKI):
             e = QLabel(f"{i + 1}.  {k}", objectName="kreator_krok")
@@ -334,7 +338,7 @@ class Kreator(QDialog):
         self.blad.clear()
         if self.krok == len(KROKI) - 1:
             self.podsumowanie.setText(
-                f"<b>{self.p_nazwa.text().strip()}</b><br>NIP {self.p_nip.text().strip()}<br><br>"
+                f"<b>{escape(self.p_nazwa.text().strip())}</b><br>NIP {escape(self.p_nip.text().strip())}<br><br>"
                 f"Hasło: {'ustawione' if self.haslo_ustawione or self.h1.text() else 'brak'}<br>"
                 f"Usług w cenniku: {len(self._uslugi())}<br>"
                 f"Tryb: {'prowadzący' if self.tryby.checkedId() == 0 else 'zaawansowany'}<br>"

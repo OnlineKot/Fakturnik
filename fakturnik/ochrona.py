@@ -67,6 +67,7 @@ class Dziennik:
     def __init__(self, sciezka: Path):
         self.sciezka = sciezka
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
+        self.po_zapisie = None  # wywoływane ze skrótem nowego wpisu (zapamiętanym w zaszyfrowanej bazie)
 
     @staticmethod
     def _skrot(poprzedni: str, tresc: str) -> str:
@@ -83,6 +84,12 @@ class Dziennik:
         with open(self.sciezka, "a", encoding="utf-8") as f:
             f.write(f"{tresc}\t{skrot}\n")
         tylko_do_odczytu(self.sciezka, True)
+        if self.po_zapisie:
+            self.po_zapisie(skrot)
+
+    def zawiera(self, skrot: str) -> bool:
+        """Czy wpis o tym skrócie wciąż jest w dzienniku (gdy nie ma, dziennik ucięto lub podmieniono)."""
+        return any(w[2] == skrot for w in self.wpisy())
 
     def wpisy(self) -> list[tuple[str, str, str]]:
         """Lista (czas, zdarzenie, skrót)."""

@@ -1,8 +1,9 @@
 """Okno główne programu Fakturnik."""
 
 import base64
-import subprocess
+from html import escape as html_escape
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
-    QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QSpinBox, QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import aktualizacje, druk
@@ -36,7 +37,6 @@ from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, Podglad
 
 STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
 MIN_DLUGOSC_HASLA = 8
-CZASY_BLOKADY = (2, 5, 10, 15, 30)  # minuty bezczynności do automatycznej blokady
 ZASOBY = Path(__file__).parent / "zasoby"
 
 # ---------------------------------------------------------------- wygląd
@@ -89,7 +89,8 @@ QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
 }}
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover {{ border-color: #bcc4ca; }}
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {AKCENT}; }}
-QLineEdit, QComboBox, QDateEdit {{ min-height: 20px; }}
+QLineEdit, QComboBox, QDateEdit, QSpinBox {{ min-height: 20px; }}
+QSpinBox {{ background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 6px 8px; }}
 QLineEdit#numer {{ font-size: 15px; font-weight: 600; }}
 QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINIA}; padding: 4px;
@@ -251,6 +252,12 @@ class UkladPlynny(QLayout):
         return y + wysokosc_wiersza - prostokat.y() + m.bottom()
 
 
+def maskuj_id(identyfikator: str) -> str:
+    """PESEL widoczny tylko w końcówce (minimalizacja danych, RODO); NIP firmy pokazujemy w całości."""
+    cyfry = "".join(c for c in identyfikator if c.isdigit())
+    return "•••••••" + cyfry[-4:] if len(cyfry) == 11 else identyfikator
+
+
 def wyczysc_uklad(uklad) -> None:
     """Usuwa od razu wszystkie elementy układu (deleteLater zostawiałby je widoczne do końca zdarzenia)."""
     while uklad.count():
@@ -355,6 +362,8 @@ class OknoHasla(QDialog):
         naglowek = QLabel(tytul, alignment=Qt.AlignmentFlag.AlignHCenter)
         naglowek.setStyleSheet("font-size: 18px; font-weight: 650; letter-spacing: -0.3px;")
         u.addWidget(naglowek)
+        if tytul == "Fakturnik":
+            u.addWidget(QLabel("by TeodorTeo.com", objectName="drobny", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addWidget(QLabel(opis, objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addSpacing(6)
         self.pole = QLineEdit(echoMode=QLineEdit.EchoMode.Password, placeholderText="Hasło")
@@ -370,7 +379,15 @@ class OknoHasla(QDialog):
         rzad.addWidget(self.ok)
         u.addLayout(rzad)
 
+    # wspólne dla wszystkich okien hasła: zamknięcie i ponowne otwarcie okna nie zeruje licznika prób
+    _nieudane = 0
+    _blokada_do = 0.0
+
     def sprobuj(self):
+        pozostalo = OknoHasla._blokada_do - time.monotonic()
+        if pozostalo > 0:
+            self.blad.setText(f"Za dużo błędnych prób. Spróbuj ponownie za {int(pozostalo) + 1} s.")
+            return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             ok = self.sprawdz(self.pole.text())
@@ -379,12 +396,14 @@ class OknoHasla(QDialog):
         if self.dziennik:
             self.dziennik.zapisz(f"{self.cel}: {'udane' if ok else 'NIEUDANE (złe hasło)'}")
         if ok:
+            OknoHasla._nieudane = 0
             self.accept()
             return
-        self.proby += 1
+        OknoHasla._nieudane += 1
         self.pole.clear()
-        # po kolejnych błędach coraz dłuższa przerwa, żeby utrudnić zgadywanie
-        przerwa = min(2 ** self.proby, 60) if self.proby >= 3 else 0
+        # po kolejnych błędach coraz dłuższa przerwa (do 5 min), żeby utrudnić zgadywanie
+        przerwa = min(2 ** OknoHasla._nieudane, 300) if OknoHasla._nieudane >= 3 else 0
+        OknoHasla._blokada_do = time.monotonic() + przerwa
         self.blad.setText("Nieprawidłowe hasło." + (f" Spróbuj ponownie za {przerwa} s." if przerwa else ""))
         if przerwa:
             self.setEnabled(False)
@@ -392,18 +411,18 @@ class OknoHasla(QDialog):
 
 
 class OknoNowegoHasla(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, tytul: str = "Ustaw hasło",
+                 opis: str = "Hasło szyfruje wszystkie dane (AES-256, klucz z hasła przez PBKDF2-SHA256)."):
         super().__init__(parent)
         self.setWindowTitle("Hasło")
         self.setFixedWidth(420)
         u = QVBoxLayout(self)
         u.setContentsMargins(24, 22, 24, 20)
         u.setSpacing(10)
-        t = QLabel("Ustaw hasło")
+        t = QLabel(tytul)
         t.setStyleSheet("font-size: 16px; font-weight: 600;")
         u.addWidget(t)
-        info = QLabel("Hasło szyfruje wszystkie dane (AES-256, klucz z hasła przez PBKDF2-SHA256). "
-                      f"Minimum {MIN_DLUGOSC_HASLA} znaków. Zapomnianego hasła nie da się odzyskać.",
+        info = QLabel(f"{opis} Minimum {MIN_DLUGOSC_HASLA} znaków. Zapomnianego hasła nie da się odzyskać.",
                       objectName="podtytul", wordWrap=True)
         u.addWidget(info)
         self.haslo = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
@@ -712,8 +731,20 @@ class StronaNowy(Strona):
             self.rodzaj_grupa.addButton(b, i)
             pu.addWidget(b)
         self.rodzaj_grupa.idClicked.connect(lambda _: self.zmien_rodzaj())
-        self.btn_tryb = przycisk("", styl="plaski", akcja=self.przelacz_tryb)
-        gora.addWidget(self.btn_tryb, alignment=Qt.AlignmentFlag.AlignBottom)
+        self.tryb_grupa = QButtonGroup(self)
+        przelacznik_trybu = QFrame(objectName="przelacznik")
+        pt = QHBoxLayout(przelacznik_trybu)
+        pt.setContentsMargins(3, 3, 3, 3)
+        pt.setSpacing(2)
+        for i, (nazwa, podpowiedz) in enumerate((("Krok po kroku", "Tryb prowadzący: pacjent, usługi, sprawdź i drukuj"),
+                                                 ("Jedno okno", "Tryb zaawansowany: wszystko naraz"))):
+            b = QPushButton(nazwa, checkable=True, objectName="segment", cursor=Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(podpowiedz)
+            self.tryb_grupa.addButton(b, i)
+            pt.addWidget(b)
+        self.tryb_grupa.idClicked.connect(
+            lambda i: self.przelacz_tryb("zaawansowany" if i == 1 else "prowadzacy"))
+        gora.addWidget(przelacznik_trybu, alignment=Qt.AlignmentFlag.AlignBottom)
         gora.addSpacing(6)
         gora.addWidget(przelacznik, alignment=Qt.AlignmentFlag.AlignBottom)
         u.addLayout(gora)
@@ -763,9 +794,7 @@ class StronaNowy(Strona):
         # --- karta nabywcy
         self.karta_nabywcy, kn = karta()
         self.nabywca = QLineEdit(placeholderText="Imię i nazwisko lub nazwa firmy")
-        rozwin = self.nabywca.addAction(ikona("rozwin"), QLineEdit.ActionPosition.TrailingPosition)
-        rozwin.setToolTip("Lista zapamiętanych pacjentów")
-        rozwin.triggered.connect(self.rozwin_pacjentow)
+        self.nabywca.textEdited.connect(self._podpowiadaj)
         self.nabywca_id = QLineEdit(placeholderText="Opcjonalnie")
         self.nabywca_adres = QLineEdit(placeholderText="Opcjonalnie, np. ul. Długa 1, 00-001 Miasto")
         nab = QGridLayout()
@@ -793,8 +822,6 @@ class StronaNowy(Strona):
         nab.setColumnStretch(0, 3)
         nab.setColumnStretch(1, 2)
         kn.addLayout(nab)
-        self.ostatni = UkladPlynny()
-        kn.addLayout(self.ostatni)
 
         # --- blok usług
         self.blok_uslug = QWidget()
@@ -967,15 +994,19 @@ class StronaNowy(Strona):
             self.krok3_prawa.addWidget(self.ramka_podgladu)
             self.widok_zaawansowany.hide()
             self.widok_prowadzony.show()
-        self.btn_tryb.setText("Wszystko w jednym oknie" if tryb != "zaawansowany" else "Krok po kroku")
-        self.btn_tryb.setToolTip("Przełącz tryb wystawiania")
+        self.tryb_grupa.button(1 if tryb == "zaawansowany" else 0).setChecked(True)
         self.pasek_krokow.setVisible(tryb != "zaawansowany")
         self.pokaz_krok(0)
 
-    def przelacz_tryb(self):
-        nowy = "prowadzacy" if self.tryb == "zaawansowany" else "zaawansowany"
+    def przelacz_tryb(self, nowy: str):
+        if nowy == self.tryb:
+            return
         self.okno.baza.zapisz_ustawienia({"tryb": nowy})
+        krok = self.krok
         self.ustaw_tryb(nowy)
+        if self.edytowany or self.nabywca.text().strip():
+            self.krok = 0
+            self.pokaz_krok(2 if nowy == "prowadzacy" and krok == 2 else 0)
 
     def pokaz_krok(self, krok: int):
         prowadzony = self.tryb != "zaawansowany"
@@ -1008,7 +1039,7 @@ class StronaNowy(Strona):
         if ostatni:
             ile = len(self.pozycje())
             self.podsumowanie_tekst.setText(
-                f"<b>{self.rodzaj}</b> dla <b>{self.nabywca.text().strip() or '…'}</b><br>"
+                f"<b>{self.rodzaj}</b> dla <b>{html_escape(self.nabywca.text().strip()) or '…'}</b><br>"
                 f"Pozycji: {ile}, razem <b>{druk.zl(sum(p.wartosc for p in self.pozycje()))} zł</b>")
             self.zaplanuj_podglad()
         elif self.krok == 0:
@@ -1059,7 +1090,7 @@ class StronaNowy(Strona):
         dok.id, dok.numer, dok.rodzaj, dok.anulowano, dok.powod_anulowania = (
             org.id, org.numer, org.rodzaj, org.anulowano, org.powod_anulowania)
         self.okno.baza.zaktualizuj_dokument(dok, powod)
-        self.okno.dziennik.zapisz(f"edycja dokumentu nr {dok.numer}" + (f": {powod.strip()}" if powod.strip() else ""))
+        self.okno.dziennik.zapisz(f"edycja dokumentu nr {dok.numer}")  # powód zostaje w zaszyfrowanej historii zmian
         self.okno.komunikat(f"Zapisano zmiany w dokumencie nr {dok.numer}")
         self.zakoncz_edycje()
         self.okno.przejdz(STRONA_HISTORIA)
@@ -1132,20 +1163,12 @@ class StronaNowy(Strona):
             b.clicked.connect(lambda _=False, n=nazwa.strip(), c=liczba(cena): self.dodaj_usluge(n, c))
             self.przyciski_uslug.addWidget(b)
 
-        wyczysc_uklad(self.ostatni)
-        ostatni = self.okno.baza.ostatni_nabywcy(6)
-        if ostatni:
-            self.ostatni.addWidget(QLabel("Ostatnio:", objectName="drobny", minimumHeight=26))
-            for d in ostatni:
-                b = QPushButton(d.nabywca, objectName="pacjent", cursor=Qt.CursorShape.PointingHandCursor)
-                b.clicked.connect(lambda _=False, n=d.nabywca: (self.nabywca.setText(n), self.uzupelnij_nabywce(n)))
-                self.ostatni.addWidget(b)
-
-        podpowiedzi = QCompleter([p.nazwa for p in self.okno.baza.pacjenci()])
-        podpowiedzi.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        podpowiedzi.setFilterMode(Qt.MatchFlag.MatchContains)
-        podpowiedzi.activated.connect(self.uzupelnij_nabywce)
-        self.nabywca.setCompleter(podpowiedzi)
+        # podpowiedzi nazwisk dopiero po wpisaniu 2 liter: nikt przy biurku nie zobaczy listy pacjentów
+        self._podpowiedzi = QCompleter([p.nazwa for p in self.okno.baza.pacjenci()], self)
+        self._podpowiedzi.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._podpowiedzi.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._podpowiedzi.activated.connect(self.uzupelnij_nabywce)
+        self.nabywca.setCompleter(None)
         self.odswiez_numer()
 
     @property
@@ -1180,15 +1203,15 @@ class StronaNowy(Strona):
             self.nabywca_adres.setText(p.adres.replace("\n", ", "))
             self.nabywca_id.setText(p.identyfikator)
 
-    def rozwin_pacjentow(self):
-        """Strzałka w polu „Pacjent”: lista zapamiętanych pacjentów do wybrania."""
-        podpowiedzi = self.nabywca.completer()
-        if podpowiedzi is None:
-            return
-        podpowiedzi.setCompletionPrefix(self.nabywca.text())
-        if not podpowiedzi.completionCount():
-            podpowiedzi.setCompletionPrefix("")
-        podpowiedzi.complete()
+    def _podpowiadaj(self, tekst: str):
+        if len(tekst.strip()) >= 2:
+            if self.nabywca.completer() is not self._podpowiedzi:
+                self.nabywca.setCompleter(self._podpowiedzi)
+                self._podpowiedzi.setCompletionPrefix(tekst)
+                self._podpowiedzi.complete()
+        elif self.nabywca.completer() is not None:
+            self._podpowiedzi.popup().hide()
+            self.nabywca.setCompleter(None)
 
     def dodaj_pozycje(self, nazwa="", cena=0.0, ilosc=1.0):
         self.tabela.blockSignals(True)
@@ -1361,7 +1384,7 @@ class OknoPacjentow(QDialog):
         k, ku = karta()
         ku.setContentsMargins(0, 4, 0, 4)
         self.tabela = QTableWidget(0, 4)
-        self.tabela.setHorizontalHeaderLabels(["Pacjent", "PESEL / NIP", "Ostatnio", "Dokumentów"])
+        self.tabela.setHorizontalHeaderLabels(["Pacjent", "PESEL / NIP", "Ostatnia wizyta", "Dokumentów"])
         h = self.tabela.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1375,11 +1398,18 @@ class OknoPacjentow(QDialog):
         self.tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tabela.doubleClicked.connect(self.wybierz)
         ku.addWidget(self.tabela)
+        self.zaslona_listy = QLabel("Wpisz co najmniej 2 litery nazwiska albo PESEL, aby wyszukać pacjenta.",
+                                    objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
+        ku.addWidget(self.zaslona_listy)
+        self.pelny_dostep = False
         u.addWidget(k, 1)
         rzad = QHBoxLayout()
         rzad.addWidget(przycisk("Nowy pacjent", "plus", "plaski", self.dodaj))
         rzad.addWidget(przycisk("Edytuj", "edytuj", "plaski", self.edytuj))
         rzad.addWidget(przycisk("Usuń z listy", "kosz", "plaski", self.usun))
+        rzad.addWidget(przycisk("Dane osoby", "pdf", "plaski", self.dane_osoby))
+        self.btn_wszystko = przycisk("Pokaż wszystkich", "klucz", "plaski", self.pokaz_wszystko)
+        rzad.addWidget(self.btn_wszystko)
         self.licznik = QLabel(objectName="drobny")
         rzad.addSpacing(10)
         rzad.addWidget(self.licznik)
@@ -1392,10 +1422,15 @@ class OknoPacjentow(QDialog):
         self.szukaj.setFocus()
 
     def odswiez(self):
-        self.pacjenci = self.baza.pacjenci(self.szukaj.text())
+        zablokowane = self.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        self.pacjenci = [] if zablokowane else self.baza.pacjenci(self.szukaj.text())
+        self.tabela.setVisible(not zablokowane)
+        self.zaslona_listy.setVisible(zablokowane)
+        self.btn_wszystko.setVisible(self.baza.ma_haslo and not self.pelny_dostep)
         self.tabela.setRowCount(len(self.pacjenci))
         for r, p in enumerate(self.pacjenci):
-            for kol, tekst in enumerate([p.nazwa, p.identyfikator, druk.data_pl(p.ostatnia_wizyta) if p.ostatnia_wizyta
+            for kol, tekst in enumerate([p.nazwa, maskuj_id(p.identyfikator),
+                                         druk.data_pl(p.ostatnia_wizyta) if p.ostatnia_wizyta
                                          else "—", str(p.dokumentow)]):
                 self.tabela.setItem(r, kol, QTableWidgetItem(tekst))
         if self.pacjenci:
@@ -1437,6 +1472,11 @@ class OknoPacjentow(QDialog):
             return nazwa.text().strip(), ident.text().strip(), adres.text().strip()
         return None
 
+    def pokaz_wszystko(self):
+        if self.potwierdz_haslem("pokazanie listy pacjentów", "Podaj hasło, aby zobaczyć wszystkich pacjentów."):
+            self.pelny_dostep = True
+            self.odswiez()
+
     def dodaj(self):
         dane = self._formularz("Nowy pacjent")
         if dane:
@@ -1462,12 +1502,31 @@ class OknoPacjentow(QDialog):
         if not p:
             return
         if QMessageBox.question(self, "Usuń z listy", f"Usunąć „{p.nazwa}” z listy pacjentów?\n\n"
-                                "Wystawione dokumenty zostaną bez zmian.") != QMessageBox.StandardButton.Yes:
+                                "Wystawione dokumenty zostaną bez zmian: przepisy podatkowe wymagają ich "
+                                "przechowywania (RODO art. 17 ust. 3 lit. b). Dane osobowe z dokumentów usuniesz "
+                                "po okresie przechowywania w Ustawienia → RODO.") != QMessageBox.StandardButton.Yes:
             return
         if not self.potwierdz_haslem("usunięcie pacjenta z kartoteki", "Usunięcie pacjenta z listy wymaga hasła."):
             return
         self.baza.usun_pacjenta(p.nazwa)
         self.odswiez()
+
+    def dane_osoby(self):
+        """Prawo dostępu (art. 15 RODO): PDF z danymi osoby i listą jej dokumentów."""
+        p = self._zaznaczony()
+        if not p:
+            QMessageBox.information(self, "Dane osoby", "Wyszukaj i zaznacz pacjenta.")
+            return
+        if not self.potwierdz_haslem("eksport danych osoby (RODO)", "Eksport danych osobowych wymaga hasła."):
+            return
+        sciezka, _ = QFileDialog.getSaveFileName(self, "Dane osoby (RODO)", str(Path.home() / "dane-osoby.pdf"),
+                                                 "PDF (*.pdf)")
+        if not sciezka:
+            return
+        u = self.baza.ustawienia()
+        html = druk.html_danych_osoby(p.nazwa, p.identyfikator, p.adres, self.baza.dokumenty_pacjenta(p.nazwa), u)
+        druk.drukuj(html, druk.przygotuj_drukarke(u, sciezka))
+        QMessageBox.information(self, "Dane osoby", f"Zapisano: {sciezka}")
 
     def wybierz(self, *_):
         r = self.tabela.currentRow()
@@ -1532,6 +1591,8 @@ class StronaHistoria(Strona):
         for b in self.akcje + [self.btn_anuluj]:
             akcje.addWidget(b)
         akcje.addStretch()
+        self.btn_wszystko = przycisk("Pokaż wszystko", "klucz", akcja=self.pokaz_wszystko)
+        akcje.addWidget(self.btn_wszystko)
         u.addLayout(akcje)
         u.addSpacing(6)
 
@@ -1556,6 +1617,13 @@ class StronaHistoria(Strona):
         self.tabela.doubleClicked.connect(self.podglad)
         self.tabela.itemSelectionChanged.connect(self._stan_akcji)
         ku.addWidget(self.tabela)
+        self.zaslona_listy = QLabel(
+            "Wpisz co najmniej 2 znaki (nazwisko, numer lub PESEL), aby wyszukać.\n"
+            "Pełna lista jest dostępna po kliknięciu „Pokaż wszystko” i podaniu hasła.",
+            objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.zaslona_listy.setMinimumHeight(160)
+        ku.addWidget(self.zaslona_listy)
+        self.pelny_dostep = False
         u.addWidget(k, 1)
         self.podsumowanie = QLabel(objectName="drobny")
         u.addWidget(self.podsumowanie)
@@ -1613,9 +1681,23 @@ class StronaHistoria(Strona):
         self._wypelnij_lata()
         self.filtruj()
 
+    def pokaz_wszystko(self):
+        if self.okno.potwierdz_haslem("pokazanie pełnej listy", "Podaj hasło, aby zobaczyć pełną listę."):
+            self.pelny_dostep = True
+            self.filtruj()
+
+    def _tylko_wyszukiwanie(self) -> bool:
+        """Bez hasła widać tylko wyniki wyszukiwania (min. 2 znaki), nie całą listę nazwisk."""
+        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        self.tabela.setVisible(not zablokowane)
+        self.zaslona_listy.setVisible(zablokowane)
+        self.btn_wszystko.setVisible(self.okno.baza.ma_haslo and not self.pelny_dostep)
+        return zablokowane
+
     def filtruj(self, *_):
-        self.docs = self.okno.baza.dokumenty(self.szukaj.text(), self.rok.currentData() or None,
-                                             self.miesiac.currentData() or None, self.rodzaj.currentData())
+        self.docs = [] if self._tylko_wyszukiwanie() else self.okno.baza.dokumenty(
+            self.szukaj.text(), self.rok.currentData() or None, self.miesiac.currentData() or None,
+            self.rodzaj.currentData())
         self.tabela.setRowCount(len(self.docs))
         for r, d in enumerate(self.docs):
             wiersz = [d.numer, druk.data_pl(d.data_wystawienia), d.nabywca, "Anulowany" if d.anulowano else d.tytul,
@@ -1902,8 +1984,11 @@ class StronaUstawienia(Strona):
         f.addRow("Drukarka", self.pola["drukarka"])
         self.okno_drukarki = QCheckBox("Pytaj o drukarkę przed każdym wydrukiem")
         self.kopia = QCheckBox("Domyślnie drukuj oryginał i kopię")
-        ku.addWidget(self.okno_drukarki)
-        ku.addWidget(self.kopia)
+        self.data_wydruku = QCheckBox("Drukuj na dokumencie datę i godzinę wydruku")
+        self.data_wygenerowania = QCheckBox("Drukuj na zestawieniach datę i godzinę wygenerowania")
+        self.druk_pesel = QCheckBox("Drukuj PESEL pacjenta na rachunku (nie jest wymagany)")
+        for w in (self.okno_drukarki, self.kopia, self.data_wydruku, self.data_wygenerowania, self.druk_pesel):
+            ku.addWidget(w)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -1918,9 +2003,8 @@ class StronaUstawienia(Strona):
         ku.addLayout(stan)
         rzad_blokady = QHBoxLayout()
         rzad_blokady.addWidget(QLabel("Blokuj automatycznie po", objectName="etykieta"))
-        self.blokada_minut = QComboBox()
-        for m in CZASY_BLOKADY:
-            self.blokada_minut.addItem(f"{m} min bezczynności", str(m))
+        self.blokada_minut = QSpinBox(minimum=1, maximum=240, suffix=" min bezczynności")
+        self.blokada_minut.setFixedWidth(190)
         rzad_blokady.addWidget(self.blokada_minut)
         rzad_blokady.addStretch()
         ku.addLayout(rzad_blokady)
@@ -1934,12 +2018,36 @@ class StronaUstawienia(Strona):
         ku.addLayout(rzad)
         ku.addWidget(separator())
         rzad = QHBoxLayout()
-        rzad.addWidget(przycisk("Kopia zapasowa…", "archiwum", akcja=self.kopia_zapasowa))
+        rzad.addWidget(przycisk("Szyfrowana kopia…", "archiwum", akcja=self.kopia_zapasowa))
         rzad.addWidget(przycisk("Przywróć…", "przywroc", akcja=self.przywroc))
         rzad.addWidget(przycisk("Eksport odszyfrowany…", "pobierz", akcja=self.eksport_odszyfrowany))
         rzad.addStretch()
         ku.addLayout(rzad)
         ku.addWidget(QLabel(f"Kopie automatyczne: {katalog_kopii()}", objectName="drobny", wordWrap=True))
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
+        # --- RODO
+        prawa.addWidget(sekcja("RODO i prywatność"))
+        k, ku = karta()
+        ku.addWidget(QLabel(
+            "Dane pacjentów są zaszyfrowane, listy pokazują tylko wyniki wyszukiwania, a dziennik nie zawiera "
+            "nazwisk. Rachunki trzeba przechowywać 5 lat od końca roku, w którym minął termin zapłaty podatku; "
+            "po tym czasie dane osobowe można usunąć. Numery i kwoty zostają do rozliczeń.",
+            objectName="drobny", wordWrap=True))
+        rzad = QHBoxLayout()
+        rzad.addWidget(QLabel("Przechowuj dane osobowe przez", objectName="etykieta"))
+        self.rodo_lat = QSpinBox(minimum=1, maximum=50, suffix=" lat po roku wystawienia")
+        self.rodo_lat.setFixedWidth(230)
+        rzad.addWidget(self.rodo_lat)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Usuń dane po okresie przechowywania…", "tarcza", akcja=self.anonimizuj))
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        ku.addWidget(QLabel("Dane jednej osoby (prawo dostępu) wydrukujesz lub zapiszesz jako PDF "
+                            "w Pacjenci → Dane osoby.", objectName="drobny", wordWrap=True))
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -2038,6 +2146,10 @@ class StronaUstawienia(Strona):
             else:
                 p.setText(u[klucz])
         self.okno_drukarki.setChecked(u["okno_drukarki"] == "1")
+        self.data_wydruku.setChecked(u["druk_data_wydruku"] == "1")
+        self.data_wygenerowania.setChecked(u["druk_data_wygenerowania"] == "1")
+        self.druk_pesel.setChecked(u["druk_pesel"] == "1")
+        self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
             nazwa, _, cena = linia.partition(";")
@@ -2046,7 +2158,7 @@ class StronaUstawienia(Strona):
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
-        self.blokada_minut.setCurrentIndex(max(self.blokada_minut.findData(u["blokada_minut"]), 0))
+        self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
         self.w_tle.setChecked(u["w_tle"] == "1")
         self.autostart.setChecked(autostart_wlaczony())
         self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
@@ -2091,11 +2203,15 @@ class StronaUstawienia(Strona):
         wartosci["uslugi"] = self._tekst_cennika()
         wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
+        wartosci["druk_data_wydruku"] = "1" if self.data_wydruku.isChecked() else "0"
+        wartosci["druk_data_wygenerowania"] = "1" if self.data_wygenerowania.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
+        wartosci["druk_pesel"] = "1" if self.druk_pesel.isChecked() else "0"
+        wartosci["rodo_lat"] = str(self.rodo_lat.value())
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
         wartosci["tryb"] = self.tryb.currentData()
-        wartosci["blokada_minut"] = self.blokada_minut.currentData()
+        wartosci["blokada_minut"] = str(self.blokada_minut.value())
         if integracja_dostepna():
             ustaw_autostart(self.autostart.isChecked())
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
@@ -2104,6 +2220,29 @@ class StronaUstawienia(Strona):
         self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
         self.okno.ustaw_czas_blokady()
         self.okno.przejdz(STRONA_NOWY)
+
+    def anonimizuj(self):
+        lat = self.rodo_lat.value()
+        baza = self.okno.baza
+        ile = baza.do_anonimizacji(lat)
+        granica = baza.granica_retencji(lat)
+        if not ile:
+            QMessageBox.information(self, "RODO", f"Nie ma dokumentów z {granica} roku ani starszych "
+                                    "z danymi osobowymi do usunięcia.")
+            return
+        if QMessageBox.warning(
+                self, "Usuń dane osobowe",
+                f"Z {ile} dokumentów wystawionych w {granica} roku i wcześniej zostaną trwale usunięte "
+                "imię i nazwisko, PESEL/NIP i adres (także z wcześniejszych wersji i kartoteki). "
+                "Numery, daty i kwoty zostają.\n\nTego nie da się cofnąć (poza przywróceniem kopii). Kontynuować?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.okno.potwierdz_haslem("Usunięcie danych osobowych"):
+            return
+        zrobiono = baza.anonimizuj_starsze(lat)
+        self.okno.dziennik.zapisz(f"RODO: zanonimizowano {zrobiono} dokumentów do roku {granica}")
+        self.okno.komunikat(f"Usunięto dane osobowe z {zrobiono} dokumentów")
 
     def _dodaj_do_cennika(self, nazwa: str = "", cena: float = 0.0):
         r = self.cennik.rowCount()
@@ -2237,7 +2376,7 @@ class StronaUstawienia(Strona):
         if not self.okno.potwierdz_haslem("przywracanie kopii", "Przywrócenie danych z kopii wymaga hasła."):
             return
         sciezka, _ = QFileDialog.getOpenFileName(self, "Przywróć z kopii", str(katalog_kopii()),
-                                                 "Kopia Fakturnika (*.zip *.db)")
+                                                 "Kopia Fakturnika (*.fkopia *.zip *.db)")
         if not sciezka:
             return
         if QMessageBox.warning(self, "Przywróć z kopii",
@@ -2246,7 +2385,7 @@ class StronaUstawienia(Strona):
                 != QMessageBox.StandardButton.Yes:
             return
         haslo = None
-        if self._kopia_wymaga_hasla(sciezka):
+        if self._kopia_wymaga_hasla(sciezka) or Baza.czy_kopia_szyfrowana(sciezka):
             haslo, ok = QInputDialog.getText(self, "Hasło kopii", "Hasło, którym zaszyfrowano kopię:",
                                              QLineEdit.EchoMode.Password)
             if not ok:
@@ -2255,11 +2394,11 @@ class StronaUstawienia(Strona):
         kopia_automatyczna(self.okno.baza.sciezka, nazwa=f"przed-przywroceniem-{date.today().isoformat()}.db")
         try:
             self.okno.baza.przywroc(sciezka, haslo)
-        except (BledneHaslo, ValueError, NowszaBaza) as e:
+        except (BledneHaslo, ValueError, NowszaBaza, PermissionError, KeyError) as e:
             self.okno.dziennik.zapisz("przywrócenie kopii: NIEUDANE")
             QMessageBox.critical(self, "Nie udało się przywrócić", str(e))
             return
-        self.okno.dziennik.zapisz(f"przywrócenie danych z kopii {Path(sciezka).name}")
+        self.okno.dziennik.zapisz("przywrócenie danych z kopii")
         self.okno.komunikat("Przywrócono dane z kopii")
         self.okno.przejdz(STRONA_HISTORIA)
 
@@ -2288,14 +2427,23 @@ class StronaUstawienia(Strona):
             self.okno.komunikat(f"Zapisano: {sciezka}")
 
     def kopia_zapasowa(self):
-        nazwa = f"fakturnik-kopia-{date.today().isoformat()}.zip"
-        sciezka, _ = QFileDialog.getSaveFileName(self, "Kopia zapasowa", str(Path.home() / nazwa),
-                                                 "Pełna kopia z plikami (*.zip);;Tylko dane, bez plików (*.db)")
-        if sciezka:
-            self.okno.baza.kopia_zapasowa(sciezka)
-            self.okno.dziennik.zapisz("ręczna kopia zapasowa")
-            self.okno.komunikat("Zapisano kopię zapasową" +
-                                (" (zaszyfrowaną tym samym hasłem)" if self.okno.baza.ma_haslo else ""))
+        haslo = OknoNowegoHasla(self, "Hasło kopii zapasowej",
+                                "Kopia (dane i wrzucone pliki) zostanie zaszyfrowana AES-256 tym hasłem. "
+                                "Może być inne niż hasło programu, np. do kopii na pendrive lub w chmurze.")
+        if haslo.exec() != QDialog.DialogCode.Accepted:
+            return
+        nazwa = f"fakturnik-kopia-{date.today().isoformat()}.fkopia"
+        sciezka, _ = QFileDialog.getSaveFileName(self, "Szyfrowana kopia zapasowa", str(Path.home() / nazwa),
+                                                 "Szyfrowana kopia Fakturnika (*.fkopia)")
+        if not sciezka:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.okno.baza.kopia_zaszyfrowana(sciezka, haslo.haslo.text())
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.okno.dziennik.zapisz("szyfrowana kopia zapasowa")
+        self.okno.komunikat("Zapisano szyfrowaną kopię zapasową")
 
 
 # ---------------------------------------------------------------- wrzucone pliki
@@ -2429,6 +2577,8 @@ class StronaPliki(Strona):
         for b in self.akcje:
             akcje.addWidget(b)
         akcje.addStretch()
+        self.btn_wszystko = przycisk("Pokaż wszystko", "klucz", akcja=self.pokaz_wszystko)
+        akcje.addWidget(self.btn_wszystko)
         u.addLayout(akcje)
         u.addSpacing(6)
 
@@ -2452,6 +2602,13 @@ class StronaPliki(Strona):
         self.tabela.doubleClicked.connect(self.podglad)
         self.tabela.itemSelectionChanged.connect(self._stan_akcji)
         ku.addWidget(self.tabela)
+        self.zaslona_listy = QLabel(
+            "Wpisz co najmniej 2 znaki (nazwisko, numer lub PESEL), aby wyszukać.\n"
+            "Pełna lista jest dostępna po kliknięciu „Pokaż wszystko” i podaniu hasła.",
+            objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
+        self.zaslona_listy.setMinimumHeight(160)
+        ku.addWidget(self.zaslona_listy)
+        self.pelny_dostep = False
         u.addWidget(k, 1)
         self.podsumowanie = QLabel(objectName="drobny")
         u.addWidget(self.podsumowanie)
@@ -2482,9 +2639,23 @@ class StronaPliki(Strona):
             pole_wyboru.blockSignals(False)
         self.filtruj()
 
+    def pokaz_wszystko(self):
+        if self.okno.potwierdz_haslem("pokazanie pełnej listy", "Podaj hasło, aby zobaczyć pełną listę."):
+            self.pelny_dostep = True
+            self.filtruj()
+
+    def _tylko_wyszukiwanie(self) -> bool:
+        """Bez hasła widać tylko wyniki wyszukiwania (min. 2 znaki), nie całą listę nazwisk."""
+        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        self.tabela.setVisible(not zablokowane)
+        self.zaslona_listy.setVisible(zablokowane)
+        self.btn_wszystko.setVisible(self.okno.baza.ma_haslo and not self.pelny_dostep)
+        return zablokowane
+
     def filtruj(self, *_):
-        self.lista = self.okno.baza.pliki(self.szukaj.text(), self.rok.currentData(),
-                                          self.miesiac.currentData() or None, self.kategoria.currentData())
+        self.lista = [] if self._tylko_wyszukiwanie() else self.okno.baza.pliki(
+            self.szukaj.text(), self.rok.currentData(), self.miesiac.currentData() or None,
+            self.kategoria.currentData())
         self.tabela.setRowCount(len(self.lista))
         for r, p in enumerate(self.lista):
             for kol, tekst in enumerate([druk.data_pl(p.data), p.nazwa + (f"  ·  {p.opis}" if p.opis else ""),
@@ -2579,7 +2750,7 @@ class StronaPliki(Strona):
             QMessageBox.critical(self, "Drukowanie", str(e))
             return
         QApplication.restoreOverrideCursor()
-        self.okno.dziennik.zapisz(f"wydruk pliku {p.nazwa}")
+        self.okno.dziennik.zapisz(f"wydruk pliku nr {p.id}")
         self.okno.komunikat(f"Wydrukowano: {p.nazwa}")
 
     def zapisz_kopie(self):
@@ -2589,7 +2760,7 @@ class StronaPliki(Strona):
         sciezka, _ = QFileDialog.getSaveFileName(self, "Zapisz kopię pliku", str(Path.home() / p.nazwa))
         if sciezka:
             Path(sciezka).write_bytes(tresc)
-            self.okno.dziennik.zapisz(f"zapis kopii pliku {p.nazwa} poza programem")
+            self.okno.dziennik.zapisz(f"zapis kopii pliku nr {p.id} poza programem")
             self.okno.komunikat(f"Zapisano: {sciezka}")
 
     def edytuj(self):
@@ -2614,7 +2785,7 @@ class StronaPliki(Strona):
                 != QMessageBox.StandardButton.Yes:
             return
         self.okno.baza.usun_plik(p.id)
-        self.okno.dziennik.zapisz(f"usunięcie pliku {p.nazwa}")
+        self.okno.dziennik.zapisz(f"usunięcie pliku nr {p.id}")
         self.okno.komunikat(f"Usunięto: {p.nazwa}")
         self.odswiez()
 
@@ -2738,9 +2909,7 @@ class OknoGlowne(QMainWindow):
         opis = QVBoxLayout()
         opis.setSpacing(1)
         opis.addWidget(QLabel("Fakturnik", objectName="nazwa_programu"))
-        self.etykieta_gabinetu = QLabel(objectName="gabinet")
-        self.etykieta_gabinetu.setFixedWidth(150)
-        opis.addWidget(self.etykieta_gabinetu)
+        opis.addWidget(QLabel("by TeodorTeo.com", objectName="gabinet"))
         marka.addLayout(opis)
         marka.addStretch()
         m.addLayout(marka)
@@ -2760,8 +2929,12 @@ class OknoGlowne(QMainWindow):
         self.btn_blokuj.setIcon(ikona("klodka", MENU_TEKST))
         self.btn_blokuj.clicked.connect(self.zablokuj)
         m.addWidget(self.btn_blokuj)
+        self.etykieta_gabinetu = QLabel(objectName="gabinet")
+        self.etykieta_gabinetu.setFixedWidth(190)
+        self.etykieta_gabinetu.setStyleSheet("padding: 6px 24px 0; color: #a9c3c8;")
+        m.addWidget(self.etykieta_gabinetu)
         wersja = QLabel(f"Wersja {WERSJA}")
-        wersja.setStyleSheet("color: #6f8f95; font-size: 11px; padding: 6px 24px 0;")
+        wersja.setStyleSheet("color: #6f8f95; font-size: 11px; padding: 2px 24px 0;")
         m.addWidget(wersja)
         uklad.addWidget(menu)
 
@@ -2814,6 +2987,9 @@ class OknoGlowne(QMainWindow):
         self._ukryty = False
         self._podpowiedz_zasobnika = False
         self._dziennik_zgloszony = False
+        zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
+        self._dziennik_uciety = bool(zapamietany) and not self.dziennik.zawiera(zapamietany)
+        self.dziennik.po_zapisie = self._zapamietaj_wpis
         self._utworz_zasobnik()
         self.zegar_straznika = QTimer(self, interval=60 * 1000)
         self.zegar_straznika.timeout.connect(self.sprawdz_integralnosc)
@@ -2823,6 +2999,7 @@ class OknoGlowne(QMainWindow):
         self.wydanie: aktualizacje.Wydanie | None = None
         if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1":
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
+            QTimer.singleShot(6000, self.sprawdz_program)
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
 
@@ -2831,6 +3008,10 @@ class OknoGlowne(QMainWindow):
             self.strona_pulpit.zaslon()  # kwoty chowają się zawsze po wyjściu z zakładki
         if i != STRONA_USTAWIENIA:
             self.strona_ustawienia.odblokowane = False  # ustawienia blokują się po wyjściu
+        if i != STRONA_HISTORIA:
+            self.strona_historia.pelny_dostep = False
+        if i != STRONA_PLIKI:
+            self.strona_pliki.pelny_dostep = False
         self.grupa.button(i).setChecked(True)
         self.strony.setCurrentIndex(i)
         if odswiez:
@@ -2869,6 +3050,21 @@ class OknoGlowne(QMainWindow):
         w.gotowe.connect(lambda wydanie: self._wynik_sprawdzenia(wydanie, cicho))
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
+
+    def sprawdz_program(self):
+        """Czy działający Fakturnik.exe jest tym samym plikiem, który opublikowano w wydaniu."""
+        w = Watek(aktualizacje.sprawdz_wlasny_plik)
+        w.gotowe.connect(self._wynik_sprawdzenia_programu)
+        w.blad.connect(lambda _: None)
+        self._w_tle(w)
+
+    def _wynik_sprawdzenia_programu(self, oryginalny):
+        if oryginalny is False:
+            tekst = ("Plik programu różni się od opublikowanego wydania (mógł zostać zmieniony). "
+                     "Pobierz Fakturnik.exe ponownie ze strony wydań i nie wpisuj hasła w tej kopii.")
+            self.dziennik.zapisz("STRAŻNIK: plik programu różni się od opublikowanego wydania")
+            self.zasobnik.showMessage("Fakturnik: uwaga", tekst, QSystemTrayIcon.MessageIcon.Warning, 15000)
+            QMessageBox.critical(self, "Fakturnik", tekst)
 
     def _wynik_sprawdzenia(self, wydanie, cicho: bool):
         self.wydanie = wydanie
@@ -3030,9 +3226,11 @@ class OknoGlowne(QMainWindow):
     # ---- strażnik integralności
     def sprawdz_integralnosc(self):
         problemy = self.baza.sprawdz_integralnosc(katalog_kopii() / "pliki")
-        if not self.dziennik.nienaruszony() and not self._dziennik_zgloszony:
+        zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
+        uciety = self._dziennik_uciety or (bool(zapamietany) and not self.dziennik.zawiera(zapamietany))
+        if (uciety or not self.dziennik.nienaruszony()) and not self._dziennik_zgloszony:
             self._dziennik_zgloszony = True
-            problemy.append("Dziennik logowań został zmieniony lub usunięto z niego wpisy.")
+            problemy.append("Dziennik logowań został zmieniony, ucięty lub usunięto z niego wpisy.")
         for p in problemy:
             self.dziennik.zapisz(f"STRAŻNIK: {p}")
         if problemy:
@@ -3040,6 +3238,12 @@ class OknoGlowne(QMainWindow):
                                       QSystemTrayIcon.MessageIcon.Warning, 10000)
             if self.isVisible():
                 self.komunikat(problemy[0], blad=True)
+
+    def _zapamietaj_wpis(self, skrot: str):
+        try:
+            self.baza.zapamietaj_wpis_dziennika(skrot)
+        except Exception:
+            pass  # np. baza już zamknięta przy wyłączaniu programu
 
     def zablokuj(self):
         if not self.baza.ma_haslo:
@@ -3104,6 +3308,7 @@ def uruchom() -> int:
     app.setFont(czcionka)
     app.setStyleSheet(STYL)
     aktualizacje.posprzataj()
+    aktualizacje.zablokuj_program()
 
     # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
     polecenie = polecenie_z_argumentow(sys.argv[1:])
@@ -3123,7 +3328,8 @@ def uruchom() -> int:
         QMessageBox.warning(None, "Fakturnik", str(e))
         return 1
     if okno and okno.uruchom_po_zamknieciu:
-        subprocess.Popen([str(okno.uruchom_po_zamknieciu)], close_fds=True)
+        jedna.zamknij()  # nowa wersja nie może trafić na nasłuch starej, bo uznałaby, że program już działa
+        aktualizacje.uruchom_nowa_wersje(okno.uruchom_po_zamknieciu)
     return kod
 
 

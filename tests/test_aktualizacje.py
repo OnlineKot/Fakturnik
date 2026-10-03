@@ -114,3 +114,36 @@ def test_tylko_zaufane_adresy():
         aktualizacje._pobierz("https://zly-serwer.example/Fakturnik.exe")
     with pytest.raises(BladAktualizacji):
         aktualizacje._pobierz("http://github.com/Fakturnik.exe")
+
+
+def test_sprawdzenie_wlasnego_pliku(tmp_path, monkeypatch):
+    exe = tmp_path / "Fakturnik.exe"
+    exe.write_bytes(b"MZ oryginalny program")
+    skrot = hashlib.sha256(exe.read_bytes()).hexdigest()
+
+    def falszywe_pobieranie(adres, timeout=10):
+        if adres.endswith("/releases/tags/v1.0.5"):
+            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
+                              b'"browser_download_url": "https://github.com/x/Fakturnik.exe.sha256"}]}')
+        return io.BytesIO(skrot.encode())
+
+    monkeypatch.setattr(aktualizacje, "_pobierz", falszywe_pobieranie)
+    assert aktualizacje.sprawdz_wlasny_plik(exe, "1.0.5") is True
+    exe.write_bytes(b"MZ podmieniony program")
+    assert aktualizacje.sprawdz_wlasny_plik(exe, "1.0.5") is False
+    assert aktualizacje.sprawdz_wlasny_plik(exe, "9.9.9") is None  # brak wydania / internetu
+
+
+def test_instalacja_usuwa_stara_wersje_tylko_do_odczytu(tmp_path):
+    from fakturnik.ochrona import tylko_do_odczytu
+    obecny, nowy = tmp_path / "Fakturnik.exe", tmp_path / "Fakturnik.new.exe"
+    obecny.write_bytes(b"v1")
+    nowy.write_bytes(b"v2")
+    stary = tmp_path / "Fakturnik.old.exe"
+    stary.write_bytes(b"v0")
+    tylko_do_odczytu(stary, True)
+    aktualizacje.zainstaluj(nowy, obecny)
+    assert obecny.read_bytes() == b"v2" and stary.read_bytes() == b"v1"
+    tylko_do_odczytu(stary, True)
+    aktualizacje.posprzataj(obecny)
+    assert not stary.exists()

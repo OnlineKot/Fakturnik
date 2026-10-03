@@ -37,7 +37,7 @@ class Powiadomienie(QFrame):
         u.setSpacing(10)
         self.znak = QLabel()
         u.addWidget(self.znak)
-        self.tekst = QLabel()
+        self.tekst = QLabel(textFormat=Qt.TextFormat.PlainText)
         u.addWidget(self.tekst)
         self.efekt = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.efekt)

@@ -62,22 +62,43 @@ class JednaKopia(QObject):
         self.serwer.listen(NAZWA_SERWERA)
         self.serwer.newConnection.connect(self._polaczenie)
 
+    def zamknij(self) -> None:
+        if self.serwer is not None:
+            self.serwer.close()
+            QLocalServer.removeServer(NAZWA_SERWERA)
+            self.serwer = None
+
     def _polaczenie(self):
         gniazdo = self.serwer.nextPendingConnection()
         if gniazdo is None:
             return
 
         def odczytaj():
-            try:
-                dane = json.loads(bytes(gniazdo.readAll()).decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                return
-            if isinstance(dane, dict):
-                self.polecenie.emit(dane)
+            surowe = bytes(gniazdo.read(64 * 1024))  # większych wiadomości nie przyjmujemy
+            polecenie = sprawdz_polecenie(surowe)
+            if polecenie is not None:
+                self.polecenie.emit(polecenie)
 
         if gniazdo.bytesAvailable() or gniazdo.waitForReadyRead(1000):
             odczytaj()
         gniazdo.disconnected.connect(gniazdo.deleteLater)
+
+
+def sprawdz_polecenie(surowe: bytes) -> dict | None:
+    """Przyjmuje tylko znane polecenia w oczekiwanym kształcie (pliki: istniejące, maks. 50)."""
+    try:
+        dane = json.loads(surowe.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(dane, dict) or dane.get("akcja") not in ("pokaz", "dodaj", "w_tle"):
+        return None
+    if dane["akcja"] != "dodaj":
+        return {"akcja": dane["akcja"]}
+    pliki = dane.get("pliki")
+    if not isinstance(pliki, list):
+        return None
+    pliki = [p for p in pliki[:50] if isinstance(p, str) and len(p) < 1024 and Path(p).is_file()]
+    return {"akcja": "dodaj", "pliki": pliki} if pliki else None
 
 
 def polecenie_z_argumentow(argumenty: list[str]) -> dict:

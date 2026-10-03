@@ -77,3 +77,26 @@ def odszyfruj_plik(dane: bytes, klucz: bytes) -> bytes:
         return AESGCM(klucz).decrypt(reszta[:12], reszta[12:], MAGIC_PLIKU)
     except InvalidTag:
         raise ValueError("Plik jest uszkodzony albo został zmieniony poza programem.") from None
+
+
+# ---------- szyfrowana kopia zapasowa (własne hasło, może być inne niż hasło programu) ----------
+
+MAGIC_KOPII = b"FAKTURNIK-KOPIA1\n"
+
+
+def zaszyfruj_kopie(dane: bytes, haslo: str) -> bytes:
+    sol, nonce = os.urandom(16), os.urandom(12)
+    return MAGIC_KOPII + sol + nonce + AESGCM(klucz_z_hasla(haslo, sol)).encrypt(nonce, dane, MAGIC_KOPII)
+
+
+def czy_kopia_szyfrowana(dane: bytes) -> bool:
+    return dane.startswith(MAGIC_KOPII)
+
+
+def odszyfruj_kopie(dane: bytes, haslo: str) -> bytes:
+    reszta = dane[len(MAGIC_KOPII):]
+    sol, nonce, szyfrogram = reszta[:16], reszta[16:28], reszta[28:]
+    try:
+        return AESGCM(klucz_z_hasla(haslo, sol)).decrypt(nonce, szyfrogram, MAGIC_KOPII)
+    except InvalidTag:
+        raise BledneHaslo("Nieprawidłowe hasło kopii albo uszkodzony plik.") from None
