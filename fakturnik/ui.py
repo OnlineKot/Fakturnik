@@ -13,7 +13,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut,
 )
-from PySide6.QtPrintSupport import QPrintDialog, QPrintPreviewDialog
+from PySide6.QtPrintSupport import QPrintDialog
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
@@ -32,11 +32,11 @@ from .system import (
 from .szyfrowanie import BledneHaslo
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
 from .wersja import WERSJA
-from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, Powiadomienie, WykresMiesiecy
+from .widzety import DwuliniowyDelegate, PigulkaDelegate, PodgladKartki, PodgladStron, Powiadomienie, WykresMiesiecy
 
 STRONA_NOWY, STRONA_HISTORIA, STRONA_PRZYCHODY, STRONA_PLIKI, STRONA_USTAWIENIA = range(5)
 MIN_DLUGOSC_HASLA = 8
-BLOKADA_PO_MINUTACH = 10
+CZASY_BLOKADY = (2, 5, 10, 15, 30)  # minuty bezczynności do automatycznej blokady
 ZASOBY = Path(__file__).parent / "zasoby"
 
 # ---------------------------------------------------------------- wygląd
@@ -763,6 +763,9 @@ class StronaNowy(Strona):
         # --- karta nabywcy
         self.karta_nabywcy, kn = karta()
         self.nabywca = QLineEdit(placeholderText="Imię i nazwisko lub nazwa firmy")
+        rozwin = self.nabywca.addAction(ikona("rozwin"), QLineEdit.ActionPosition.TrailingPosition)
+        rozwin.setToolTip("Lista zapamiętanych pacjentów")
+        rozwin.triggered.connect(self.rozwin_pacjentow)
         self.nabywca_id = QLineEdit(placeholderText="Opcjonalnie")
         self.nabywca_adres = QLineEdit(placeholderText="Opcjonalnie, np. ul. Długa 1, 00-001 Miasto")
         nab = QGridLayout()
@@ -908,7 +911,11 @@ class StronaNowy(Strona):
         self.btn_pdf = przycisk("Zapisz PDF", "pdf", akcja=self.zapisz_pdf)
         dol.addWidget(self.btn_podglad)
         dol.addWidget(self.btn_pdf)
-        self.drukuj_btn = przycisk("Drukuj", "drukarka", "glowny", self.drukuj)
+        self.btn_anuluj_edycje = przycisk("Anuluj edycję", akcja=self.zakoncz_edycje)
+        self.btn_anuluj_edycje.hide()
+        dol.addWidget(self.btn_anuluj_edycje)
+        self.edytowany: Dokument | None = None
+        self.drukuj_btn = przycisk("Drukuj", "drukarka", "glowny", self.glowna_akcja)
         self.drukuj_btn.setToolTip("F5 lub Ctrl+P")
         dol.addWidget(self.drukuj_btn)
         self.btn_dalej = przycisk("Dalej", "dalej", "glowny", lambda: self.pokaz_krok(self.krok + 1))
@@ -996,6 +1003,8 @@ class StronaNowy(Strona):
         self.btn_dalej.setVisible(prowadzony and not ostatni)
         for w in (self.drukuj_btn, self.btn_podglad, self.btn_pdf, self.kopia):
             w.setVisible(ostatni)
+        if self.edytowany:
+            self.kopia.hide()
         if ostatni:
             ile = len(self.pozycje())
             self.podsumowanie_tekst.setText(
@@ -1004,6 +1013,68 @@ class StronaNowy(Strona):
             self.zaplanuj_podglad()
         elif self.krok == 0:
             self.nabywca.setFocus()
+
+    # ---- edycja wystawionego dokumentu
+    def glowna_akcja(self):
+        if self.edytowany:
+            self.zapisz_zmiany()
+        else:
+            self.drukuj()
+
+    def zaladuj_do_edycji(self, dok: Dokument):
+        self.edytowany = dok
+        self.ustaw_rodzaj(dok.tytul)
+        for b in self.rodzaj_grupa.buttons():
+            b.setEnabled(False)
+        self.numer.setText(dok.numer)
+        self.numer.setReadOnly(True)
+        self.numer.setToolTip("Numer wystawionego dokumentu się nie zmienia")
+        self.data_wyst.blockSignals(True)
+        self.data_wyst.setDate(QDate.fromString(dok.data_wystawienia, "yyyy-MM-dd"))
+        self.data_wyst.blockSignals(False)
+        self.data_uslugi.setDate(QDate.fromString(dok.data_uslugi, "yyyy-MM-dd"))
+        self.platnosc.setCurrentText(dok.platnosc)
+        self.nabywca.setText(dok.nabywca)
+        self.nabywca_id.setText(dok.nabywca_id)
+        self.nabywca_adres.setText(dok.nabywca_adres.replace("\n", ", "))
+        self.tabela.setRowCount(0)
+        for p in dok.pozycje:
+            self.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
+        self.drukuj_btn.setText("Zapisz zmiany")
+        self.drukuj_btn.setIcon(ikona("ok", "white"))
+        self.btn_anuluj_edycje.show()
+        self.kopia.hide()
+        self.zmien_rodzaj()
+        self.pokaz_krok(0)
+
+    def zapisz_zmiany(self):
+        dok = self.dokument()
+        if not dok or not self.edytowany:
+            return
+        powod, ok = QInputDialog.getText(self, "Zapisz zmiany", f"Co poprawiono w dokumencie nr {self.edytowany.numer}?\n"
+                                         "(zapisze się w historii zmian)")
+        if not ok:
+            return
+        org = self.edytowany
+        dok.id, dok.numer, dok.rodzaj, dok.anulowano, dok.powod_anulowania = (
+            org.id, org.numer, org.rodzaj, org.anulowano, org.powod_anulowania)
+        self.okno.baza.zaktualizuj_dokument(dok, powod)
+        self.okno.dziennik.zapisz(f"edycja dokumentu nr {dok.numer}" + (f": {powod.strip()}" if powod.strip() else ""))
+        self.okno.komunikat(f"Zapisano zmiany w dokumencie nr {dok.numer}")
+        self.zakoncz_edycje()
+        self.okno.przejdz(STRONA_HISTORIA)
+        self.okno.podglad(self.okno.baza.dokument(dok.id), duplikat=True)
+
+    def zakoncz_edycje(self):
+        self.edytowany = None
+        for b in self.rodzaj_grupa.buttons():
+            b.setEnabled(True)
+        self.numer.setReadOnly(False)
+        self.numer.setToolTip("")
+        self.drukuj_btn.setText("Drukuj")
+        self.drukuj_btn.setIcon(ikona("drukarka", "white"))
+        self.btn_anuluj_edycje.hide()
+        self.wyczysc()
 
     def zaplanuj_podglad(self, *_):
         self._zegar_podgladu.start()
@@ -1034,8 +1105,14 @@ class StronaNowy(Strona):
                 self.zaplanuj_podglad()
 
     def wybierz_pacjenta(self):
-        okno = OknoPacjentow(self.okno.baza, self, self.nabywca.text().strip())
-        if okno.exec() == QDialog.DialogCode.Accepted and okno.wybrany:
+        okno = OknoPacjentow(self.okno.baza, self, self.nabywca.text().strip(), self.okno.potwierdz_haslem)
+        wynik = okno.exec()
+        tekst, ident, adres = self.nabywca.text(), self.nabywca_id.text(), self.nabywca_adres.text()
+        self.odswiez()  # lista podpowiedzi mogła się zmienić (nowi lub poprawieni pacjenci)
+        self.nabywca.setText(tekst)
+        self.nabywca_id.setText(ident)
+        self.nabywca_adres.setText(adres)
+        if wynik == QDialog.DialogCode.Accepted and okno.wybrany:
             p = okno.wybrany
             self.nabywca.setText(p.nazwa)
             self.nabywca_adres.setText(p.adres.replace("\n", ", "))
@@ -1064,7 +1141,7 @@ class StronaNowy(Strona):
                 b.clicked.connect(lambda _=False, n=d.nabywca: (self.nabywca.setText(n), self.uzupelnij_nabywce(n)))
                 self.ostatni.addWidget(b)
 
-        podpowiedzi = QCompleter(sorted(self.okno.baza.nabywcy()))
+        podpowiedzi = QCompleter([p.nazwa for p in self.okno.baza.pacjenci()])
         podpowiedzi.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         podpowiedzi.setFilterMode(Qt.MatchFlag.MatchContains)
         podpowiedzi.activated.connect(self.uzupelnij_nabywce)
@@ -1081,19 +1158,37 @@ class StronaNowy(Strona):
 
     def zmien_rodzaj(self):
         tytul = self.naglowek.itemAt(0).widget()
-        tytul.setText("Nowa faktura" if self.rodzaj == "Faktura" else "Nowy rachunek")
+        podtytul = self.naglowek.itemAt(1).widget()
+        if self.edytowany:
+            tytul.setText(f"Edycja: {self.edytowany.tytul.lower()} nr {self.edytowany.numer}")
+            podtytul.setText("Numer zostaje bez zmian. Poprzednia wersja trafi do historii zmian.")
+        else:
+            tytul.setText("Nowa faktura" if self.rodzaj == "Faktura" else "Nowy rachunek")
+            podtytul.setText("Numer nadaje się sam: kolejny w danym miesiącu.")
         self.zaplanuj_podglad()
         self.etykieta_nabywcy.setText("Nabywca (pacjent lub firma)" if self.rodzaj == "Faktura" else "Pacjent")
         self.odswiez_numer()
 
     def odswiez_numer(self):
+        if self.edytowany:
+            return  # przy edycji numer się nie zmienia
         self.numer.setText(self.okno.baza.nastepny_numer(self.data_wyst.date().toPython(), self.rodzaj))
 
     def uzupelnij_nabywce(self, nazwa: str):
-        dok = self.okno.baza.nabywcy().get(nazwa)
-        if dok:
-            self.nabywca_adres.setText(dok.nabywca_adres.replace("\n", ", "))
-            self.nabywca_id.setText(dok.nabywca_id)
+        p = self.okno.baza.pacjent(nazwa)
+        if p:
+            self.nabywca_adres.setText(p.adres.replace("\n", ", "))
+            self.nabywca_id.setText(p.identyfikator)
+
+    def rozwin_pacjentow(self):
+        """Strzałka w polu „Pacjent”: lista zapamiętanych pacjentów do wybrania."""
+        podpowiedzi = self.nabywca.completer()
+        if podpowiedzi is None:
+            return
+        podpowiedzi.setCompletionPrefix(self.nabywca.text())
+        if not podpowiedzi.completionCount():
+            podpowiedzi.setCompletionPrefix("")
+        podpowiedzi.complete()
 
     def dodaj_pozycje(self, nazwa="", cena=0.0, ilosc=1.0):
         self.tabela.blockSignals(True)
@@ -1244,10 +1339,11 @@ def liczba_dokumentow(n: int) -> str:
 class OknoPacjentow(QDialog):
     """Wybór pacjenta z listy wszystkich dotychczasowych nabywców, z wyszukiwaniem."""
 
-    def __init__(self, baza: Baza, parent=None, szukaj: str = ""):
+    def __init__(self, baza: Baza, parent=None, szukaj: str = "", potwierdz_haslem=None):
         super().__init__(parent)
         self.baza = baza
         self.wybrany = None
+        self.potwierdz_haslem = potwierdz_haslem or (lambda *_: True)
         self.setWindowTitle("Wybierz pacjenta")
         self.resize(720, 520)
         u = QVBoxLayout(self)
@@ -1281,7 +1377,11 @@ class OknoPacjentow(QDialog):
         ku.addWidget(self.tabela)
         u.addWidget(k, 1)
         rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Nowy pacjent", "plus", "plaski", self.dodaj))
+        rzad.addWidget(przycisk("Edytuj", "edytuj", "plaski", self.edytuj))
+        rzad.addWidget(przycisk("Usuń z listy", "kosz", "plaski", self.usun))
         self.licznik = QLabel(objectName="drobny")
+        rzad.addSpacing(10)
         rzad.addWidget(self.licznik)
         rzad.addStretch()
         rzad.addWidget(przycisk("Anuluj", akcja=self.reject))
@@ -1295,11 +1395,79 @@ class OknoPacjentow(QDialog):
         self.pacjenci = self.baza.pacjenci(self.szukaj.text())
         self.tabela.setRowCount(len(self.pacjenci))
         for r, p in enumerate(self.pacjenci):
-            for kol, tekst in enumerate([p.nazwa, p.identyfikator, druk.data_pl(p.ostatnia_wizyta), str(p.dokumentow)]):
+            for kol, tekst in enumerate([p.nazwa, p.identyfikator, druk.data_pl(p.ostatnia_wizyta) if p.ostatnia_wizyta
+                                         else "—", str(p.dokumentow)]):
                 self.tabela.setItem(r, kol, QTableWidgetItem(tekst))
         if self.pacjenci:
             self.tabela.selectRow(0)
         self.licznik.setText(f"Pacjentów: {len(self.pacjenci)}")
+
+    def _formularz(self, tytul: str, p=None):
+        okno = QDialog(self)
+        okno.setWindowTitle(tytul)
+        okno.setFixedWidth(440)
+        u = QVBoxLayout(okno)
+        u.setContentsMargins(24, 22, 24, 20)
+        u.setSpacing(10)
+        t = QLabel(tytul)
+        t.setStyleSheet("font-size: 16px; font-weight: 600;")
+        u.addWidget(t)
+        nazwa = QLineEdit(p.nazwa if p else "", placeholderText="Imię i nazwisko lub nazwa firmy")
+        ident = QLineEdit(p.identyfikator if p else "", placeholderText="Opcjonalnie")
+        adres = QLineEdit(p.adres.replace("\n", ", ") if p else "", placeholderText="Opcjonalnie")
+        info = QLabel(objectName="drobny")
+
+        def sprawdz(tekst):
+            wynik = opis_identyfikatora(tekst)
+            info.setText(wynik[0] if wynik else "")
+            info.setStyleSheet(f"color: {ZIELONY if wynik and wynik[1] else CZERWONY};")
+        ident.textChanged.connect(sprawdz)
+        sprawdz(ident.text())
+        u.addLayout(pole("Pacjent", nazwa))
+        pi = pole("PESEL lub NIP", ident)
+        pi.addWidget(info)
+        u.addLayout(pi)
+        u.addLayout(pole("Adres", adres))
+        r = QHBoxLayout()
+        r.addStretch()
+        r.addWidget(przycisk("Anuluj", akcja=okno.reject))
+        r.addWidget(przycisk("Zapisz", styl="glowny", akcja=lambda: okno.accept() if nazwa.text().strip() else nazwa.setFocus()))
+        u.addLayout(r)
+        if okno.exec() == QDialog.DialogCode.Accepted:
+            return nazwa.text().strip(), ident.text().strip(), adres.text().strip()
+        return None
+
+    def dodaj(self):
+        dane = self._formularz("Nowy pacjent")
+        if dane:
+            self.baza.zapisz_pacjenta(*dane)
+            self.szukaj.setText(dane[0])
+            self.odswiez()
+
+    def _zaznaczony(self):
+        r = self.tabela.currentRow()
+        return self.pacjenci[r] if 0 <= r < len(self.pacjenci) else None
+
+    def edytuj(self):
+        p = self._zaznaczony()
+        if not p:
+            return
+        dane = self._formularz("Edytuj pacjenta", p)
+        if dane:
+            self.baza.zapisz_pacjenta(*dane, stara_nazwa=p.nazwa)
+            self.odswiez()
+
+    def usun(self):
+        p = self._zaznaczony()
+        if not p:
+            return
+        if QMessageBox.question(self, "Usuń z listy", f"Usunąć „{p.nazwa}” z listy pacjentów?\n\n"
+                                "Wystawione dokumenty zostaną bez zmian.") != QMessageBox.StandardButton.Yes:
+            return
+        if not self.potwierdz_haslem("usunięcie pacjenta z kartoteki", "Usunięcie pacjenta z listy wymaga hasła."):
+            return
+        self.baza.usun_pacjenta(p.nazwa)
+        self.odswiez()
 
     def wybierz(self, *_):
         r = self.tabela.currentRow()
@@ -1355,8 +1523,10 @@ class StronaHistoria(Strona):
         # --- akcje
         akcje = QHBoxLayout()
         akcje.setSpacing(6)
-        self.akcje = [przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
-                      przycisk("Podgląd", "podglad", akcja=self.podglad),
+        self.akcje = [przycisk("Podgląd", "podglad", akcja=self.podglad),
+                      przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
+                      przycisk("Edytuj", "edytuj", akcja=self.edytuj),
+                      przycisk("Historia zmian", "historia", akcja=self.historia_zmian),
                       przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor)]
         self.btn_anuluj = przycisk("Anuluj dokument", "anuluj", "niebezpieczny", self.anuluj)
         for b in self.akcje + [self.btn_anuluj]:
@@ -1437,6 +1607,7 @@ class StronaHistoria(Strona):
         for b in self.akcje:
             b.setEnabled(d is not None)
         self.btn_anuluj.setEnabled(d is not None and d.wazny)
+        self.akcje[2].setEnabled(d is not None and d.wazny)
 
     def odswiez(self):
         self._wypelnij_lata()
@@ -1501,6 +1672,47 @@ class StronaHistoria(Strona):
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
             self.okno.przejdz(STRONA_NOWY, odswiez=False)
             s.pokaz_krok(2)
+
+    def edytuj(self):
+        if d := self.wybrany():
+            self.okno.edytuj_dokument(d)
+
+    def historia_zmian(self):
+        d = self.wybrany()
+        if not d:
+            return
+        wersje = self.okno.baza.wersje(d.id)
+        okno = QDialog(self)
+        okno.setWindowTitle(f"Historia zmian: nr {d.numer}")
+        okno.resize(620, 400)
+        u = QVBoxLayout(okno)
+        u.setContentsMargins(22, 20, 22, 18)
+        t = QLabel(f"Historia zmian dokumentu nr {d.numer}")
+        t.setStyleSheet("font-size: 16px; font-weight: 600;")
+        u.addWidget(t)
+        if not wersje:
+            u.addWidget(QLabel("Dokument nie był poprawiany.", objectName="podtytul"))
+        k, ku = karta()
+        ku.setContentsMargins(0, 4, 0, 4)
+        tabela = QTableWidget(len(wersje), 4)
+        tabela.setHorizontalHeaderLabels(["Zmieniono", "Co poprawiono", "Pacjent przed zmianą", "Kwota przed"])
+        tabela.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        tabela.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        tabela.verticalHeader().setVisible(False)
+        tabela.setShowGrid(False)
+        tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        tabela.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        for r, (kiedy, powod, stara) in enumerate(wersje):
+            for kol, tekst in enumerate([kiedy[:16], powod or "—", stara.nabywca, f"{druk.zl(stara.suma)} zł"]):
+                tabela.setItem(r, kol, QTableWidgetItem(tekst))
+        tabela.setColumnWidth(0, 140)
+        tabela.setColumnWidth(2, 170)
+        tabela.doubleClicked.connect(lambda i: self.okno.podglad(wersje[i.row()][2]))
+        ku.addWidget(tabela)
+        u.addWidget(k, 1)
+        u.addWidget(QLabel("Dwuklik pokazuje dokument sprzed zmiany.", objectName="drobny"))
+        u.addWidget(przycisk("Zamknij", akcja=okno.accept), alignment=Qt.AlignmentFlag.AlignRight)
+        okno.exec()
 
     def anuluj(self):
         d = self.wybrany()
@@ -1704,6 +1916,14 @@ class StronaUstawienia(Strona):
         self.stan_hasla = QLabel(wordWrap=True)
         stan.addWidget(self.stan_hasla, 1)
         ku.addLayout(stan)
+        rzad_blokady = QHBoxLayout()
+        rzad_blokady.addWidget(QLabel("Blokuj automatycznie po", objectName="etykieta"))
+        self.blokada_minut = QComboBox()
+        for m in CZASY_BLOKADY:
+            self.blokada_minut.addItem(f"{m} min bezczynności", str(m))
+        rzad_blokady.addWidget(self.blokada_minut)
+        rzad_blokady.addStretch()
+        ku.addLayout(rzad_blokady)
         rzad = QHBoxLayout()
         self.btn_haslo = przycisk("", "klucz", akcja=self.zmien_haslo)
         self.btn_usun_haslo = przycisk("Odszyfruj", "klodka_otwarta", akcja=self.usun_haslo)
@@ -1826,6 +2046,7 @@ class StronaUstawienia(Strona):
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
+        self.blokada_minut.setCurrentIndex(max(self.blokada_minut.findData(u["blokada_minut"]), 0))
         self.w_tle.setChecked(u["w_tle"] == "1")
         self.autostart.setChecked(autostart_wlaczony())
         self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
@@ -1833,7 +2054,7 @@ class StronaUstawienia(Strona):
         ma = self.okno.baza.ma_haslo
         self.ikona_stanu.setPixmap(pixmapa("tarcza" if ma else "uwaga", ZIELONY if ma else CZERWONY, 18))
         self.stan_hasla.setText(
-            f"Dane są zaszyfrowane (AES-256). Program blokuje się po {BLOKADA_PO_MINUTACH} min bezczynności."
+            f"Dane są zaszyfrowane (AES-256). Program blokuje się po {u['blokada_minut']} min bezczynności."
             if ma else "Dane nie są zaszyfrowane. Ustaw hasło, żeby chronić dane pacjentów.")
         self.btn_haslo.setText("Zmień hasło" if ma else "Ustaw hasło")
         self.btn_usun_haslo.setVisible(ma)
@@ -1874,12 +2095,14 @@ class StronaUstawienia(Strona):
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
         wartosci["tryb"] = self.tryb.currentData()
+        wartosci["blokada_minut"] = self.blokada_minut.currentData()
         if integracja_dostepna():
             ustaw_autostart(self.autostart.isChecked())
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
         self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
+        self.okno.ustaw_czas_blokady()
         self.okno.przejdz(STRONA_NOWY)
 
     def _dodaj_do_cennika(self, nazwa: str = "", cena: float = 0.0):
@@ -2396,6 +2619,91 @@ class StronaPliki(Strona):
         self.odswiez()
 
 
+class OknoDokumentu(QDialog):
+    """Własny podgląd rachunku lub faktury: strony A4, powiększanie, druk, PDF i edycja."""
+
+    def __init__(self, okno: "OknoGlowne", dok: Dokument, z_kopia: bool = False, duplikat: bool = False):
+        super().__init__(okno)
+        self.okno, self.dok, self.duplikat = okno, dok, duplikat
+        self.html = druk.html_dokumentu(dok, okno.baza.ustawienia(), z_kopia, duplikat)
+        self.setWindowTitle(f"{dok.tytul} nr {dok.numer}")
+        self.resize(980, 900)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(0, 0, 0, 0)
+        u.setSpacing(0)
+
+        pasek = QFrame(objectName="stopka")
+        pu = QHBoxLayout(pasek)
+        pu.setContentsMargins(20, 10, 20, 10)
+        tytul = QLabel(f"{dok.tytul} nr {dok.numer}")
+        tytul.setStyleSheet("font-size: 15px; font-weight: 600;")
+        pu.addWidget(tytul)
+        opis = f"{dok.nabywca}  ·  {druk.data_pl(dok.data_wystawienia)}"
+        if dok.poprawiono:
+            opis += f"  ·  poprawiony {druk.data_pl(dok.poprawiono)}"
+        if dok.anulowano:
+            opis += "  ·  anulowany"
+        pu.addWidget(QLabel(opis, objectName="drobny"))
+        pu.addStretch()
+        pu.addWidget(przycisk("", "minus_lupa", "plaski", lambda: self._skala(self.strony.skala - 0.15)))
+        self.procent = QLabel(objectName="drobny")
+        self.procent.setFixedWidth(44)
+        self.procent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pu.addWidget(self.procent)
+        pu.addWidget(przycisk("", "plus_lupa", "plaski", lambda: self._skala(self.strony.skala + 0.15)))
+        pu.addWidget(przycisk("Dopasuj", styl="plaski", akcja=self._dopasuj))
+        u.addWidget(pasek)
+
+        self.obszar = QScrollArea(frameShape=QFrame.Shape.NoFrame, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.obszar.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: #e7eaec; }")
+        self.strony = PodgladStron()
+        self.strony.ustaw_html(self.html)
+        self.obszar.setWidget(self.strony)
+        u.addWidget(self.obszar, 1)
+
+        dol = QFrame(objectName="stopka")
+        du = QHBoxLayout(dol)
+        du.setContentsMargins(20, 12, 20, 12)
+        du.addWidget(QLabel(f"Stron: {self.strony.strony()}", objectName="drobny"))
+        du.addStretch()
+        if dok.id and not dok.anulowano:
+            du.addWidget(przycisk("Edytuj", "edytuj", akcja=self.edytuj))
+        du.addWidget(przycisk("Zapisz PDF", "pdf", akcja=self.pdf))
+        du.addWidget(przycisk("Drukuj", "drukarka", "glowny", self.drukuj))
+        du.addWidget(przycisk("Zamknij", akcja=self.accept))
+        u.addWidget(dol)
+        QShortcut(QKeySequence("Ctrl++"), self, lambda: self._skala(self.strony.skala + 0.15))
+        QShortcut(QKeySequence("Ctrl+-"), self, lambda: self._skala(self.strony.skala - 0.15))
+        QTimer.singleShot(0, self._dopasuj)
+
+    def _skala(self, skala: float):
+        self.strony.ustaw_skale(skala)
+        self.procent.setText(f"{round(self.strony.skala * 100)}%")
+
+    def _dopasuj(self):
+        self._skala((self.obszar.viewport().width() - 2 * PodgladStron.ODSTEP - 4) / PodgladStron.A4.width())
+
+    def drukuj(self):
+        u = self.okno.baza.ustawienia()
+        drukarka = druk.przygotuj_drukarke(u)
+        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+            return
+        druk.drukuj(self.html, drukarka)
+        self.okno.dziennik.zapisz(f"wydruk z podglądu: nr {self.dok.numer}")
+        self.okno.komunikat(f"Wydrukowano nr {self.dok.numer}")
+
+    def pdf(self):
+        sciezka, _ = QFileDialog.getSaveFileName(
+            self, "Zapisz PDF", str(Path.home() / f"{self.dok.numer.replace('/', '-')}.pdf"), "PDF (*.pdf)")
+        if sciezka:
+            druk.drukuj(self.html, druk.przygotuj_drukarke(self.okno.baza.ustawienia(), sciezka))
+            self.okno.komunikat(f"Zapisano PDF: {sciezka}")
+
+    def edytuj(self):
+        self.accept()
+        self.okno.edytuj_dokument(self.dok)
+
+
 # ---------------------------------------------------------------- okno główne
 
 class OknoGlowne(QMainWindow):
@@ -2494,7 +2802,8 @@ class OknoGlowne(QMainWindow):
         self.przejdz(STRONA_NOWY)
 
         # automatyczna blokada po bezczynności (tylko gdy jest hasło)
-        self.timer = QTimer(self, interval=BLOKADA_PO_MINUTACH * 60 * 1000, singleShot=True)
+        self.timer = QTimer(self, singleShot=True)
+        self.ustaw_czas_blokady()
         self.timer.timeout.connect(self.zablokuj)
         self.straznik = StraznikBezczynnosci(self.timer)
         QApplication.instance().installEventFilter(self.straznik)
@@ -2529,6 +2838,11 @@ class OknoGlowne(QMainWindow):
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
         self._ustaw_nazwe_gabinetu()
 
+    def ustaw_czas_blokady(self):
+        minuty = int(liczba(self.baza.ustawienia()["blokada_minut"]) or 10)
+        self.timer.setInterval(max(1, minuty) * 60 * 1000)
+        self.timer.start()
+
     def _ustaw_nazwe_gabinetu(self):
         nazwa = self.baza.ustawienia()["nazwa"].split(",")[0].strip()
         miara = self.etykieta_gabinetu.fontMetrics()
@@ -2539,12 +2853,7 @@ class OknoGlowne(QMainWindow):
         self.powiadomienie.pokaz(tekst, blad)
 
     def podglad(self, dok: Dokument, z_kopia=False, duplikat=False):
-        u = self.baza.ustawienia()
-        dialog = QPrintPreviewDialog(druk.przygotuj_drukarke(u), self)
-        dialog.setWindowTitle(f"Podgląd: {dok.numer}")
-        dialog.paintRequested.connect(lambda p: druk.drukuj(druk.html_dokumentu(dok, u, z_kopia, duplikat), p))
-        dialog.resize(900, 1000)
-        dialog.exec()
+        OknoDokumentu(self, dok, z_kopia, duplikat).exec()
 
     # ---- aktualizacje
     def _w_tle(self, watek: Watek) -> Watek:
@@ -2624,6 +2933,21 @@ class OknoGlowne(QMainWindow):
         self.close()
 
     # ---- blokada i zamykanie
+    def edytuj_dokument(self, dok: Dokument):
+        if dok.anulowano:
+            self.komunikat("Anulowanego dokumentu nie można edytować", blad=True)
+            return
+        if not self.potwierdz_haslem("edycja dokumentu", f"Edycja dokumentu nr {dok.numer} wymaga hasła."):
+            return
+        if dok.tytul == "Faktura" and QMessageBox.question(
+                self, "Edycja faktury",
+                "Wydaną już nabywcy fakturę formalnie poprawia się fakturą korygującą. Edycja tutaj zmienia "
+                "zapisany dokument (poprzednia wersja zostaje w historii zmian).\n\nKontynuować?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self.przejdz(STRONA_NOWY, odswiez=False)
+        self.strona_nowy.zaladuj_do_edycji(dok)
+
     # ---- hasło do ważnych operacji
     def potwierdz_haslem(self, cel: str, opis: str = "Ta operacja wymaga hasła.") -> bool:
         if not self.baza.ma_haslo:

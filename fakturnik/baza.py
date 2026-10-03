@@ -38,6 +38,7 @@ DOMYSLNE_USTAWIENIA = {
     "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
     "skonfigurowano": "0",   # "1" = kreator pierwszego uruchomienia zakończony
     "tryb": "prowadzacy",    # "prowadzacy" (krok po kroku) albo "zaawansowany" (wszystko w jednym oknie)
+    "blokada_minut": "10",   # automatyczna blokada po tylu minutach bezczynności (gdy jest hasło)
     "w_tle": "1",            # "1" = zamknięcie okna chowa program do zasobnika zamiast go wyłączać
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
 }
@@ -65,6 +66,7 @@ class Dokument:
     nabywca_id: str = ""         # PESEL lub NIP
     pozycje: list[Pozycja] = field(default_factory=list)
     rodzaj: str = ""             # "Rachunek" albo "Faktura"; puste w dokumentach z wersji sprzed faktur
+    poprawiono: str = ""         # data ostatniej edycji (RRRR-MM-DD); poprzednie wersje są w historii zmian
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     id: int | None = None
@@ -202,6 +204,21 @@ MIGRACJE: dict[int, str] = {
             osoba TEXT NOT NULL DEFAULT '',
             opis TEXT NOT NULL DEFAULT '',
             dodano TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """,
+    3: """
+        CREATE TABLE IF NOT EXISTS pacjenci (
+            nazwa TEXT PRIMARY KEY,
+            identyfikator TEXT NOT NULL DEFAULT '',
+            adres TEXT NOT NULL DEFAULT '',
+            dodano TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS wersje_dokumentow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dokument_id INTEGER NOT NULL,
+            dane TEXT NOT NULL,
+            zmieniono TEXT DEFAULT CURRENT_TIMESTAMP,
+            powod TEXT NOT NULL DEFAULT ''
         );
     """,
 }
@@ -363,9 +380,58 @@ class Baza:
             "INSERT INTO dokumenty (numer, data_wystawienia, dane) VALUES (?, ?, ?)",
             (dok.numer, dok.data_wystawienia, json.dumps(dane, ensure_ascii=False)))
         self._podbij_licznik(dok.numer, date.fromisoformat(dok.data_wystawienia), dok.tytul)
+        self._zapamietaj_pacjenta(dok.nabywca, dok.nabywca_id, dok.nabywca_adres)
         self._utrwal()
         dok.id = kursor.lastrowid
         return dok
+
+    def zaktualizuj_dokument(self, dok: Dokument, powod: str = "") -> Dokument:
+        """Zapisuje poprawiony dokument pod tym samym numerem; poprzednia wersja trafia do historii zmian."""
+        stary = self.db.execute("SELECT dane FROM dokumenty WHERE id = ?", (dok.id,)).fetchone()
+        if not stary:
+            raise KeyError(dok.id)
+        self.db.execute("INSERT INTO wersje_dokumentow (dokument_id, dane, powod) VALUES (?, ?, ?)",
+                        (dok.id, stary[0], powod.strip()))
+        dok.poprawiono = date.today().isoformat()
+        dane = asdict(dok)
+        dane.pop("id")
+        self.db.execute("UPDATE dokumenty SET numer = ?, data_wystawienia = ?, dane = ? WHERE id = ?",
+                        (dok.numer, dok.data_wystawienia, json.dumps(dane, ensure_ascii=False), dok.id))
+        self._zapamietaj_pacjenta(dok.nabywca, dok.nabywca_id, dok.nabywca_adres)
+        self._utrwal()
+        return dok
+
+    def wersje(self, id_: int) -> list[tuple[str, str, Dokument]]:
+        """Poprzednie wersje dokumentu: (kiedy zmieniono, powód, dokument sprzed zmiany), od najnowszej."""
+        return [(kiedy, powod, dokument_z_danych(id_, json.loads(dane))) for kiedy, powod, dane in self.db.execute(
+            "SELECT zmieniono, powod, dane FROM wersje_dokumentow WHERE dokument_id = ? ORDER BY id DESC", (id_,))]
+
+    # ---------- kartoteka pacjentów ----------
+    def _zapamietaj_pacjenta(self, nazwa: str, identyfikator: str = "", adres: str = "") -> None:
+        nazwa = nazwa.strip()
+        if not nazwa:
+            return
+        self.db.execute(
+            "INSERT INTO pacjenci (nazwa, identyfikator, adres) VALUES (?, ?, ?) "
+            "ON CONFLICT(nazwa) DO UPDATE SET identyfikator = CASE WHEN excluded.identyfikator != '' "
+            "THEN excluded.identyfikator ELSE identyfikator END, "
+            "adres = CASE WHEN excluded.adres != '' THEN excluded.adres ELSE adres END",
+            (nazwa, identyfikator.strip(), adres.strip()))
+
+    def zapisz_pacjenta(self, nazwa: str, identyfikator: str = "", adres: str = "", stara_nazwa: str = "") -> None:
+        """Dodaje albo poprawia pacjenta w kartotece (bez zmiany wystawionych już dokumentów)."""
+        if stara_nazwa and stara_nazwa != nazwa.strip():
+            self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (stara_nazwa,))
+        self.db.execute("INSERT OR REPLACE INTO pacjenci (nazwa, identyfikator, adres) VALUES (?, ?, ?)",
+                        (nazwa.strip(), identyfikator.strip(), adres.strip()))
+        self._utrwal()
+
+    def usun_pacjenta(self, nazwa: str) -> None:
+        """Usuwa pacjenta z kartoteki; wystawione dokumenty zostają nietknięte."""
+        self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (nazwa,))
+        self.db.execute("INSERT OR REPLACE INTO ustawienia VALUES (?, ?)",
+                        (f"ukryty_pacjent:{nazwa}", "1"))
+        self._utrwal()
 
     def dokumenty(self, szukaj: str = "", rok: int | None = None, miesiac: int | None = None,
                   rodzaj: str | None = None) -> list[Dokument]:
@@ -425,9 +491,13 @@ class Baza:
         return wynik
 
     def pacjenci(self, szukaj: str = "") -> list[Pacjent]:
-        """Lista pacjentów z dotychczasowych dokumentów, alfabetycznie po nazwisku."""
+        """Kartoteka pacjentów (zapamiętani + nabywcy z dokumentów), alfabetycznie po nazwisku."""
+        ukryci = {k.split(":", 1)[1] for k, in self.db.execute(
+            "SELECT klucz FROM ustawienia WHERE klucz LIKE 'ukryty_pacjent:%'")}
         zebrani: dict[str, Pacjent] = {}
-        for dok in self.dokumenty(szukaj):
+        for dok in self.dokumenty():
+            if dok.nabywca in ukryci:
+                continue
             p = zebrani.get(dok.nabywca)
             if p is None:
                 p = zebrani[dok.nabywca] = Pacjent(dok.nabywca, dok.nabywca_adres, dok.nabywca_id,
@@ -435,7 +505,20 @@ class Baza:
             p.dokumentow += 1
             if dok.wazny:
                 p.suma = round(p.suma + dok.suma, 2)
-        return sorted(zebrani.values(), key=lambda p: (_bez_ogonkow(p.nazwisko), _bez_ogonkow(p.nazwa)))
+        for nazwa, identyfikator, adres in self.db.execute("SELECT nazwa, identyfikator, adres FROM pacjenci"):
+            p = zebrani.get(nazwa)
+            if p is None:
+                zebrani[nazwa] = Pacjent(nazwa, adres, identyfikator, "", 0, 0.0)
+            else:  # dane z kartoteki są nowsze niż z dokumentów
+                p.adres = adres or p.adres
+                p.identyfikator = identyfikator or p.identyfikator
+        wzor = _bez_ogonkow(szukaj.strip())
+        wynik = [p for p in zebrani.values()
+                 if not wzor or all(s in _bez_ogonkow(f"{p.nazwa} {p.identyfikator}") for s in wzor.split())]
+        return sorted(wynik, key=lambda p: (_bez_ogonkow(p.nazwisko), _bez_ogonkow(p.nazwa)))
+
+    def pacjent(self, nazwa: str) -> Pacjent | None:
+        return next((p for p in self.pacjenci() if p.nazwa == nazwa), None)
 
     def ostatni_nabywcy(self, ile: int = 8) -> list[Dokument]:
         return list(self.nabywcy().values())[:ile]

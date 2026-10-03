@@ -298,3 +298,60 @@ class DwuliniowyDelegate(QStyledItemDelegate):
         malarz.drawText(QRectF(r.x(), y + h1 + 2, r.width(), h2), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                         dol)
         malarz.restore()
+
+
+class PodgladStron(QWidget):
+    """Wszystkie strony dokumentu jako kartki A4 jedna pod drugą, z powiększaniem (do okna podglądu)."""
+
+    A4 = QSizeF(794, 1123)
+    MARGINES = 57
+    ODSTEP = 24
+
+    def __init__(self):
+        super().__init__()
+        self.dokument = QTextDocument()
+        self.dokument.setDocumentMargin(0)
+        self.tresc = QSizeF(self.A4.width() - 2 * self.MARGINES, self.A4.height() - 2 * self.MARGINES)
+        self.dokument.setPageSize(self.tresc)
+        self.skala = 1.0
+
+    def ustaw_html(self, html: str):
+        self.dokument.setHtml(html)
+        self._zmien_rozmiar()
+
+    def ustaw_skale(self, skala: float):
+        self.skala = max(0.4, min(2.5, skala))
+        self._zmien_rozmiar()
+
+    def strony(self) -> int:
+        return max(1, self.dokument.pageCount())
+
+    def _zmien_rozmiar(self):
+        szer = int(self.A4.width() * self.skala + 2 * self.ODSTEP)
+        wys = int(self.strony() * (self.A4.height() * self.skala + self.ODSTEP) + self.ODSTEP)
+        self.setFixedSize(szer, wys)
+        self.update()
+
+    def paintEvent(self, _):
+        m = QPainter(self)
+        m.setRenderHint(QPainter.RenderHint.Antialiasing)
+        m.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        szer, wys = self.A4.width() * self.skala, self.A4.height() * self.skala
+        for i in range(self.strony()):
+            kartka = QRectF(self.ODSTEP, self.ODSTEP + i * (wys + self.ODSTEP), szer, wys)
+            for j, alfa in enumerate((12, 8, 5)):
+                m.setPen(Qt.PenStyle.NoPen)
+                m.setBrush(QColor(16, 32, 40, alfa))
+                m.drawRoundedRect(kartka.adjusted(-j - 1, -j + 1, j + 1, j + 3), 2 + j, 2 + j)
+            m.setBrush(QColor("white"))
+            m.setPen(QColor(LINIA))
+            m.drawRect(kartka)
+            m.save()
+            m.translate(kartka.topLeft())
+            m.scale(self.skala, self.skala)
+            m.translate(self.MARGINES, self.MARGINES - i * self.tresc.height())
+            obszar = QRectF(0, i * self.tresc.height(), self.tresc.width(), self.tresc.height())
+            m.setClipRect(obszar)
+            self.dokument.drawContents(m, obszar)
+            m.restore()
+        m.end()

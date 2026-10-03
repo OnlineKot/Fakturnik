@@ -26,6 +26,13 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   (faktura kosztowa, dokument pacjenta…), pacjentem lub kontrahentem i opisem; wyszukiwanie po
   roku, miesiącu, rodzaju i nazwisku; podgląd, drukowanie, zapis kopii. Pliki są przechowywane
   zaszyfrowane (AES-256), a podmiana pliku poza programem jest wykrywana.
+- **Kartoteka pacjentów**: program pamięta pacjentów (także dodanych ręcznie, bez dokumentu);
+  pole „Pacjent” ma rozwijaną listę ze strzałką, a okno „Wybierz…” pozwala dodawać, poprawiać
+  i usuwać pacjentów (usuwanie z hasłem; wystawione dokumenty zostają bez zmian).
+- **Edycja rachunków i faktur**: numer zostaje, każda poprzednia wersja trafia do historii zmian
+  (z opisem, co poprawiono), a podgląd pokazuje datę poprawki. Edycja wymaga hasła.
+- **Własny podgląd dokumentu**: strony A4, powiększanie (Ctrl +/–), druk, PDF i edycja.
+- **Automatyczna blokada** po 2, 5, 10, 15 albo 30 minutach bezczynności (do wyboru w Ustawieniach).
 - **Wybór pacjenta** z listy wszystkich pacjentów (przycisk „Wybierz…” lub F2), alfabetycznie
   po nazwisku, z wyszukiwaniem po nazwisku, imieniu lub PESEL; dane pacjenta wpisują się same.
 - **Sprawdzanie numerów**: PESEL i NIP nabywcy oraz NIP i numer konta gabinetu są sprawdzane

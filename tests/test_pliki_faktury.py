@@ -127,7 +127,9 @@ def test_straznik_odtwarza_zmieniony_plik_danych_i_brakujace_pliki(tmp_path, ska
     b.kopia_plikow(tmp_path / "kopie")
     assert b.sprawdz_integralnosc(tmp_path / "kopie") == []
 
-    # ktoś podmienia plik danych z zewnątrz
+    # ktoś podmienia plik danych z zewnątrz (na Windows działający program blokuje plik,
+    # więc symulujemy chwilę bez blokady, np. gdy plik był podmieniony, zanim program go zablokował)
+    b.blokada.zwolnij()
     tylko_do_odczytu(b.sciezka, False)
     b.sciezka.write_bytes(b"SQLite format 3\0 podrobka")
     problemy = b.sprawdz_integralnosc(tmp_path / "kopie")
@@ -137,6 +139,7 @@ def test_straznik_odtwarza_zmieniony_plik_danych_i_brakujace_pliki(tmp_path, ska
 
     # ktoś usuwa wrzucony plik
     b = Baza(b.sciezka)
+    b.blokada.zwolnij()
     plik = next(b.katalog_plikow.glob("*.bin"))
     tylko_do_odczytu(plik, False)
     plik.unlink()
