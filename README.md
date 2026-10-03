@@ -1,7 +1,8 @@
 # Fakturnik
 
-Prosty program dla Windows do wystawiania i drukowania rachunków (lub faktur) dla gabinetu
-zwolnionego z VAT (usługi medyczne, art. 43 ust. 1 pkt 19 ustawy o VAT).
+Program dla Windows do tworzenia i drukowania rachunków i faktur oraz do przechowywania
+wrzuconych dokumentów (faktury kosztowe, skany), dla gabinetu zwolnionego z VAT
+(usługi medyczne, art. 43 ust. 1 pkt 19 ustawy o VAT).
 
 ## Pobranie
 
@@ -19,6 +20,12 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   w każdym miesiącu; numer można poprawić ręcznie.
 - **Ostatni pacjenci** jako przyciski oraz podpowiedzi przy wpisywaniu nazwiska.
 - **Szybkie usługi**: przyciski z nazwą i ceną.
+- **Rachunek albo faktura**: przełącznik przy każdym nowym dokumencie. Faktury mają osobną
+  numerację `FV/nr/miesiąc/rok` (format do zmiany w Ustawieniach).
+- **Pliki**: wrzucanie PDF-ów i zdjęć (przycisk albo przeciągnięcie na okno) z datą, rodzajem
+  (faktura kosztowa, dokument pacjenta…), pacjentem lub kontrahentem i opisem; wyszukiwanie po
+  roku, miesiącu, rodzaju i nazwisku; podgląd, drukowanie, zapis kopii. Pliki są przechowywane
+  zaszyfrowane (AES-256), a podmiana pliku poza programem jest wykrywana.
 - **Wybór pacjenta** z listy wszystkich pacjentów (przycisk „Wybierz…” lub F2), alfabetycznie
   po nazwisku, z wyszukiwaniem po nazwisku, imieniu lub PESEL; dane pacjenta wpisują się same.
 - **Historia** z wyszukiwaniem po nazwisku, imieniu, numerze lub PESEL (bez względu na polskie
@@ -38,7 +45,8 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   zmiana zaszyfrowanego pliku z zewnątrz zostanie wykryta. Na Windows nie da się zrobić pliku
   całkowicie nieusuwalnym dla administratora, dlatego program robi też codzienne
   **kopie automatyczne** (ostatnie 30) w `Dokumenty\Fakturnik\kopie`.
-- **Kopia zapasowa / przywracanie / eksport odszyfrowany** w Ustawieniach.
+- **Kopia zapasowa / przywracanie / eksport odszyfrowany** w Ustawieniach. Pełna kopia (.zip)
+  zawiera też wrzucone pliki; kopie automatyczne plików trafiają do `Dokumenty\Fakturnik\kopie\pliki`.
 - **Aktualizacje**: program sprawdza przy uruchomieniu, czy jest nowsza wersja, i instaluje ją
   jednym kliknięciem. Pobrany plik jest sprawdzany sumą SHA-256 i pobierany tylko z GitHuba.
   **Dane nie giną przy aktualizacji**: leżą osobno od programu (w `%APPDATA%`), przed instalacją

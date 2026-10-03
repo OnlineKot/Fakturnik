@@ -51,3 +51,29 @@ class Szyfr:
             return AESGCM(szyfr.klucz).decrypt(nonce, szyfrogram, MAGIC), szyfr
         except InvalidTag:
             raise BledneHaslo("Nieprawidłowe hasło.") from None
+
+
+# ---------- pliki wrzucone do programu ----------
+# Każdy plik jest szyfrowany losowym kluczem 256-bitowym zapisanym w bazie. Gdy baza ma hasło,
+# klucz jest chroniony razem z nią, więc zmiana hasła nie wymaga przepisywania plików.
+
+MAGIC_PLIKU = b"FAKTURNIK-PLIK1\n"
+
+
+def nowy_klucz() -> bytes:
+    return AESGCM.generate_key(bit_length=256)
+
+
+def zaszyfruj_plik(dane: bytes, klucz: bytes) -> bytes:
+    nonce = os.urandom(12)
+    return MAGIC_PLIKU + nonce + AESGCM(klucz).encrypt(nonce, dane, MAGIC_PLIKU)
+
+
+def odszyfruj_plik(dane: bytes, klucz: bytes) -> bytes:
+    if not dane.startswith(MAGIC_PLIKU):
+        raise ValueError("Nieznany format pliku.")
+    reszta = dane[len(MAGIC_PLIKU):]
+    try:
+        return AESGCM(klucz).decrypt(reszta[:12], reszta[12:], MAGIC_PLIKU)
+    except InvalidTag:
+        raise ValueError("Plik jest uszkodzony albo został zmieniony poza programem.") from None

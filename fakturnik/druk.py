@@ -32,7 +32,8 @@ def logo_bajty(u: dict[str, str]) -> bytes | None:
 
 
 def zl(v: float) -> str:
-    return f"{v:,.2f}".replace(",", " ").replace(".", ",")
+    # twarda spacja: "1 500,00" nie łamie się w wąskiej kolumnie wydruku
+    return f"{v:,.2f}".replace(",", "\u00a0").replace(".", ",")
 
 
 def data_pl(iso: str) -> str:
@@ -57,8 +58,8 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
 
     pozycje = "".join(
         f"<tr><td align='right'>{i}</td><td>{escape(p.nazwa)}</td>"
-        f"<td align='right'>{p.ilosc:g}</td><td align='right'>{zl(p.cena)}</td>"
-        f"<td align='center'>zw</td><td align='right'>{zl(p.wartosc)}</td></tr>"
+        f"<td align='right'>{p.ilosc:g}</td><td align='right' style='white-space:nowrap'>{zl(p.cena)}</td>"
+        f"<td align='center'>zw</td><td align='right' style='white-space:nowrap'>{zl(p.wartosc)}</td></tr>"
         for i, p in enumerate(dok.pozycje, 1))
 
     platnosc = escape(dok.platnosc)
@@ -76,7 +77,7 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     return f"""
 <div style="{podzial}">{anulowany}
 <table width="100%" cellspacing="0" cellpadding="0"><tr>
-  <td><span style="font-size:20pt; font-weight:bold;">{escape(u['tytul'])} nr {escape(dok.numer)}</span><br>
+  <td><span style="font-size:20pt; font-weight:bold;">{escape(dok.tytul)} nr {escape(dok.numer)}</span><br>
       <span style="font-size:9pt; letter-spacing:1px;">{etykieta.upper()}</span></td>
   <td align="right" valign="top" style="font-size:9.5pt;">{escape(u['miejsce'])}, {data_pl(dok.data_wystawienia)}<br>
       Data wykonania usługi: {data_pl(dok.data_uslugi)}</td>
@@ -95,8 +96,8 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
 </tr></table>
 <br>
 <table width="100%" border="1" cellspacing="0" cellpadding="5" style="border-collapse:collapse; border-color:black;">
-  <tr style="background:#e8e8e8;"><th>Lp.</th><th width="50%">Nazwa usługi</th><th>Ilość</th>
-      <th>Cena (zł)</th><th>VAT</th><th>Wartość (zł)</th></tr>
+  <tr style="background:#e8e8e8; white-space:nowrap;"><th width="6%">Lp.</th><th>Nazwa usługi</th>
+      <th width="8%">Ilość</th><th width="15%">Cena (zł)</th><th width="7%">VAT</th><th width="16%">Wartość (zł)</th></tr>
   {pozycje}
   <tr><td colspan="5" align="right"><b>Razem</b></td><td align="right"><b>{zl(dok.suma)}</b></td></tr>
 </table>
@@ -147,7 +148,7 @@ def html_zestawienia(dokumenty: list[Dokument], u: dict[str, str], okres: str, f
 </tr></table>
 <br>
 <table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black;">
-  <tr style="background:#e8e8e8;"><th>Lp.</th><th>Numer</th><th>Data</th><th width="40%">Nabywca</th>
+  <tr style="background:#e8e8e8;"><th>Lp.</th><th>Numer</th><th>Data</th><th width="38%">Nabywca</th>
       <th>Płatność</th><th>Kwota (zł)</th></tr>
   {''.join(wiersze) or '<tr><td colspan="6" align="center">Brak dokumentów</td></tr>'}
   <tr><td colspan="5" align="right"><b>Razem ({pods.liczba} dok.)</b></td>
@@ -189,3 +190,51 @@ def drukuj(html: str, drukarka: QPrinter) -> None:
 
 def dostepne_drukarki() -> list[str]:
     return QPrinterInfo.availablePrinterNames()
+
+
+# ---------- drukowanie wrzuconych plików (PDF, zdjęcia) ----------
+
+def strony_pliku(tresc: bytes, typ: str, dpi: int = 200) -> list:
+    """Zamienia plik na listę obrazów stron (QImage) do druku lub podglądu."""
+    from PySide6.QtGui import QImage
+    if typ != "pdf":
+        obraz = QImage.fromData(tresc)
+        if obraz.isNull():
+            raise ValueError("Nie udało się odczytać obrazu.")
+        return [obraz]
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize
+    from PySide6.QtPdf import QPdfDocument
+    bufor = QBuffer()
+    bufor.setData(QByteArray(tresc))
+    bufor.open(QIODevice.OpenModeFlag.ReadOnly)
+    pdf = QPdfDocument()
+    pdf.load(bufor)
+    if pdf.status() != QPdfDocument.Status.Ready:
+        raise ValueError("Nie udało się otworzyć pliku PDF.")
+    strony = []
+    for i in range(pdf.pageCount()):
+        rozmiar = pdf.pagePointSize(i)  # w punktach (1/72 cala)
+        piksele = QSize(max(1, int(rozmiar.width() * dpi / 72)), max(1, int(rozmiar.height() * dpi / 72)))
+        strony.append(pdf.render(i, piksele))
+    return strony
+
+
+def drukuj_plik(tresc: bytes, typ: str, drukarka: QPrinter) -> None:
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtGui import QPainter
+    strony = strony_pliku(tresc, typ)
+    malarz = QPainter()
+    if not malarz.begin(drukarka):
+        raise RuntimeError("Nie udało się rozpocząć drukowania.")
+    try:
+        for i, obraz in enumerate(strony):
+            if i:
+                drukarka.newPage()
+            obszar = drukarka.pageRect(QPrinter.Unit.DevicePixel).toRect()
+            obszar.moveTo(0, 0)
+            dopasowany = obraz.size().scaled(obszar.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            cel = QRect(0, 0, dopasowany.width(), dopasowany.height())
+            cel.moveCenter(obszar.center())
+            malarz.drawImage(cel, obraz)
+    finally:
+        malarz.end()

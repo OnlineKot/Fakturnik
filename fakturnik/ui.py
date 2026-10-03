@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import aktualizacje, druk
-from .baza import Baza, Dokument, NowszaBaza, PlikZajety, Pozycja, podsumuj
+from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import Dziennik, katalog_kopii, kopia_automatyczna
 from .szyfrowanie import BledneHaslo
@@ -93,6 +93,11 @@ QPushButton#pacjent {{ background: transparent; border: 1px solid {LINIA}; borde
     padding: 3px 11px; font-weight: 400; color: #3a3a3c; }}
 QPushButton#pacjent:hover {{ border-color: {AKCENT}; color: {AKCENT}; }}
 QPushButton#niebezpieczny {{ color: {CZERWONY}; }}
+QPushButton#niebezpieczny:disabled {{ color: #e6b3bc; }}
+QFrame#przelacznik {{ background: #e8e8ec; border-radius: 9px; }}
+QPushButton#segment {{ background: transparent; border: none; border-radius: 7px; padding: 6px 18px;
+    font-weight: 500; color: #3a3a3c; }}
+QPushButton#segment:checked {{ background: white; color: {TEKST}; font-weight: 600; border: 1px solid #dcdce0; }}
 
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid #c4c4ca; background: white; }}
@@ -407,7 +412,22 @@ class StronaNowy(Strona):
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno)
         u = self.uklad
-        u.addLayout(naglowek_strony("Nowy rachunek", "Numer nadaje się sam: kolejny w danym miesiącu."))
+        gora = QHBoxLayout()
+        self.naglowek = naglowek_strony("Nowy rachunek", "Numer nadaje się sam: kolejny w danym miesiącu.")
+        gora.addLayout(self.naglowek)
+        gora.addStretch()
+        self.rodzaj_grupa = QButtonGroup(self)
+        przelacznik = QFrame(objectName="przelacznik")
+        pu = QHBoxLayout(przelacznik)
+        pu.setContentsMargins(3, 3, 3, 3)
+        pu.setSpacing(2)
+        for i, nazwa in enumerate(["Rachunek", "Faktura"]):
+            b = QPushButton(nazwa, checkable=True, objectName="segment", cursor=Qt.CursorShape.PointingHandCursor)
+            self.rodzaj_grupa.addButton(b, i)
+            pu.addWidget(b)
+        self.rodzaj_grupa.idClicked.connect(lambda _: self.zmien_rodzaj())
+        gora.addWidget(przelacznik, alignment=Qt.AlignmentFlag.AlignBottom)
+        u.addLayout(gora)
         u.addSpacing(10)
 
         # --- dokument i nabywca w jednej karcie
@@ -444,7 +464,9 @@ class StronaNowy(Strona):
         kontener = QWidget()
         kontener.setLayout(wiersz_pacjenta)
         wiersz_pacjenta.setContentsMargins(0, 0, 0, 0)
-        nab.addLayout(pole("Pacjent", kontener), 0, 0)
+        uklad_pacjenta = pole("Pacjent", kontener)
+        self.etykieta_nabywcy = uklad_pacjenta.itemAt(0).widget()
+        nab.addLayout(uklad_pacjenta, 0, 0)
         nab.addLayout(pole("PESEL lub NIP", self.nabywca_id), 0, 1)
         nab.addLayout(pole("Adres", self.nabywca_adres), 1, 0, 1, 2)
         nab.setColumnStretch(0, 3)
@@ -547,8 +569,22 @@ class StronaNowy(Strona):
         self.nabywca.setCompleter(podpowiedzi)
         self.odswiez_numer()
 
+    @property
+    def rodzaj(self) -> str:
+        return "Faktura" if self.rodzaj_grupa.checkedId() == 1 else "Rachunek"
+
+    def ustaw_rodzaj(self, rodzaj: str):
+        self.rodzaj_grupa.button(1 if rodzaj == "Faktura" else 0).setChecked(True)
+        self.zmien_rodzaj()
+
+    def zmien_rodzaj(self):
+        tytul = self.naglowek.itemAt(0).widget()
+        tytul.setText("Nowa faktura" if self.rodzaj == "Faktura" else "Nowy rachunek")
+        self.etykieta_nabywcy.setText("Nabywca (pacjent lub firma)" if self.rodzaj == "Faktura" else "Pacjent")
+        self.odswiez_numer()
+
     def odswiez_numer(self):
-        self.numer.setText(self.okno.baza.nastepny_numer(self.data_wyst.date().toPython()))
+        self.numer.setText(self.okno.baza.nastepny_numer(self.data_wyst.date().toPython(), self.rodzaj))
 
     def uzupelnij_nabywce(self, nazwa: str):
         dok = self.okno.baza.nabywcy().get(nazwa)
@@ -625,6 +661,7 @@ class StronaNowy(Strona):
             nabywca=self.nabywca.text().strip(),
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
+            rodzaj=self.rodzaj,
             pozycje=pozycje)
 
     def wyczysc(self):
@@ -635,7 +672,9 @@ class StronaNowy(Strona):
         self.data_wyst.setDate(QDate.currentDate())
         self.data_uslugi.setDate(QDate.currentDate())
         self.platnosc.setCurrentIndex(0)
+        self.rodzaj_grupa.button(1 if self.okno.baza.ustawienia()["tytul"] == "Faktura" else 0).setChecked(True)
         self.odswiez()
+        self.zmien_rodzaj()
         self.nabywca.setFocus()
 
     # ---- akcje
@@ -663,7 +702,7 @@ class StronaNowy(Strona):
             return
         self.okno.baza.zapisz_dokument(dok)
         druk.drukuj(druk.html_dokumentu(dok, u, self.kopia.isChecked()), drukarka)
-        self.okno.komunikat(f"Wydrukowano: {u['tytul'].lower()} nr {dok.numer}")
+        self.okno.komunikat(f"Wydrukowano: {dok.tytul.lower()} nr {dok.numer}")
         self.wyczysc()
 
     def zapisz_pdf(self):
@@ -768,7 +807,7 @@ class StronaHistoria(Strona):
         super().__init__(okno)
         u = self.uklad
         naglowek = QHBoxLayout()
-        naglowek.addLayout(naglowek_strony("Historia", "Szukaj po nazwisku, numerze lub PESEL i zawężaj do roku i miesiąca."))
+        naglowek.addLayout(naglowek_strony("Historia", "Rachunki i faktury. Szukaj po nazwisku, numerze lub PESEL."))
         naglowek.addStretch()
         for b in (przycisk("Drukuj zestawienie", "drukarka", akcja=self.drukuj_zestawienie),
                   przycisk("Zestawienie PDF", "pdf", akcja=self.zestawienie_pdf),
@@ -781,7 +820,7 @@ class StronaHistoria(Strona):
         # --- filtry
         filtry = QHBoxLayout()
         filtry.setSpacing(8)
-        self.szukaj = QLineEdit(placeholderText="Nazwisko, imię, numer lub PESEL")
+        self.szukaj = QLineEdit(placeholderText="Nazwisko, numer lub PESEL")
         self.szukaj.addAction(ikona("szukaj"), QLineEdit.ActionPosition.LeadingPosition)
         self.szukaj.setClearButtonEnabled(True)
         self.szukaj.textChanged.connect(self.filtruj)
@@ -797,6 +836,11 @@ class StronaHistoria(Strona):
             self.miesiac.addItem(nazwa.capitalize(), i)
         self.miesiac.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.miesiac)
+        self.rodzaj = QComboBox(minimumWidth=150)
+        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura")):
+            self.rodzaj.addItem(tekst, dane)
+        self.rodzaj.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.rodzaj)
         filtry.addWidget(przycisk("Ten miesiąc", "kalendarz", akcja=self.ten_miesiac))
         filtry.addWidget(przycisk("Wyczyść", styl="plaski", akcja=self.wyczysc_filtry))
         u.addLayout(filtry)
@@ -864,7 +908,7 @@ class StronaHistoria(Strona):
         self.szukaj.blockSignals(True)
         self.szukaj.clear()
         self.szukaj.blockSignals(False)
-        for pole in (self.rok, self.miesiac):
+        for pole in (self.rok, self.miesiac, self.rodzaj):
             pole.blockSignals(True)
             pole.setCurrentIndex(0)
             pole.blockSignals(False)
@@ -892,7 +936,7 @@ class StronaHistoria(Strona):
 
     def filtruj(self, *_):
         self.docs = self.okno.baza.dokumenty(self.szukaj.text(), self.rok.currentData() or None,
-                                             self.miesiac.currentData() or None)
+                                             self.miesiac.currentData() or None, self.rodzaj.currentData())
         self.tabela.setRowCount(len(self.docs))
         szary = Qt.GlobalColor.gray
         for r, d in enumerate(self.docs):
@@ -940,6 +984,7 @@ class StronaHistoria(Strona):
             s.nabywca_adres.setText(d.nabywca_adres.replace("\n", ", "))
             s.nabywca_id.setText(d.nabywca_id)
             s.platnosc.setCurrentText(d.platnosc)
+            s.ustaw_rodzaj(d.tytul)
             s.tabela.setRowCount(0)
             for p in d.pozycje:
                 s.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
@@ -962,9 +1007,10 @@ class StronaHistoria(Strona):
 
     # ---- zestawienie wyników
     def _html_zestawienia(self) -> str:
-        filtr = self.szukaj.text().strip()
-        return druk.html_zestawienia(self.docs, self.okno.baza.ustawienia(), self.opis_okresu(),
-                                     f"„{filtr}”" if filtr else "")
+        filtr = [f"„{self.szukaj.text().strip()}”"] if self.szukaj.text().strip() else []
+        if self.rodzaj.currentData():
+            filtr.append(self.rodzaj.currentText().lower())
+        return druk.html_zestawienia(self.docs, self.okno.baza.ustawienia(), self.opis_okresu(), ", ".join(filtr))
 
     def drukuj_zestawienie(self):
         if not self.docs:
@@ -1001,7 +1047,8 @@ class StronaHistoria(Strona):
 
 class StronaUstawienia(Strona):
     POLA = [("nazwa", "Nazwa"), ("nip", "NIP"), ("regon", "REGON"), ("miejsce", "Miejsce wystawienia"),
-            ("konto", "Nr konta do przelewów"), ("format_numeru", "Format numeru")]
+            ("konto", "Nr konta do przelewów"), ("format_numeru", "Numer rachunku"),
+            ("format_numeru_faktury", "Numer faktury")]
 
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
@@ -1036,7 +1083,8 @@ class StronaUstawienia(Strona):
             if klucz == "nip":
                 self.pola["adres"] = QPlainTextEdit(maximumHeight=58)
                 f.addRow("Adres", self.pola["adres"])
-        self.pola["format_numeru"].setToolTip("{n} = kolejny numer, {mm} = miesiąc, {rrrr} = rok")
+        for klucz in ("format_numeru", "format_numeru_faktury"):
+            self.pola[klucz].setToolTip("{n} = kolejny numer, {mm} = miesiąc, {rrrr} = rok")
         lewa.addWidget(k)
         lewa.addSpacing(10)
 
@@ -1046,7 +1094,7 @@ class StronaUstawienia(Strona):
         f = self._formularz(ku)
         self.pola["tytul"] = QComboBox()
         self.pola["tytul"].addItems(["Rachunek", "Faktura"])
-        f.addRow("Tytuł", self.pola["tytul"])
+        f.addRow("Domyślny dokument", self.pola["tytul"])
         self.pola["adnotacja"] = QPlainTextEdit(maximumHeight=58)
         f.addRow("Adnotacja VAT", self.pola["adnotacja"])
         self.logo = "domyslne"
@@ -1189,8 +1237,12 @@ class StronaUstawienia(Strona):
                 wartosci[klucz] = p.toPlainText().strip()
             else:
                 wartosci[klucz] = p.text().strip()
-        if "{n}" not in wartosci["format_numeru"]:
-            QMessageBox.warning(self, "Format numeru", "Format numeru musi zawierać {n}.")
+        if "{n}" not in wartosci["format_numeru"] or "{n}" not in wartosci["format_numeru_faktury"]:
+            QMessageBox.warning(self, "Format numeru", "Format numeru musi zawierać {n} (kolejny numer).")
+            return
+        if wartosci["format_numeru"] == wartosci["format_numeru_faktury"]:
+            QMessageBox.warning(self, "Format numeru", "Rachunki i faktury muszą mieć różne formaty numeru, "
+                                "np. faktury z przedrostkiem FV/.")
             return
         wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
@@ -1294,7 +1346,7 @@ class StronaUstawienia(Strona):
 
     def przywroc(self):
         sciezka, _ = QFileDialog.getOpenFileName(self, "Przywróć z kopii", str(katalog_kopii()),
-                                                 "Kopia Fakturnika (*.db)")
+                                                 "Kopia Fakturnika (*.zip *.db)")
         if not sciezka:
             return
         if QMessageBox.warning(self, "Przywróć z kopii",
@@ -1303,7 +1355,7 @@ class StronaUstawienia(Strona):
                 != QMessageBox.StandardButton.Yes:
             return
         haslo = None
-        if Baza.wymaga_hasla(sciezka):
+        if self._kopia_wymaga_hasla(sciezka):
             haslo, ok = QInputDialog.getText(self, "Hasło kopii", "Hasło, którym zaszyfrowano kopię:",
                                              QLineEdit.EchoMode.Password)
             if not ok:
@@ -1319,6 +1371,14 @@ class StronaUstawienia(Strona):
         self.okno.dziennik.zapisz(f"przywrócenie danych z kopii {Path(sciezka).name}")
         self.okno.komunikat("Przywrócono dane z kopii")
         self.okno.przejdz(1)
+
+    @staticmethod
+    def _kopia_wymaga_hasla(sciezka: str) -> bool:
+        import zipfile
+        if zipfile.is_zipfile(sciezka):
+            with zipfile.ZipFile(sciezka) as z:
+                return z.read("fakturnik.db")[:64].startswith(b"FAKTURNIK-AES")
+        return Baza.wymaga_hasla(sciezka)
 
     def eksport_odszyfrowany(self):
         if not self._potwierdz_obecne():
@@ -1337,14 +1397,329 @@ class StronaUstawienia(Strona):
             self.okno.komunikat(f"Zapisano: {sciezka}")
 
     def kopia_zapasowa(self):
-        nazwa = f"fakturnik-kopia-{date.today().isoformat()}.db"
+        nazwa = f"fakturnik-kopia-{date.today().isoformat()}.zip"
         sciezka, _ = QFileDialog.getSaveFileName(self, "Kopia zapasowa", str(Path.home() / nazwa),
-                                                 "Kopia Fakturnika (*.db)")
+                                                 "Pełna kopia z plikami (*.zip);;Tylko dane, bez plików (*.db)")
         if sciezka:
             self.okno.baza.kopia_zapasowa(sciezka)
             self.okno.dziennik.zapisz("ręczna kopia zapasowa")
             self.okno.komunikat("Zapisano kopię zapasową" +
                                 (" (zaszyfrowaną tym samym hasłem)" if self.okno.baza.ma_haslo else ""))
+
+
+# ---------------------------------------------------------------- wrzucone pliki
+
+def rozmiar_tekst(bajty: int) -> str:
+    if bajty < 1024 * 1024:
+        return f"{max(1, round(bajty / 1024))} KB"
+    return f"{bajty / 1024 / 1024:.1f} MB".replace(".", ",")
+
+
+class OknoOpisuPliku(QDialog):
+    """Opis wrzucanych plików: data, rodzaj, pacjent lub kontrahent, notatka."""
+
+    def __init__(self, baza: Baza, nazwy: list[str], parent=None, plik: Plik | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edytuj opis" if plik else "Dodaj pliki")
+        self.setFixedWidth(460)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(24, 22, 24, 20)
+        u.setSpacing(10)
+        t = QLabel("Edytuj opis pliku" if plik else ("Dodaj plik" if len(nazwy) == 1 else f"Dodaj pliki ({len(nazwy)})"))
+        t.setStyleSheet("font-size: 16px; font-weight: 600;")
+        u.addWidget(t)
+        lista = QLabel("\n".join(nazwy[:6]) + (f"\n… i {len(nazwy) - 6} więcej" if len(nazwy) > 6 else ""),
+                       objectName="drobny", wordWrap=True)
+        u.addWidget(lista)
+        self.data = QDateEdit(QDate.fromString(plik.data, "yyyy-MM-dd") if plik else QDate.currentDate(),
+                              calendarPopup=True, displayFormat="dd.MM.yyyy")
+        self.kategoria = QComboBox(editable=True)
+        self.kategoria.addItems(KATEGORIE_PLIKOW)
+        if plik:
+            self.kategoria.setCurrentText(plik.kategoria)
+        self.osoba = QLineEdit(plik.osoba if plik else "", placeholderText="Np. pacjent albo firma (opcjonalnie)")
+        podpowiedzi = QCompleter(sorted({p.nazwa for p in baza.pacjenci()} | {p.osoba for p in baza.pliki() if p.osoba}))
+        podpowiedzi.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        podpowiedzi.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.osoba.setCompleter(podpowiedzi)
+        self.opis = QLineEdit(plik.opis if plik else "", placeholderText="Np. prąd za wrzesień (opcjonalnie)")
+        rzad = QHBoxLayout()
+        rzad.addLayout(pole("Data dokumentu", self.data))
+        rzad.addLayout(pole("Rodzaj", self.kategoria), 1)
+        u.addLayout(rzad)
+        u.addLayout(pole("Pacjent lub kontrahent", self.osoba))
+        u.addLayout(pole("Opis", self.opis))
+        u.addSpacing(4)
+        przyciski = QHBoxLayout()
+        przyciski.addStretch()
+        przyciski.addWidget(przycisk("Anuluj", akcja=self.reject))
+        przyciski.addWidget(przycisk("Zapisz" if plik else "Dodaj", styl="glowny", akcja=self.accept))
+        u.addLayout(przyciski)
+
+    def wartosci(self) -> dict:
+        return {"data": self.data.date().toPython().isoformat(), "kategoria": self.kategoria.currentText().strip(),
+                "osoba": self.osoba.text(), "opis": self.opis.text()}
+
+
+class OknoPodgladuPliku(QDialog):
+    def __init__(self, plik: Plik, strony: list, parent=None, drukuj=None):
+        super().__init__(parent)
+        self.setWindowTitle(plik.nazwa)
+        self.resize(820, 960)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(0, 0, 0, 12)
+        obszar = QScrollArea(widgetResizable=True, frameShape=QFrame.Shape.NoFrame)
+        tresc = QWidget()
+        tresc.setStyleSheet("background: #e9e9ec;")
+        lista = QVBoxLayout(tresc)
+        lista.setContentsMargins(20, 20, 20, 20)
+        lista.setSpacing(16)
+        for obraz in strony:
+            etykieta = QLabel(alignment=Qt.AlignmentFlag.AlignHCenter)
+            pix = QPixmap.fromImage(obraz)
+            etykieta.setPixmap(pix.scaledToWidth(min(740, pix.width()), Qt.TransformationMode.SmoothTransformation))
+            etykieta.setStyleSheet("background: white;")
+            lista.addWidget(etykieta, alignment=Qt.AlignmentFlag.AlignHCenter)
+        lista.addStretch()
+        obszar.setWidget(tresc)
+        u.addWidget(obszar, 1)
+        rzad = QHBoxLayout()
+        rzad.setContentsMargins(16, 0, 16, 0)
+        rzad.addWidget(QLabel(f"{plik.nazwa} • stron: {len(strony)}", objectName="drobny"))
+        rzad.addStretch()
+        if drukuj:
+            rzad.addWidget(przycisk("Drukuj", "drukarka", "glowny", drukuj))
+        rzad.addWidget(przycisk("Zamknij", akcja=self.accept))
+        u.addLayout(rzad)
+
+
+class StronaPliki(Strona):
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno)
+        self.setAcceptDrops(True)
+        u = self.uklad
+        naglowek = QHBoxLayout()
+        naglowek.addLayout(naglowek_strony("Pliki", "Wrzucaj faktury kosztowe, skany i zdjęcia dokumentów: "
+                                                    "przeciągnij je tutaj albo kliknij „Dodaj pliki”."))
+        naglowek.addStretch()
+        naglowek.addWidget(przycisk("Dodaj pliki…", "plus", "glowny", self.dodaj), alignment=Qt.AlignmentFlag.AlignBottom)
+        u.addLayout(naglowek)
+        u.addSpacing(10)
+
+        filtry = QHBoxLayout()
+        filtry.setSpacing(8)
+        self.szukaj = QLineEdit(placeholderText="Nazwa pliku, pacjent, kontrahent lub opis")
+        self.szukaj.addAction(ikona("szukaj"), QLineEdit.ActionPosition.LeadingPosition)
+        self.szukaj.setClearButtonEnabled(True)
+        self.szukaj.textChanged.connect(self.filtruj)
+        filtry.addWidget(self.szukaj, 1)
+        self.rok = QComboBox(minimumWidth=110)
+        self.rok.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.rok)
+        self.miesiac = QComboBox(minimumWidth=140)
+        self.miesiac.addItem("Wszystkie miesiące", 0)
+        for i, nazwa in enumerate(MIESIACE, 1):
+            self.miesiac.addItem(nazwa.capitalize(), i)
+        self.miesiac.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.miesiac)
+        self.kategoria = QComboBox(minimumWidth=170)
+        self.kategoria.currentIndexChanged.connect(self.filtruj)
+        filtry.addWidget(self.kategoria)
+        u.addLayout(filtry)
+        u.addSpacing(4)
+
+        akcje = QHBoxLayout()
+        akcje.setSpacing(6)
+        self.akcje = [przycisk("Podgląd", "podglad", akcja=self.podglad),
+                      przycisk("Drukuj", "drukarka", akcja=self.drukuj),
+                      przycisk("Zapisz kopię…", "pobierz", akcja=self.zapisz_kopie),
+                      przycisk("Edytuj opis", "lista", akcja=self.edytuj),
+                      przycisk("Usuń", "kosz", "niebezpieczny", self.usun)]
+        for b in self.akcje:
+            akcje.addWidget(b)
+        akcje.addStretch()
+        u.addLayout(akcje)
+        u.addSpacing(6)
+
+        k, ku = karta()
+        ku.setContentsMargins(0, 4, 0, 4)
+        self.tabela = QTableWidget(0, 5)
+        self.tabela.setHorizontalHeaderLabels(["DATA", "PLIK", "RODZAJ", "PACJENT / KONTRAHENT", "ROZMIAR"])
+        h = self.tabela.horizontalHeader()
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for kol, szer in ((0, 110), (2, 170), (3, 210), (4, 90)):
+            self.tabela.setColumnWidth(kol, szer)
+        self.tabela.verticalHeader().setVisible(False)
+        self.tabela.verticalHeader().setDefaultSectionSize(36)
+        self.tabela.setShowGrid(False)
+        self.tabela.setWordWrap(False)
+        self.tabela.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tabela.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tabela.doubleClicked.connect(self.podglad)
+        self.tabela.itemSelectionChanged.connect(self._stan_akcji)
+        ku.addWidget(self.tabela)
+        u.addWidget(k, 1)
+        self.podsumowanie = QLabel(objectName="drobny")
+        u.addWidget(self.podsumowanie)
+        self.lista: list[Plik] = []
+
+    # ---- przeciąganie plików na okno
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        sciezki = [Path(url.toLocalFile()) for url in e.mimeData().urls() if url.isLocalFile()]
+        self._dodaj_sciezki([p for p in sciezki if p.is_file()])
+
+    # ---- lista
+    def odswiez(self):
+        for pole_wyboru, wartosci, pierwszy in (
+                (self.rok, sorted(set(self.okno.baza.lata_plikow()) | {date.today().year}, reverse=True), "Wszystkie lata"),
+                (self.kategoria, sorted(set(KATEGORIE_PLIKOW) | {p.kategoria for p in self.okno.baza.pliki() if p.kategoria}),
+                 "Wszystkie rodzaje")):
+            obecna = pole_wyboru.currentData()
+            pole_wyboru.blockSignals(True)
+            pole_wyboru.clear()
+            pole_wyboru.addItem(pierwszy, None)
+            for w in wartosci:
+                pole_wyboru.addItem(str(w), w)
+            pole_wyboru.setCurrentIndex(max(pole_wyboru.findData(obecna), 0) if obecna is not None else 0)
+            pole_wyboru.blockSignals(False)
+        self.filtruj()
+
+    def filtruj(self, *_):
+        self.lista = self.okno.baza.pliki(self.szukaj.text(), self.rok.currentData(),
+                                          self.miesiac.currentData() or None, self.kategoria.currentData())
+        self.tabela.setRowCount(len(self.lista))
+        for r, p in enumerate(self.lista):
+            for kol, tekst in enumerate([druk.data_pl(p.data), p.nazwa + (f"  ·  {p.opis}" if p.opis else ""),
+                                         p.kategoria, p.osoba, rozmiar_tekst(p.rozmiar)]):
+                item = QTableWidgetItem(tekst)
+                if kol == 1:
+                    item.setIcon(ikona("pdf" if p.typ == "pdf" else "obraz"))
+                self.tabela.setItem(r, kol, item)
+        self.tabela.clearSelection()
+        self._stan_akcji()
+        razem = sum(p.rozmiar for p in self.lista)
+        self.podsumowanie.setText(f"Plików: {len(self.lista)}   •   {rozmiar_tekst(razem) if razem else '0 KB'}   •   "
+                                  "przechowywane zaszyfrowane (AES-256)")
+
+    def _stan_akcji(self):
+        for b in self.akcje:
+            b.setEnabled(self.wybrany() is not None)
+
+    def wybrany(self) -> Plik | None:
+        wiersze = self.tabela.selectionModel().selectedRows() if self.tabela.selectionModel() else []
+        r = wiersze[0].row() if wiersze else -1
+        return self.lista[r] if 0 <= r < len(self.lista) else None
+
+    # ---- akcje
+    def dodaj(self):
+        sciezki, _ = QFileDialog.getOpenFileNames(
+            self, "Wybierz pliki", str(Path.home()),
+            "Dokumenty (*.pdf *.jpg *.jpeg *.png *.gif *.bmp *.webp *.tif *.tiff);;Wszystkie pliki (*)")
+        self._dodaj_sciezki([Path(s) for s in sciezki])
+
+    def _dodaj_sciezki(self, sciezki: list[Path]):
+        if not sciezki:
+            return
+        okno = OknoOpisuPliku(self.okno.baza, [p.name for p in sciezki], self)
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return
+        w = okno.wartosci()
+        dodane, bledy = 0, []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for s in sciezki:
+                try:
+                    self.okno.baza.dodaj_plik(s, w["data"], w["kategoria"], w["osoba"], w["opis"])
+                    dodane += 1
+                except (ValueError, OSError) as e:
+                    bledy.append(str(e))
+        finally:
+            QApplication.restoreOverrideCursor()
+        if dodane:
+            self.okno.dziennik.zapisz(f"dodanie plików ({dodane})")
+            self.okno.komunikat(f"Dodano pliki: {dodane}")
+        if bledy:
+            QMessageBox.warning(self, "Nie wszystkie pliki dodano", "\n".join(bledy[:10]))
+        self.odswiez()
+
+    def _tresc(self, p: Plik) -> bytes | None:
+        try:
+            return self.okno.baza.tresc_pliku(p.id)
+        except (ValueError, OSError, KeyError) as e:
+            QMessageBox.critical(self, "Nie można otworzyć pliku", str(e))
+            return None
+
+    def podglad(self, *_):
+        p = self.wybrany()
+        if not p or (tresc := self._tresc(p)) is None:
+            return
+        try:
+            strony = druk.strony_pliku(tresc, p.typ, dpi=110)
+        except (ValueError, ImportError) as e:
+            QMessageBox.critical(self, "Podgląd", str(e))
+            return
+        OknoPodgladuPliku(p, strony, self, drukuj=lambda: self._drukuj(p, tresc)).exec()
+
+    def drukuj(self):
+        p = self.wybrany()
+        if p and (tresc := self._tresc(p)) is not None:
+            self._drukuj(p, tresc)
+
+    def _drukuj(self, p: Plik, tresc: bytes):
+        u = self.okno.baza.ustawienia()
+        drukarka = druk.przygotuj_drukarke(u)
+        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            druk.drukuj_plik(tresc, p.typ, drukarka)
+        except (ValueError, RuntimeError, ImportError) as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Drukowanie", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        self.okno.dziennik.zapisz(f"wydruk pliku {p.nazwa}")
+        self.okno.komunikat(f"Wydrukowano: {p.nazwa}")
+
+    def zapisz_kopie(self):
+        p = self.wybrany()
+        if not p or (tresc := self._tresc(p)) is None:
+            return
+        sciezka, _ = QFileDialog.getSaveFileName(self, "Zapisz kopię pliku", str(Path.home() / p.nazwa))
+        if sciezka:
+            Path(sciezka).write_bytes(tresc)
+            self.okno.dziennik.zapisz(f"zapis kopii pliku {p.nazwa} poza programem")
+            self.okno.komunikat(f"Zapisano: {sciezka}")
+
+    def edytuj(self):
+        p = self.wybrany()
+        if not p:
+            return
+        okno = OknoOpisuPliku(self.okno.baza, [p.nazwa], self, plik=p)
+        if okno.exec() == QDialog.DialogCode.Accepted:
+            w = okno.wartosci()
+            self.okno.baza.zmien_plik(p.id, w["data"], w["kategoria"], w["osoba"], w["opis"])
+            self.odswiez()
+
+    def usun(self):
+        p = self.wybrany()
+        if not p:
+            return
+        if QMessageBox.warning(self, "Usuń plik", f"Usunąć plik „{p.nazwa}” z programu?\n\n"
+                               "Zostanie jeszcze w kopiach zapasowych.",
+                               QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self.okno.baza.usun_plik(p.id)
+        self.okno.dziennik.zapisz(f"usunięcie pliku {p.nazwa}")
+        self.okno.komunikat(f"Usunięto: {p.nazwa}")
+        self.odswiez()
 
 
 # ---------------------------------------------------------------- okno główne
@@ -1387,8 +1762,8 @@ class OknoGlowne(QMainWindow):
         m.addLayout(marka)
 
         self.grupa = QButtonGroup(self)
-        for i, (nazwa, ik) in enumerate([("Nowy rachunek", "nowy"), ("Historia", "historia"),
-                                         ("Ustawienia", "ustawienia")]):
+        for i, (nazwa, ik) in enumerate([("Nowy dokument", "nowy"), ("Historia", "historia"),
+                                         ("Pliki", "archiwum"), ("Ustawienia", "ustawienia")]):
             b = QPushButton(f"  {nazwa}", checkable=True, cursor=Qt.CursorShape.PointingHandCursor)
             b.setIcon(ikona(ik, "#5b5b60", aktywny=AKCENT))
             b.clicked.connect(lambda _=False, i=i: self.przejdz(i))
@@ -1421,8 +1796,9 @@ class OknoGlowne(QMainWindow):
         self.strony = QStackedWidget()
         self.strona_nowy = StronaNowy(self)
         self.strona_historia = StronaHistoria(self)
+        self.strona_pliki = StronaPliki(self)
         self.strona_ustawienia = StronaUstawienia(self)
-        for s in (self.strona_nowy, self.strona_historia, self.strona_ustawienia):
+        for s in (self.strona_nowy, self.strona_historia, self.strona_pliki, self.strona_ustawienia):
             self.strony.addWidget(s)
         prawa.addWidget(self.strony, 1)
         uklad.addLayout(prawa, 1)
@@ -1560,6 +1936,7 @@ class OknoGlowne(QMainWindow):
         self.baza.zamknij()
         try:
             kopia_automatyczna(self.baza.sciezka)
+            self.baza.kopia_plikow(katalog_kopii() / "pliki")
         except OSError:
             pass
         event.accept()
@@ -1569,7 +1946,7 @@ class OknoGlowne(QMainWindow):
             self, "Witaj w Fakturniku",
             "Uzupełnij dane gabinetu (przede wszystkim NIP) i ceny usług.\n\n"
             "Ustaw też hasło w sekcji Bezpieczeństwo: dane pacjentów będą wtedy zaszyfrowane.")
-        self.przejdz(2)
+        self.przejdz(3)
 
 
 def uruchom() -> int:
@@ -1626,6 +2003,7 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik) -> tuple[int, Okn
         dziennik.zapisz("uruchomienie programu (bez hasła)")
     try:
         kopia_automatyczna(plik)
+        baza.kopia_plikow(katalog_kopii() / "pliki")
     except OSError:
         pass
 

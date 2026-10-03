@@ -1,19 +1,23 @@
 """Przechowywanie ustawień, liczników numeracji i wystawionych dokumentów (SQLite)."""
 
-import hmac
+import base64
 import csv
+import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
 import sqlite3
 import time
+import uuid
+import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 
 from .ochrona import BlokadaPliku, tylko_do_odczytu
-from .szyfrowanie import Szyfr, czy_zaszyfrowane
+from .szyfrowanie import Szyfr, czy_zaszyfrowane, nowy_klucz, odszyfruj_plik, zaszyfruj_plik
 
 DOMYSLNE_USTAWIENIA = {
     "nazwa": "Szymon Frydrych, Indywidualna Praktyka Stomatologiczna",
@@ -22,7 +26,7 @@ DOMYSLNE_USTAWIENIA = {
     "regon": "",
     "miejsce": "Racibórz",
     "konto": "",
-    "tytul": "Rachunek",
+    "tytul": "Rachunek",     # domyślny rodzaj nowego dokumentu: "Rachunek" albo "Faktura"
     "logo": "domyslne",      # "domyslne", "" (bez logo) albo obraz zapisany w base64
     "format_numeru": "{n}/{mm}/{rrrr}",
     "adnotacja": "Zwolnienie z VAT na podstawie art. 43 ust. 1 pkt 19 ustawy z dnia "
@@ -30,8 +34,9 @@ DOMYSLNE_USTAWIENIA = {
     "uslugi": "Leczenie kanałowe;0\nKonsultacja;0",
     "drukarka": "",          # pusta = domyślna drukarka systemu
     "okno_drukarki": "0",    # "1" = pokazuj okno wyboru drukarki przed drukiem
-    "kopia": "0",
-    "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu            # "1" = drukuj oryginał i kopię
+    "kopia": "0",            # "1" = drukuj oryginał i kopię
+    "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
+    "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
 }
 
 
@@ -56,6 +61,7 @@ class Dokument:
     nabywca_adres: str = ""
     nabywca_id: str = ""         # PESEL lub NIP
     pozycje: list[Pozycja] = field(default_factory=list)
+    rodzaj: str = ""             # "Rachunek" albo "Faktura"; puste w dokumentach z wersji sprzed faktur
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     id: int | None = None
@@ -67,6 +73,29 @@ class Dokument:
     @property
     def wazny(self) -> bool:
         return not self.anulowano
+
+    @property
+    def tytul(self) -> str:
+        return self.rodzaj or "Rachunek"
+
+
+@dataclass
+class Plik:
+    """Plik wrzucony do programu (np. faktura kosztowa, skan). Treść leży zaszyfrowana w katalogu `pliki`."""
+    id: int
+    nazwa: str
+    typ: str                     # rozszerzenie: pdf, jpg, png…
+    rozmiar: int
+    data: str                    # data dokumentu RRRR-MM-DD
+    kategoria: str
+    osoba: str                   # pacjent albo kontrahent
+    opis: str
+    dodano: str
+
+
+KATEGORIE_PLIKOW = ["Faktura kosztowa", "Faktura od kontrahenta", "Dokument pacjenta", "Umowa", "Inne"]
+TYPY_PLIKOW = {"pdf", "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff"}
+MAKS_ROZMIAR_PLIKU = 50 * 1024 * 1024
 
 
 @dataclass
@@ -106,6 +135,18 @@ def _bez_ogonkow(tekst: str) -> str:
     return tekst.lower().translate(str.maketrans("ąćęłńóśźż", "acelnoszz"))
 
 
+def numer_z_wzoru(wzor: str, numer: str) -> int | None:
+    """Odczytuje kolejny numer {n} z gotowego numeru, np. 'FV/7/10/2026' -> 7."""
+    regex = re.escape(wzor)
+    for znacznik, zamiennik in (("{n}", r"(\d+)"), ("{mm}", r"\d{1,2}"), ("{rrrr}", r"\d{4}"), ("{rr}", r"\d{2}")):
+        regex = regex.replace(re.escape(znacznik), zamiennik)
+    dopasowanie = re.fullmatch(regex, numer.strip())
+    if dopasowanie:
+        return int(dopasowanie.group(1))
+    zapasowe = re.search(r"\d+", numer)
+    return int(zapasowe.group()) if zapasowe else None
+
+
 def formatuj_numer(wzor: str, n: int, d: date) -> str:
     return (wzor.replace("{n}", str(n))
                 .replace("{mm}", f"{d.month:02d}")
@@ -136,6 +177,21 @@ MIGRACJE: dict[int, str] = {
             utworzono TEXT DEFAULT CURRENT_TIMESTAMP
         );
     """,
+    2: """
+        CREATE TABLE IF NOT EXISTS pliki (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nazwa TEXT NOT NULL,
+            typ TEXT NOT NULL,
+            rozmiar INTEGER NOT NULL,
+            plik TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            data TEXT NOT NULL,
+            kategoria TEXT NOT NULL DEFAULT '',
+            osoba TEXT NOT NULL DEFAULT '',
+            opis TEXT NOT NULL DEFAULT '',
+            dodano TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """,
 }
 WERSJA_DANYCH = max(MIGRACJE)
 
@@ -154,6 +210,7 @@ class Baza:
         self.sciezka = Path(sciezka)
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.szyfr: Szyfr | None = None
+        self.katalog_plikow = self.sciezka.parent / "pliki"
         self.blokada = BlokadaPliku(self.sciezka)
         self.db = sqlite3.connect(":memory:")
         istnial = self.sciezka.exists()
@@ -256,18 +313,26 @@ class Baza:
         self._utrwal()
 
     # ---------- numeracja ----------
-    def nastepny_numer(self, d: date) -> str:
-        klucz = f"{d.year}-{d.month:02d}"
-        wiersz = self.db.execute("SELECT ostatni FROM liczniki WHERE miesiac = ?", (klucz,)).fetchone()
-        n = (wiersz[0] if wiersz else 0) + 1
-        return formatuj_numer(self.ustawienia()["format_numeru"], n, d)
+    @staticmethod
+    def _klucz_licznika(d: date, rodzaj: str) -> str:
+        # rachunki mają osobną numerację od faktur; klucz rachunków bez prefiksu (zgodność ze starszymi danymi)
+        return ("FV:" if rodzaj == "Faktura" else "") + f"{d.year}-{d.month:02d}"
 
-    def _podbij_licznik(self, numer: str, d: date) -> None:
-        dopasowanie = re.match(r"\s*(\d+)", numer)
-        if not dopasowanie:
+    def _wzor_numeru(self, rodzaj: str) -> str:
+        u = self.ustawienia()
+        return u["format_numeru_faktury"] if rodzaj == "Faktura" else u["format_numeru"]
+
+    def nastepny_numer(self, d: date, rodzaj: str = "Rachunek") -> str:
+        wiersz = self.db.execute("SELECT ostatni FROM liczniki WHERE miesiac = ?",
+                                 (self._klucz_licznika(d, rodzaj),)).fetchone()
+        n = (wiersz[0] if wiersz else 0) + 1
+        return formatuj_numer(self._wzor_numeru(rodzaj), n, d)
+
+    def _podbij_licznik(self, numer: str, d: date, rodzaj: str = "Rachunek") -> None:
+        n = numer_z_wzoru(self._wzor_numeru(rodzaj), numer)
+        if not n:
             return
-        n = int(dopasowanie.group(1))
-        klucz = f"{d.year}-{d.month:02d}"
+        klucz = self._klucz_licznika(d, rodzaj)
         self.db.execute(
             "INSERT INTO liczniki VALUES (?, ?) "
             "ON CONFLICT(miesiac) DO UPDATE SET ostatni = MAX(ostatni, excluded.ostatni)",
@@ -283,12 +348,13 @@ class Baza:
         kursor = self.db.execute(
             "INSERT INTO dokumenty (numer, data_wystawienia, dane) VALUES (?, ?, ?)",
             (dok.numer, dok.data_wystawienia, json.dumps(dane, ensure_ascii=False)))
-        self._podbij_licznik(dok.numer, date.fromisoformat(dok.data_wystawienia))
+        self._podbij_licznik(dok.numer, date.fromisoformat(dok.data_wystawienia), dok.tytul)
         self._utrwal()
         dok.id = kursor.lastrowid
         return dok
 
-    def dokumenty(self, szukaj: str = "", rok: int | None = None, miesiac: int | None = None) -> list[Dokument]:
+    def dokumenty(self, szukaj: str = "", rok: int | None = None, miesiac: int | None = None,
+                  rodzaj: str | None = None) -> list[Dokument]:
         """Dokumenty od najnowszego; `szukaj` dopasowuje nazwisko/imię, numer lub PESEL/NIP."""
         wzor = _bez_ogonkow(szukaj.strip())
         prefiks = f"{rok:04d}-" if rok else ""
@@ -302,6 +368,8 @@ class Baza:
             d["pozycje"] = [Pozycja(**p) for p in d["pozycje"]]
             dok = Dokument(id=id_, **d)
             if miesiac and not rok and int(dok.data_wystawienia[5:7]) != miesiac:
+                continue
+            if rodzaj and dok.tytul != rodzaj:
                 continue
             if wzor and not all(slowo in _bez_ogonkow(f"{dok.numer} {dok.nabywca} {dok.nabywca_id}")
                                 for slowo in wzor.split()):
@@ -377,7 +445,22 @@ class Baza:
 
     def przywroc(self, zrodlo: Path | str, haslo: str | None = None) -> None:
         """Zastępuje dane kopią zapasową; obecne hasło (szyfrowanie) zostaje."""
-        dane = self._wczytaj(Path(zrodlo), haslo)
+        zrodlo = Path(zrodlo)
+        if zipfile.is_zipfile(zrodlo):
+            with zipfile.ZipFile(zrodlo) as z:
+                tymczasowy = self.sciezka.with_name("przywracanie.tmp")
+                tymczasowy.write_bytes(z.read("fakturnik.db"))
+                try:
+                    dane = self._wczytaj(tymczasowy, haslo)
+                finally:
+                    tymczasowy.unlink(missing_ok=True)
+                self.katalog_plikow.mkdir(parents=True, exist_ok=True)
+                for nazwa in z.namelist():
+                    cel = self.katalog_plikow / Path(nazwa).name
+                    if nazwa.startswith("pliki/") and nazwa.endswith(".bin") and not cel.exists():
+                        cel.write_bytes(z.read(nazwa))
+        else:
+            dane = self._wczytaj(zrodlo, haslo)
         proba = sqlite3.connect(":memory:")
         proba.deserialize(dane)
         if wersja_danych(proba) > WERSJA_DANYCH:
@@ -387,6 +470,126 @@ class Baza:
         self._utrwal()
 
     def kopia_zapasowa(self, cel: Path | str) -> None:
-        """Kopia w tym samym formacie co plik danych (zaszyfrowana, jeśli jest hasło)."""
+        """Kopia danych w tym samym formacie co plik danych (zaszyfrowana, jeśli jest hasło).
+
+        Gdy `cel` ma rozszerzenie .zip, kopia zawiera też wszystkie wrzucone pliki (zaszyfrowane).
+        """
         self._utrwal()
-        Path(cel).write_bytes(self.sciezka.read_bytes())
+        cel = Path(cel)
+        if cel.suffix.lower() != ".zip":
+            cel.write_bytes(self.sciezka.read_bytes())
+            return
+        with zipfile.ZipFile(cel, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("fakturnik.db", self.sciezka.read_bytes())
+            for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+                sciezka = self.katalog_plikow / nazwa
+                if sciezka.exists():
+                    z.write(sciezka, f"pliki/{nazwa}")
+
+    def kopia_plikow(self, katalog: Path) -> int:
+        """Dokłada do `katalog` pliki, których tam jeszcze nie ma (pliki nigdy się nie zmieniają)."""
+        katalog.mkdir(parents=True, exist_ok=True)
+        dodano = 0
+        for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+            zrodlo, cel = self.katalog_plikow / nazwa, katalog / nazwa
+            if zrodlo.exists() and not cel.exists():
+                shutil.copyfile(zrodlo, cel)
+                dodano += 1
+        return dodano
+
+    # ---------- wrzucone pliki ----------
+    def _klucz_plikow(self) -> bytes:
+        zapisany = self.ustawienia().get("klucz_plikow")
+        if zapisany:
+            return base64.b64decode(zapisany)
+        klucz = nowy_klucz()
+        self.zapisz_ustawienia({"klucz_plikow": base64.b64encode(klucz).decode("ascii")})
+        return klucz
+
+    @staticmethod
+    def _plik_z_wiersza(w) -> Plik:
+        return Plik(id=w[0], nazwa=w[1], typ=w[2], rozmiar=w[3], data=w[4], kategoria=w[5], osoba=w[6],
+                    opis=w[7], dodano=w[8] or "")
+
+    _POLA_PLIKU = "id, nazwa, typ, rozmiar, data, kategoria, osoba, opis, dodano"
+
+    def dodaj_plik(self, zrodlo: Path | str, data: str | None = None, kategoria: str = "", osoba: str = "",
+                   opis: str = "") -> Plik:
+        zrodlo = Path(zrodlo)
+        typ = zrodlo.suffix.lower().lstrip(".")
+        if typ not in TYPY_PLIKOW:
+            raise ValueError(f"Nieobsługiwany rodzaj pliku: {zrodlo.name}. Można dodać PDF lub zdjęcie.")
+        tresc = zrodlo.read_bytes()
+        if len(tresc) > MAKS_ROZMIAR_PLIKU:
+            raise ValueError(f"Plik {zrodlo.name} jest za duży (maksymalnie {MAKS_ROZMIAR_PLIKU // 2**20} MB).")
+        self.katalog_plikow.mkdir(parents=True, exist_ok=True)
+        nazwa_na_dysku = f"{uuid.uuid4().hex}.bin"
+        cel = self.katalog_plikow / nazwa_na_dysku
+        tymczasowy = cel.with_suffix(".tmp")
+        with open(tymczasowy, "wb") as f:
+            f.write(zaszyfruj_plik(tresc, self._klucz_plikow()))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tymczasowy, cel)
+        tylko_do_odczytu(cel, True)
+        kursor = self.db.execute(
+            "INSERT INTO pliki (nazwa, typ, rozmiar, plik, sha256, data, kategoria, osoba, opis) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (zrodlo.name, typ, len(tresc), nazwa_na_dysku, hashlib.sha256(tresc).hexdigest(),
+             data or date.today().isoformat(), kategoria, osoba.strip(), opis.strip()))
+        self._utrwal()
+        return self.plik(kursor.lastrowid)
+
+    def plik(self, id_: int) -> Plik | None:
+        w = self.db.execute(f"SELECT {self._POLA_PLIKU} FROM pliki WHERE id = ?", (id_,)).fetchone()
+        return self._plik_z_wiersza(w) if w else None
+
+    def tresc_pliku(self, id_: int) -> bytes:
+        """Odszyfrowana treść pliku; sprawdza też, czy plik nie został podmieniony."""
+        w = self.db.execute("SELECT plik, sha256 FROM pliki WHERE id = ?", (id_,)).fetchone()
+        if not w:
+            raise KeyError(id_)
+        sciezka = self.katalog_plikow / w[0]
+        if not sciezka.exists():
+            raise FileNotFoundError("Brak pliku na dysku. Przywróć go z kopii zapasowej.")
+        tresc = odszyfruj_plik(sciezka.read_bytes(), self._klucz_plikow())
+        if hashlib.sha256(tresc).hexdigest() != w[1]:
+            raise ValueError("Suma kontrolna pliku się nie zgadza.")
+        return tresc
+
+    def pliki(self, szukaj: str = "", rok: int | None = None, miesiac: int | None = None,
+              kategoria: str | None = None) -> list[Plik]:
+        wzor = _bez_ogonkow(szukaj.strip())
+        wynik = []
+        for w in self.db.execute(f"SELECT {self._POLA_PLIKU} FROM pliki ORDER BY data DESC, id DESC"):
+            p = self._plik_z_wiersza(w)
+            if rok and int(p.data[:4]) != rok:
+                continue
+            if miesiac and int(p.data[5:7]) != miesiac:
+                continue
+            if kategoria and p.kategoria != kategoria:
+                continue
+            if wzor and not all(s in _bez_ogonkow(f"{p.nazwa} {p.osoba} {p.opis} {p.kategoria}")
+                                for s in wzor.split()):
+                continue
+            wynik.append(p)
+        return wynik
+
+    def zmien_plik(self, id_: int, data: str, kategoria: str, osoba: str, opis: str) -> None:
+        self.db.execute("UPDATE pliki SET data = ?, kategoria = ?, osoba = ?, opis = ? WHERE id = ?",
+                        (data, kategoria, osoba.strip(), opis.strip(), id_))
+        self._utrwal()
+
+    def usun_plik(self, id_: int) -> None:
+        w = self.db.execute("SELECT plik FROM pliki WHERE id = ?", (id_,)).fetchone()
+        if not w:
+            return
+        self.db.execute("DELETE FROM pliki WHERE id = ?", (id_,))
+        self._utrwal()
+        sciezka = self.katalog_plikow / w[0]
+        if sciezka.exists():
+            tylko_do_odczytu(sciezka, False)
+            sciezka.unlink()
+
+    def lata_plikow(self) -> list[int]:
+        return [int(r[0]) for r in self.db.execute("SELECT DISTINCT substr(data, 1, 4) FROM pliki ORDER BY 1 DESC")]

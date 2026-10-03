@@ -164,4 +164,4 @@ def test_zestawienie_do_druku(tmp_path):
     from fakturnik import druk
     b = baza_z_danymi(tmp_path)
     html = druk.html_zestawienia(b.dokumenty(rok=2026, miesiac=10), b.ustawienia(), "Październik 2026")
-    assert "Październik 2026" in html and "Jan Kowalski" in html and "2 700,00" in html
+    assert "Październik 2026" in html and "Jan Kowalski" in html and "2\u00a0700,00" in html
