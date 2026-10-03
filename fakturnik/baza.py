@@ -37,7 +37,7 @@ DOMYSLNE_USTAWIENIA = {
                  "11 marca 2004 r. o podatku od towarów i usług.",
     "uslugi": "",
     "drukarka": "",          # pusta = domyślna drukarka systemu
-    "okno_drukarki": "0",    # "1" = pokazuj okno wyboru drukarki przed drukiem
+    "okno_drukarki": "1",    # "1" = przed drukiem pokazuj okno ustawień wydruku
     "kopia": "0",            # "1" = drukuj oryginał i kopię
     "auto_aktualizacje": "1",  # "1" = sprawdzaj aktualizacje przy uruchomieniu
     "skonfigurowano": "0",   # "1" = kreator pierwszego uruchomienia zakończony
@@ -48,10 +48,12 @@ DOMYSLNE_USTAWIENIA = {
     "w_tle": "1",            # "1" = zamknięcie okna chowa program do zasobnika zamiast go wyłączać
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
     "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
+    "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach
     "ostatni_wpis_dziennika": "",  # skrót ostatniego wpisu dziennika (wykrywa ucięcie dziennika)
 }
 ZANONIMIZOWANO = "[dane usunięte – RODO]"
+NAZWA_PLIKU_NA_DYSKU = re.compile(r"[0-9a-f]{32}\.bin")
 
 
 @dataclass
@@ -662,7 +664,7 @@ class Baza:
             return
         with zipfile.ZipFile(cel, "w", zipfile.ZIP_STORED) as z:
             z.writestr("fakturnik.db", self.sciezka.read_bytes())
-            for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+            for nazwa in self._nazwy_plikow():
                 sciezka = self.katalog_plikow / nazwa
                 if sciezka.exists():
                     z.write(sciezka, f"pliki/{nazwa}")
@@ -684,6 +686,8 @@ class Baza:
             problemy.append("Plik danych został " + ("usunięty" if not na_dysku else "zmieniony")
                             + " poza programem. Odtworzono go z aktualnych danych programu.")
         for nazwa, plik in self.db.execute("SELECT plik, nazwa FROM pliki"):
+            if not NAZWA_PLIKU_NA_DYSKU.fullmatch(nazwa):
+                continue
             sciezka = self.katalog_plikow / nazwa
             if sciezka.exists():
                 continue
@@ -704,7 +708,7 @@ class Baza:
         with zipfile.ZipFile(bufor, "w", zipfile.ZIP_DEFLATED) as z:
             self.db.commit()
             z.writestr("fakturnik.db", self.db.serialize())  # w środku jawna baza; chroni ją hasło kopii
-            for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+            for nazwa in self._nazwy_plikow():
                 sciezka = self.katalog_plikow / nazwa
                 if sciezka.exists():
                     z.write(sciezka, f"pliki/{nazwa}")
@@ -721,7 +725,7 @@ class Baza:
         """Dokłada do `katalog` pliki, których tam jeszcze nie ma (pliki nigdy się nie zmieniają)."""
         katalog.mkdir(parents=True, exist_ok=True)
         dodano = 0
-        for nazwa, in self.db.execute("SELECT plik FROM pliki"):
+        for nazwa in self._nazwy_plikow():
             zrodlo, cel = self.katalog_plikow / nazwa, katalog / nazwa
             if zrodlo.exists() and not cel.exists():
                 shutil.copyfile(zrodlo, cel)
@@ -729,6 +733,15 @@ class Baza:
         return dodano
 
     # ---------- wrzucone pliki ----------
+    def _nazwy_plikow(self) -> list[str]:
+        """Nazwy plików na dysku; nazwy spoza wzoru (np. z podrobionej kopii: „../..”) są pomijane."""
+        return [n for n, in self.db.execute("SELECT plik FROM pliki") if NAZWA_PLIKU_NA_DYSKU.fullmatch(n)]
+
+    def _sciezka_pliku(self, nazwa: str) -> Path:
+        if not NAZWA_PLIKU_NA_DYSKU.fullmatch(nazwa):
+            raise ValueError("Nieprawidłowa nazwa pliku w bazie.")
+        return self.katalog_plikow / nazwa
+
     def _klucz_plikow(self) -> bytes:
         zapisany = self.ustawienia().get("klucz_plikow")
         if zapisany:
@@ -780,7 +793,7 @@ class Baza:
         w = self.db.execute("SELECT plik, sha256 FROM pliki WHERE id = ?", (id_,)).fetchone()
         if not w:
             raise KeyError(id_)
-        sciezka = self.katalog_plikow / w[0]
+        sciezka = self._sciezka_pliku(w[0])
         if not sciezka.exists():
             raise FileNotFoundError("Brak pliku na dysku. Przywróć go z kopii zapasowej.")
         tresc = odszyfruj_plik(sciezka.read_bytes(), self._klucz_plikow())
@@ -817,7 +830,7 @@ class Baza:
             return
         self.db.execute("DELETE FROM pliki WHERE id = ?", (id_,))
         self._utrwal()
-        sciezka = self.katalog_plikow / w[0]
+        sciezka = self._sciezka_pliku(w[0])
         if sciezka.exists():
             tylko_do_odczytu(sciezka, False)
             sciezka.unlink()

@@ -147,3 +147,18 @@ def test_instalacja_usuwa_stara_wersje_tylko_do_odczytu(tmp_path):
     tylko_do_odczytu(stary, True)
     aktualizacje.posprzataj(obecny)
     assert not stary.exists()
+
+
+def test_nowa_wersja_czeka_na_zamkniecie_starej():
+    import subprocess
+    import sys
+    import time
+    import threading
+    stara = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
+    threading.Thread(target=stara.wait, daemon=True).start()  # jak system: zakończony proces znika
+    start = time.monotonic()
+    assert aktualizacje.czekaj_na_poprzednia(["--po-aktualizacji", str(stara.pid), "--w-tle"], limit_s=10) \
+        == ["--w-tle"]
+    assert stara.poll() is not None and time.monotonic() - start < 10
+    assert aktualizacje.czekaj_na_poprzednia(["--dodaj", "a.pdf"]) == ["--dodaj", "a.pdf"]
+    assert aktualizacje.czekaj_na_poprzednia(["--po-aktualizacji", "x"]) == []

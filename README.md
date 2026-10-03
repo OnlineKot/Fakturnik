@@ -4,18 +4,41 @@ Program dla Windows do tworzenia i drukowania rachunków i faktur oraz do przech
 wrzuconych dokumentów (faktury kosztowe, skany), dla gabinetu zwolnionego z VAT
 (usługi medyczne, art. 43 ust. 1 pkt 19 ustawy o VAT).
 
-## Pobranie
+## Pobranie i instalacja
 
-Gotowy plik **Fakturnik.exe** jest w zakładce *Releases* (najnowsze wydanie):
-https://github.com/OnlineKot/Fakturnik/releases/latest/download/Fakturnik.exe
-Python i inne programy są spakowane do środka pliku, więc nic nie trzeba instalować.
+**Instalator (zalecany):** https://github.com/OnlineKot/Fakturnik/releases/latest/download/FakturnikSetup.exe
+Instaluje program dla bieżącego użytkownika (bez uprawnień administratora) w
+`%LOCALAPPDATA%\Programs\Fakturnik`, dodaje skrót w Menu Start (opcjonalnie na pulpicie)
+i ustawia start w tle razem z Windows. Odinstalowanie (Ustawienia Windows → Aplikacje)
+nie usuwa danych ani kopii.
+
+**Wersja przenośna:** https://github.com/OnlineKot/Fakturnik/releases/latest/download/Fakturnik.exe
+
+Python i inne programy są spakowane do środka pliku, więc nic więcej nie trzeba instalować.
 Przy pierwszym uruchomieniu Windows SmartScreen może pokazać ostrzeżenie (program nie jest
 podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
 
+### Norton i inne antywirusy
+
+Program jest zbudowany tak, żeby nie wyglądał podejrzanie dla antywirusów: plik ma wpisanego
+wydawcę i wersję, nie jest kompresowany UPX-em, nie instaluje sterowników ani haków klawiatury,
+nie uruchamia skryptów przy aktualizacji, a zmiany w rejestrze dotyczą tylko bieżącego
+użytkownika. Mimo to nowe, niepodpisane programy bywają przez Nortona oznaczane z ostrożności
+(„mała liczba użytkowników”). Wtedy:
+1. Norton → Bezpieczeństwo → Historia → wybierz Fakturnik → **Przywróć i wyklucz ten plik**,
+   albo Ustawienia → Antywirus → Skanowania i zagrożenia → **Elementy do wykluczenia** →
+   dodaj folder `%LOCALAPPDATA%\Programs\Fakturnik`.
+2. Zgłoś fałszywy alarm na https://submit.norton.com (Norton zwykle zdejmuje oznaczenie w ciągu
+   kilku dni, co pomaga wszystkim użytkownikom).
+
+Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Code Signing
+(płatny, np. Certum, albo darmowy dla otwartych projektów przez SignPath).
+
 ## Co potrafi
 
-- **Drukowanie od razu** (F5 lub Ctrl+P) na wybranej drukarce, bez okna drukowania
-  (okno można włączyć w Ustawieniach), opcjonalnie oryginał i kopia; zapis do PDF.
+- **Ustawienia wydruku w programie** przed każdym drukiem (F5 lub Ctrl+P): drukarka, liczba
+  egzemplarzy, oryginał i kopia, data wydruku, PESEL oraz opcje sterownika drukarki
+  (np. dwustronnie). Okno można wyłączyć w Ustawieniach, wtedy drukuje od razu. Zapis do PDF.
 - **Numeracja** `nr/miesiąc/rok` (np. `3/10/2026`): program pamięta kolejny numer
   w każdym miesiącu; numer można poprawić ręcznie.
 - **Podpowiedzi nazwisk** dopiero po wpisaniu 2 liter (bez listy „ostatnio”, żeby nikt przy biurku
@@ -51,6 +74,16 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
   Program startuje bez żadnych wpisanych danych.
 - **Działanie w tle**: ikona obok zegara, zamknięcie okna chowa program, start razem z Windows,
   jedna działająca kopia (kolejne uruchomienie otwiera okno). Wyłączenie programu wymaga hasła.
+- **Ochrona przed przejęciem**: okna programu (także okno hasła) są niewidoczne dla zrzutów
+  i nagrań ekranu innych programów, np. narzędzi AI „sterujących komputerem” i programów zdalnego
+  dostępu (można wyłączyć w Ustawieniach, np. na czas zdalnej pomocy). Program nie ma żadnego
+  zdalnego dostępu ani interfejsu dla innych aplikacji; jedyne polecenia z zewnątrz to „pokaż okno”
+  i „dodaj plik” (sprawdzane), a każda ważna operacja wymaga hasła. Uwaga: program działający
+  z uprawnieniami administratora może zawsze więcej niż zwykła aplikacja, dlatego hasło i
+  szyfrowanie są tu najważniejszą ochroną.
+- **Windows**: po restarcie komputera przez aktualizację Windows program wraca sam (w tle),
+  przy wyłączaniu komputera zamyka się poprawnie (zapis i kopia danych), ma własną ikonę na
+  pasku zadań i w powiadomieniach.
 - **Menu prawego przycisku**: „Dodaj do Fakturnika” przy plikach PDF i zdjęciach w Eksploratorze.
 - **Strażnik integralności** (co minutę): wykrywa zmieniony lub usunięty plik danych i odtwarza go
   z aktualnych danych programu, przywraca usunięte pliki z kopii, sprawdza dziennik logowań.
@@ -90,8 +123,10 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
 - **Szyfrowana kopia zapasowa** (`.fkopia`): jeden plik z danymi i wrzuconymi plikami, zaszyfrowany
   AES-256-GCM osobnym hasłem kopii (można ją bezpiecznie trzymać na pendrive lub w chmurze).
   Przywracanie przyjmuje `.fkopia`, `.zip` i `.db`; kopie automatyczne plików trafiają do `Dokumenty\Fakturnik\kopie\pliki`.
-- **Aktualizacje**: program sprawdza przy uruchomieniu, czy jest nowsza wersja, i instaluje ją
-  jednym kliknięciem i uruchamia nową wersję w czystym środowisku (bez błędu po aktualizacji). Pobrany plik jest sprawdzany sumą SHA-256 i pobierany tylko z GitHuba.
+- **Automatyczne aktualizacje**: program sprawdza nowe wersje przy starcie i co 6 godzin,
+  sam je pobiera, sprawdza sumą SHA-256 (tylko z GitHuba), robi kopię danych i podmienia się w tle.
+  Nowa wersja uruchamia się sama, gdy okno jest schowane (nikt nie traci pracy), albo od razu
+  po kliknięciu „Uruchom ponownie”. Można to wyłączyć i aktualizować ręcznie.
   **Dane nie giną przy aktualizacji**: leżą osobno od programu (w `%APPDATA%`), przed instalacją
   program robi ich kopię (`przed-aktualizacja-do-…db` w katalogu kopii), a gdy nowa wersja zmienia
   układ danych, przerabia je automatycznie, zostawiając kopię oryginału. Starsza wersja programu

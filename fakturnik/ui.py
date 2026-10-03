@@ -14,7 +14,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut,
 )
-from PySide6.QtPrintSupport import QPrintDialog
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import aktualizacje, druk
+from . import aktualizacje, druk, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna
@@ -90,7 +90,16 @@ QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover {{ border-color: #bcc4ca; }}
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {{ border: 1px solid {AKCENT}; }}
 QLineEdit, QComboBox, QDateEdit, QSpinBox {{ min-height: 20px; }}
-QSpinBox {{ background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 6px 8px; }}
+QSpinBox {{ background: white; border: 1px solid #d5dade; border-radius: 8px; padding: 6px 26px 6px 10px; }}
+QSpinBox:hover {{ border-color: #bcc4ca; }}
+QSpinBox:focus {{ border: 1px solid {AKCENT}; }}
+QSpinBox::up-button, QSpinBox::down-button {{ subcontrol-origin: border; width: 22px; border: none;
+    background: transparent; }}
+QSpinBox::up-button {{ subcontrol-position: top right; margin: 3px 3px 0 0; }}
+QSpinBox::down-button {{ subcontrol-position: bottom right; margin: 0 3px 3px 0; }}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {AKCENT_TLO}; border-radius: 4px; }}
+QSpinBox::up-arrow {{ image: url("{(ZASOBY / "gora.svg").as_posix()}"); width: 12px; height: 12px; }}
+QSpinBox::down-arrow {{ image: url("{(ZASOBY / "dol.svg").as_posix()}"); width: 12px; height: 12px; }}
 QLineEdit#numer {{ font-size: 15px; font-weight: 600; }}
 QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{ background: white; border: 1px solid {LINIA}; padding: 4px;
@@ -457,6 +466,29 @@ class StraznikBezczynnosci(QObject):
         if event.type() in (QEvent.Type.MouseMove, QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress):
             self.timer.start()
         return False
+
+
+class OchronaEkranu(QObject):
+    """Każde okno programu (także okno hasła i podręczne listy) jest niewidoczne dla zrzutów
+    i nagrań ekranu innych programów, np. narzędzi AI sterujących komputerem (tylko Windows)."""
+
+    def __init__(self):
+        super().__init__()
+        self.wlaczona = True
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+            windows.ochrona_przed_przechwytywaniem(int(obj.winId()), self.wlaczona)
+        return False
+
+    def ustaw(self, wlacz: bool):
+        self.wlaczona = wlacz
+        for w in QApplication.topLevelWidgets():
+            if w.isVisible():
+                windows.ochrona_przed_przechwytywaniem(int(w.winId()), wlacz)
+
+
+OCHRONA_EKRANU = OchronaEkranu()
 
 
 # ---------------------------------------------------------------- strony
@@ -1287,6 +1319,11 @@ class StronaNowy(Strona):
             rodzaj=self.rodzaj,
             pozycje=pozycje)
 
+    def ma_niezapisane(self) -> bool:
+        if self.nabywca.text().strip():
+            return True
+        return any((it := self.tabela.item(r, 0)) and it.text().strip() for r in range(self.tabela.rowCount()))
+
     def wyczysc(self):
         for p in (self.nabywca, self.nabywca_id, self.nabywca_adres):
             p.clear()
@@ -1320,12 +1357,12 @@ class StronaNowy(Strona):
         dok = self._zatwierdz()
         if not dok:
             return
-        u = self.okno.baza.ustawienia()
-        drukarka = druk.przygotuj_drukarke(u)
-        if u["okno_drukarki"] == "1" and QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+        wybor = self.okno.ustawienia_wydruku(self, f"{dok.tytul} nr {dok.numer}", z_kopia=self.kopia.isChecked())
+        if not wybor:
             return
+        drukarka, u, z_kopia = wybor
         self.okno.baza.zapisz_dokument(dok)
-        druk.drukuj(druk.html_dokumentu(dok, u, self.kopia.isChecked()), drukarka)
+        druk.drukuj(druk.html_dokumentu(dok, u, z_kopia), drukarka)
         self.okno.komunikat(f"Wydrukowano: {dok.tytul.lower()} nr {dok.numer}")
         self.wyczysc()
 
@@ -1732,8 +1769,11 @@ class StronaHistoria(Strona):
     # ---- akcje na dokumencie
     def drukuj(self):
         if d := self.wybrany():
-            u = self.okno.baza.ustawienia()
-            druk.drukuj(druk.html_dokumentu(d, u, duplikat=True), druk.przygotuj_drukarke(u))
+            wybor = self.okno.ustawienia_wydruku(self, f"Duplikat nr {d.numer}")
+            if not wybor:
+                return
+            drukarka, u, z_kopia = wybor
+            druk.drukuj(druk.html_dokumentu(d, u, z_kopia, duplikat=True), drukarka)
             self.okno.dziennik.zapisz(f"wydruk duplikatu nr {d.numer}")
             self.okno.komunikat(f"Wydrukowano duplikat nr {d.numer}")
 
@@ -1814,21 +1854,22 @@ class StronaHistoria(Strona):
         self.filtruj()
 
     # ---- zestawienie wyników
-    def _html_zestawienia(self) -> str:
+    def _html_zestawienia(self, u: dict[str, str] | None = None) -> str:
         filtr = [f"„{self.szukaj.text().strip()}”"] if self.szukaj.text().strip() else []
         if self.rodzaj.currentData():
             filtr.append(self.rodzaj.currentText().lower())
-        return druk.html_zestawienia(self.docs, self.okno.baza.ustawienia(), self.opis_okresu(), ", ".join(filtr))
+        return druk.html_zestawienia(self.docs, u or self.okno.baza.ustawienia(), self.opis_okresu(),
+                                     ", ".join(filtr))
 
     def drukuj_zestawienie(self):
         if not self.docs:
             QMessageBox.information(self, "Zestawienie", "Brak dokumentów do zestawienia.")
             return
-        u = self.okno.baza.ustawienia()
-        drukarka = druk.przygotuj_drukarke(u)
-        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+        wybor = self.okno.ustawienia_wydruku(self, "Zestawienie", dokument=False, zawsze=True)
+        if not wybor:
             return
-        druk.drukuj(self._html_zestawienia(), drukarka)
+        drukarka, u, _ = wybor
+        druk.drukuj(self._html_zestawienia(u), drukarka)
         self.okno.komunikat("Wydrukowano zestawienie")
 
     def zestawienie_pdf(self):
@@ -1982,7 +2023,7 @@ class StronaUstawienia(Strona):
         f = self._formularz(ku)
         self.pola["drukarka"] = QComboBox()
         f.addRow("Drukarka", self.pola["drukarka"])
-        self.okno_drukarki = QCheckBox("Pytaj o drukarkę przed każdym wydrukiem")
+        self.okno_drukarki = QCheckBox("Pokazuj ustawienia wydruku przed drukiem (drukarka, liczba egzemplarzy, kopia)")
         self.kopia = QCheckBox("Domyślnie drukuj oryginał i kopię")
         self.data_wydruku = QCheckBox("Drukuj na dokumencie datę i godzinę wydruku")
         self.data_wygenerowania = QCheckBox("Drukuj na zestawieniach datę i godzinę wygenerowania")
@@ -2008,6 +2049,9 @@ class StronaUstawienia(Strona):
         rzad_blokady.addWidget(self.blokada_minut)
         rzad_blokady.addStretch()
         ku.addLayout(rzad_blokady)
+        self.ochrona_ekranu = QCheckBox("Ukrywaj okna programu przed zrzutami i nagrywaniem ekranu "
+                                        "(np. narzędzia AI, programy zdalnego dostępu)")
+        ku.addWidget(self.ochrona_ekranu)
         rzad = QHBoxLayout()
         self.btn_haslo = przycisk("", "klucz", akcja=self.zmien_haslo)
         self.btn_usun_haslo = przycisk("Odszyfruj", "klodka_otwarta", akcja=self.usun_haslo)
@@ -2083,10 +2127,11 @@ class StronaUstawienia(Strona):
         rzad.addStretch()
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
         ku.addLayout(rzad)
-        self.auto_aktualizacje = QCheckBox("Sprawdzaj przy uruchomieniu programu")
+        self.auto_aktualizacje = QCheckBox("Aktualizuj automatycznie: pobiera, sprawdza SHA-256 i instaluje w tle")
         ku.addWidget(self.auto_aktualizacje)
         ku.addWidget(QLabel("Aktualizacja wymienia tylko program. Dane zostają, a przed instalacją "
-                            "program robi ich kopię.", objectName="drobny", wordWrap=True))
+                            "program robi ich kopię. Nowa wersja uruchamia się sama, gdy okno jest schowane.",
+                            objectName="drobny", wordWrap=True))
         prawa.addWidget(k)
         prawa.addSpacing(14)
 
@@ -2149,6 +2194,7 @@ class StronaUstawienia(Strona):
         self.data_wydruku.setChecked(u["druk_data_wydruku"] == "1")
         self.data_wygenerowania.setChecked(u["druk_data_wygenerowania"] == "1")
         self.druk_pesel.setChecked(u["druk_pesel"] == "1")
+        self.ochrona_ekranu.setChecked(u["ochrona_ekranu"] == "1")
         self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
@@ -2207,6 +2253,7 @@ class StronaUstawienia(Strona):
         wartosci["druk_data_wygenerowania"] = "1" if self.data_wygenerowania.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
         wartosci["druk_pesel"] = "1" if self.druk_pesel.isChecked() else "0"
+        wartosci["ochrona_ekranu"] = "1" if self.ochrona_ekranu.isChecked() else "0"
         wartosci["rodo_lat"] = str(self.rodo_lat.value())
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
@@ -2219,6 +2266,7 @@ class StronaUstawienia(Strona):
         self.okno.komunikat("Zapisano ustawienia")
         self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
         self.okno.ustaw_czas_blokady()
+        OCHRONA_EKRANU.ustaw(wartosci["ochrona_ekranu"] == "1")
         self.okno.przejdz(STRONA_NOWY)
 
     def anonimizuj(self):
@@ -2452,6 +2500,96 @@ def rozmiar_tekst(bajty: int) -> str:
     if bajty < 1024 * 1024:
         return f"{max(1, round(bajty / 1024))} KB"
     return f"{bajty / 1024 / 1024:.1f} MB".replace(".", ",")
+
+
+class OknoDruku(QDialog):
+    """Ustawienia wydruku w programie: drukarka, liczba egzemplarzy i to, co ma się znaleźć na wydruku.
+
+    Zmiany dotyczą tylko tego wydruku; domyślne ustawia się w Ustawieniach (chronionych hasłem).
+    """
+
+    def __init__(self, u: dict[str, str], tytul: str, dokument: bool = True, z_kopia: bool = False, parent=None):
+        super().__init__(parent)
+        self.u = dict(u)
+        self.setWindowTitle("Drukowanie")
+        self.setFixedWidth(440)
+        uk = QVBoxLayout(self)
+        uk.setContentsMargins(24, 22, 24, 20)
+        uk.setSpacing(12)
+        naglowek = QHBoxLayout()
+        znak = QLabel()
+        znak.setPixmap(pixmapa("drukarka", AKCENT, 22))
+        naglowek.addWidget(znak)
+        t = QLabel(tytul)
+        t.setStyleSheet("font-size: 16px; font-weight: 600;")
+        naglowek.addWidget(t, 1)
+        uk.addLayout(naglowek)
+
+        self.drukarka_pole = QComboBox()
+        self.drukarka_pole.addItem("Domyślna drukarka systemu", "")
+        for nazwa in druk.dostepne_drukarki():
+            self.drukarka_pole.addItem(nazwa, nazwa)
+        self.drukarka_pole.setCurrentIndex(max(self.drukarka_pole.findData(u.get("drukarka", "")), 0))
+        uk.addLayout(pole("Drukarka", self.drukarka_pole))
+        self.egzemplarze = QSpinBox(minimum=1, maximum=20, suffix=" egz.")
+        self.egzemplarze.setFixedWidth(120)
+        uk.addLayout(pole("Liczba egzemplarzy", self.egzemplarze))
+
+        self.kopia = QCheckBox("Oryginał i kopia")
+        self.kopia.setChecked(z_kopia)
+        self.data_wydruku = QCheckBox("Data i godzina wydruku na dokumencie")
+        self.data_wydruku.setChecked(u.get("druk_data_wydruku") == "1")
+        self.pesel = QCheckBox("PESEL pacjenta")
+        self.pesel.setChecked(u.get("druk_pesel") == "1")
+        self.data_wygenerowania = QCheckBox("Data i godzina wygenerowania")
+        self.data_wygenerowania.setChecked(u.get("druk_data_wygenerowania", "1") == "1")
+        opcje = (self.kopia, self.data_wydruku, self.pesel) if dokument else (self.data_wygenerowania,)
+        if dokument is None:  # wrzucony plik: drukowany tak, jak jest
+            opcje = ()
+        if opcje:
+            uk.addWidget(QLabel("Na wydruku", objectName="etykieta"))
+            for w in opcje:
+                uk.addWidget(w)
+        uk.addWidget(QLabel("Domyślne ustawienia zmienisz w Ustawieniach → Drukowanie.", objectName="drobny"))
+        r = QHBoxLayout()
+        r.addWidget(przycisk("Opcje drukarki…", "ustawienia", "plaski", self._opcje_systemowe))
+        r.addStretch()
+        r.addWidget(przycisk("Anuluj", akcja=self.reject))
+        drukuj = przycisk("Drukuj", "drukarka", "glowny", self.accept)
+        drukuj.setDefault(True)
+        r.addWidget(drukuj)
+        uk.addLayout(r)
+        self._drukarka: QPrinter | None = None
+        self._wybrana_systemowo = ""
+
+    def _opcje_systemowe(self):
+        """Okno sterownika drukarki (np. dwustronnie, podajnik, jakość)."""
+        drukarka = self.drukarka()
+        if QPrintDialog(drukarka, self).exec() == QDialog.DialogCode.Accepted:
+            self._drukarka = drukarka
+            i = self.drukarka_pole.findData(drukarka.printerName())
+            if i >= 0:
+                self.drukarka_pole.blockSignals(True)
+                self.drukarka_pole.setCurrentIndex(i)
+                self.drukarka_pole.blockSignals(False)
+            self.egzemplarze.setValue(max(1, drukarka.copyCount()))
+            self._wybrana_systemowo = self.drukarka_pole.currentData() or ""
+
+    def ustawienia(self) -> dict[str, str]:
+        wynik = dict(self.u)
+        wynik["drukarka"] = self.drukarka_pole.currentData() or ""
+        wynik["druk_data_wydruku"] = "1" if self.data_wydruku.isChecked() else "0"
+        wynik["druk_pesel"] = "1" if self.pesel.isChecked() else "0"
+        wynik["druk_data_wygenerowania"] = "1" if self.data_wygenerowania.isChecked() else "0"
+        return wynik
+
+    def drukarka(self) -> QPrinter:
+        if self._drukarka is not None and self._wybrana_systemowo == (self.drukarka_pole.currentData() or ""):
+            drukarka = self._drukarka  # z opcjami ustawionymi w oknie sterownika
+        else:
+            drukarka = druk.przygotuj_drukarke(self.ustawienia())
+        drukarka.setCopyCount(self.egzemplarze.value())
+        return drukarka
 
 
 class OknoOpisuPliku(QDialog):
@@ -2738,10 +2876,10 @@ class StronaPliki(Strona):
             self._drukuj(p, tresc)
 
     def _drukuj(self, p: Plik, tresc: bytes):
-        u = self.okno.baza.ustawienia()
-        drukarka = druk.przygotuj_drukarke(u)
-        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+        wybor = self.okno.ustawienia_wydruku(self, p.nazwa, dokument=None, zawsze=True)
+        if not wybor:
             return
+        drukarka = wybor[0]
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             druk.drukuj_plik(tresc, p.typ, drukarka)
@@ -2795,7 +2933,7 @@ class OknoDokumentu(QDialog):
 
     def __init__(self, okno: "OknoGlowne", dok: Dokument, z_kopia: bool = False, duplikat: bool = False):
         super().__init__(okno)
-        self.okno, self.dok, self.duplikat = okno, dok, duplikat
+        self.okno, self.dok, self.duplikat, self.z_kopia = okno, dok, duplikat, z_kopia
         self.html = druk.html_dokumentu(dok, okno.baza.ustawienia(), z_kopia, duplikat)
         self.setWindowTitle(f"{dok.tytul} nr {dok.numer}")
         self.resize(980, 900)
@@ -2855,11 +2993,12 @@ class OknoDokumentu(QDialog):
         self._skala((self.obszar.viewport().width() - 2 * PodgladStron.ODSTEP - 4) / PodgladStron.A4.width())
 
     def drukuj(self):
-        u = self.okno.baza.ustawienia()
-        drukarka = druk.przygotuj_drukarke(u)
-        if QPrintDialog(drukarka, self).exec() != QDialog.DialogCode.Accepted:
+        wybor = self.okno.ustawienia_wydruku(self, f"{self.dok.tytul} nr {self.dok.numer}",
+                                             z_kopia=self.z_kopia, zawsze=True)
+        if not wybor:
             return
-        druk.drukuj(self.html, drukarka)
+        drukarka, u, z_kopia = wybor
+        druk.drukuj(druk.html_dokumentu(self.dok, u, z_kopia, self.duplikat), drukarka)
         self.okno.dziennik.zapisz(f"wydruk z podglądu: nr {self.dok.numer}")
         self.okno.komunikat(f"Wydrukowano nr {self.dok.numer}")
 
@@ -2987,6 +3126,9 @@ class OknoGlowne(QMainWindow):
         self._ukryty = False
         self._podpowiedz_zasobnika = False
         self._dziennik_zgloszony = False
+        OCHRONA_EKRANU.ustaw(self.baza.ustawienia()["ochrona_ekranu"] == "1")
+        # wylogowanie / wyłączenie komputera: zamknij się normalnie (zapis, kopia), zamiast chować do zasobnika
+        QApplication.instance().commitDataRequest.connect(self._koniec_sesji)
         zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
         self._dziennik_uciety = bool(zapamietany) and not self.dziennik.zawiera(zapamietany)
         self.dziennik.po_zapisie = self._zapamietaj_wpis
@@ -2997,9 +3139,15 @@ class OknoGlowne(QMainWindow):
         QTimer.singleShot(3000, self.sprawdz_integralnosc)
 
         self.wydanie: aktualizacje.Wydanie | None = None
+        self._restart_argumenty: list[str] = []
+        self._aktualizacja_w_toku = False
         if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1":
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
             QTimer.singleShot(6000, self.sprawdz_program)
+        # program działa w tle całymi dniami, więc o nowe wersje pyta też co 6 godzin
+        self.zegar_aktualizacji = QTimer(self, interval=6 * 60 * 60 * 1000)
+        self.zegar_aktualizacji.timeout.connect(self._okresowa_aktualizacja)
+        self.zegar_aktualizacji.start()
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
 
@@ -3036,6 +3184,20 @@ class OknoGlowne(QMainWindow):
     def podglad(self, dok: Dokument, z_kopia=False, duplikat=False):
         OknoDokumentu(self, dok, z_kopia, duplikat).exec()
 
+    def ustawienia_wydruku(self, rodzic: QWidget, tytul: str, dokument: bool | None = True,
+                           z_kopia: bool = False, zawsze: bool = False):
+        """Zwraca (drukarka, ustawienia, oryginał i kopia) albo None, gdy wydruk anulowano.
+
+        Okno pokazuje się, gdy włączono je w Ustawieniach albo przy wydrukach, które zawsze o nie pytały.
+        """
+        u = self.baza.ustawienia()
+        if not zawsze and u["okno_drukarki"] != "1":
+            return druk.przygotuj_drukarke(u), u, z_kopia
+        okno = OknoDruku(u, tytul, dokument, z_kopia, rodzic)
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return okno.drukarka(), okno.ustawienia(), okno.kopia.isChecked()
+
     # ---- aktualizacje
     def _w_tle(self, watek: Watek) -> Watek:
         self._watki.append(watek)
@@ -3051,8 +3213,68 @@ class OknoGlowne(QMainWindow):
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
 
+    def _okresowa_aktualizacja(self):
+        if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1" \
+                and not self.uruchom_po_zamknieciu:
+            self.sprawdz_aktualizacje(cicho=True)
+        self._restart_jesli_mozna()
+
+    def _aktualizuj_w_tle(self, wydanie: aktualizacje.Wydanie):
+        """Automatyczna aktualizacja: kopia danych, pobranie, sprawdzenie SHA-256 i podmiana programu w tle.
+        Nowa wersja startuje sama, gdy okno jest schowane (albo po kliknięciu „Uruchom ponownie”)."""
+        if self._aktualizacja_w_toku or self.uruchom_po_zamknieciu:
+            return
+        try:
+            kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-aktualizacja-do-{wydanie.wersja}.db")
+        except OSError:
+            return  # bez kopii danych nie aktualizujemy; spróbujemy przy następnym sprawdzeniu
+        self._aktualizacja_w_toku = True
+        self.dziennik.zapisz(f"aktualizacja automatyczna {WERSJA} -> {wydanie.wersja}: kopia danych wykonana")
+        cel = Path(sys.executable).with_name("Fakturnik.new.exe")
+        w = Watek(aktualizacje.pobierz, wydanie, cel)
+        w.gotowe.connect(lambda nowy: self._zainstaluj_w_tle(wydanie, nowy))
+        w.blad.connect(lambda _: (setattr(self, "_aktualizacja_w_toku", False),
+                                  self.dziennik.zapisz("aktualizacja automatyczna: NIEUDANA (spróbuje później)")))
+        self._w_tle(w)
+
+    def _zainstaluj_w_tle(self, wydanie: aktualizacje.Wydanie, nowy: Path):
+        self._aktualizacja_w_toku = False
+        try:
+            self.uruchom_po_zamknieciu = aktualizacje.zainstaluj(Path(nowy))
+        except OSError:
+            self.dziennik.zapisz("aktualizacja automatyczna: nie udało się podmienić programu")
+            return
+        self.dziennik.zapisz(f"aktualizacja do {wydanie.wersja}: zainstalowana")
+        self.tekst_aktualizacji.setText(f"Zainstalowano wersję {wydanie.wersja}. Uruchomi się sama, "
+                                        "gdy schowasz okno, albo teraz:")
+        self.btn_instaluj.setText("Uruchom ponownie")
+        self.btn_instaluj.clicked.disconnect()
+        self.btn_instaluj.clicked.connect(lambda: self._uruchom_ponownie(w_tle=False))
+        self.pasek_aktualizacji.show()
+        self.zasobnik.showMessage("Fakturnik zaktualizowany",
+                                  f"Wersja {wydanie.wersja} jest gotowa. Dane zostają bez zmian.",
+                                  QSystemTrayIcon.MessageIcon.Information, 6000)
+        self._restart_jesli_mozna()
+
+    def _restart_jesli_mozna(self):
+        """Nowa wersja startuje sama tylko wtedy, gdy nikt nie pracuje w oknie."""
+        if self.uruchom_po_zamknieciu and not self.isVisible() and not QApplication.activeModalWidget():
+            self._uruchom_ponownie(w_tle=True)
+
+    def _uruchom_ponownie(self, w_tle: bool):
+        if self.strona_nowy.edytowany is not None or (self.isVisible() and self.strona_nowy.ma_niezapisane()):
+            if QMessageBox.question(self, "Uruchom ponownie", "Na stronie „Nowy dokument” są niezapisane dane. "
+                                    "Uruchomić ponownie mimo to?") != QMessageBox.StandardButton.Yes:
+                return
+        self._restart_argumenty = ["--w-tle"] if w_tle else []
+        self._wyjscie = True
+        self.close()
+        QApplication.quit()
+
     def sprawdz_program(self):
         """Czy działający Fakturnik.exe jest tym samym plikiem, który opublikowano w wydaniu."""
+        if self.uruchom_po_zamknieciu:
+            return  # plik już podmieniono na nową wersję
         w = Watek(aktualizacje.sprawdz_wlasny_plik)
         w.gotowe.connect(self._wynik_sprawdzenia_programu)
         w.blad.connect(lambda _: None)
@@ -3068,6 +3290,10 @@ class OknoGlowne(QMainWindow):
 
     def _wynik_sprawdzenia(self, wydanie, cicho: bool):
         self.wydanie = wydanie
+        if wydanie and cicho and self.baza.ustawienia()["auto_aktualizacje"] == "1" \
+                and aktualizacje.czy_spakowany():
+            self._aktualizuj_w_tle(wydanie)
+            return
         if wydanie:
             self.tekst_aktualizacji.setText(f"Dostępna jest nowa wersja {wydanie.wersja}. "
                                             "Dane zostaną zachowane.")
@@ -3177,6 +3403,8 @@ class OknoGlowne(QMainWindow):
         self.strona_pulpit.zaslon()
         self.hide()
         self._ukryty = True
+        if self.uruchom_po_zamknieciu:
+            QTimer.singleShot(1500, self._restart_jesli_mozna)  # gotowa aktualizacja: nowa wersja startuje w tle
         if not self._podpowiedz_zasobnika:
             self._podpowiedz_zasobnika = True
             self.zasobnik.showMessage("Fakturnik działa w tle",
@@ -3220,6 +3448,7 @@ class OknoGlowne(QMainWindow):
                 != QMessageBox.StandardButton.Yes:
             return
         self._wyjscie = True
+        self.uruchom_po_zamknieciu = None  # wyłączenie na życzenie: nowa wersja wystartuje przy następnym uruchomieniu
         self.close()
         QApplication.quit()
 
@@ -3238,6 +3467,12 @@ class OknoGlowne(QMainWindow):
                                       QSystemTrayIcon.MessageIcon.Warning, 10000)
             if self.isVisible():
                 self.komunikat(problemy[0], blad=True)
+
+    def _koniec_sesji(self, *_):
+        if not self._wyjscie:
+            self._wyjscie = True
+            self.close()
+            QApplication.quit()
 
     def _zapamietaj_wpis(self, skrot: str):
         try:
@@ -3309,9 +3544,12 @@ def uruchom() -> int:
     app.setStyleSheet(STYL)
     aktualizacje.posprzataj()
     aktualizacje.zablokuj_program()
+    windows.przygotuj_proces()
+    app.installEventFilter(OCHRONA_EKRANU)
 
     # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
-    polecenie = polecenie_z_argumentow(sys.argv[1:])
+    argumenty = aktualizacje.czekaj_na_poprzednia(sys.argv[1:])  # po aktualizacji: stara wersja musi się zamknąć
+    polecenie = polecenie_z_argumentow(argumenty)
     jedna = JednaKopia()
     if jedna.wyslij_do_dzialajacej(polecenie):
         return 0
@@ -3329,7 +3567,7 @@ def uruchom() -> int:
         return 1
     if okno and okno.uruchom_po_zamknieciu:
         jedna.zamknij()  # nowa wersja nie może trafić na nasłuch starej, bo uznałaby, że program już działa
-        aktualizacje.uruchom_nowa_wersje(okno.uruchom_po_zamknieciu)
+        aktualizacje.uruchom_nowa_wersje(okno.uruchom_po_zamknieciu, okno._restart_argumenty)
     return kod
 
 

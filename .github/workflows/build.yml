@@ -32,20 +32,36 @@ jobs:
           echo "WERSJA=$WERSJA" >> "$GITHUB_ENV"
           printf '# Wpisywane automatycznie przy budowaniu.\nWERSJA = "%s"\n' "$WERSJA" > fakturnik/wersja.py
 
+      - name: Metadane .exe (wydawca, wersja) dla antywirusów
+        shell: bash
+        run: python skrypty/wersja_exe.py ${{ env.WERSJA }} > wersja_exe.txt
+
       - name: Budowanie .exe (Python spakowany do środka)
         run: >
-          pyinstaller --noconfirm --onefile --windowed --name Fakturnik
+          pyinstaller --noconfirm --onefile --windowed --name Fakturnik --noupx
           --exclude-module tkinter --exclude-module unittest
           --icon fakturnik/zasoby/ikona.ico
+          --version-file wersja_exe.txt
           --add-data "fakturnik/zasoby;fakturnik/zasoby"
           main.py
+
+      - name: Instalator (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc /Q "/DWersja=${{ env.WERSJA }}" instalator\Fakturnik.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Suma kontrolna SHA-256
         shell: bash
         run: |
           cd dist
           sha256sum Fakturnik.exe | cut -d' ' -f1 > Fakturnik.exe.sha256
-          cat Fakturnik.exe.sha256
+          sha256sum FakturnikSetup.exe | cut -d' ' -f1 > FakturnikSetup.exe.sha256
+          cat Fakturnik.exe.sha256 FakturnikSetup.exe.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -53,6 +69,8 @@ jobs:
           path: |
             dist/Fakturnik.exe
             dist/Fakturnik.exe.sha256
+            dist/FakturnikSetup.exe
+            dist/FakturnikSetup.exe.sha256
 
       - name: Wydanie (z niego program pobiera aktualizacje)
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -63,9 +81,12 @@ jobs:
           name: Fakturnik ${{ env.WERSJA }}
           make_latest: true
           files: |
+            dist/FakturnikSetup.exe
+            dist/FakturnikSetup.exe.sha256
             dist/Fakturnik.exe
             dist/Fakturnik.exe.sha256
           body: |
             ${{ github.event.head_commit.message }}
 
-            Pobierz Fakturnik.exe i uruchom dwuklikiem. Program sam sprawdza aktualizacje; dane zostają.
+            Pierwsza instalacja: pobierz FakturnikSetup.exe i uruchom (bez uprawnień administratora).
+            Wersja przenośna: Fakturnik.exe. Program sam się aktualizuje; dane zostają.

@@ -187,9 +187,22 @@ def sciezka_skrotu() -> Path:
     return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop" / "Fakturnik.lnk"
 
 
+def sciezka_skrotu_menu_start() -> Path:
+    """Skrót tworzony przez instalator (Menu Start bieżącego użytkownika)."""
+    return (Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu"
+            / "Programs" / "Fakturnik.lnk")
+
+
 def utworz_skrot_na_pulpicie() -> bool:
     if not integracja_dostepna():
         return False
+    if sciezka_skrotu().exists():
+        return True
+    menu_start = sciezka_skrotu_menu_start()
+    if menu_start.exists():  # wersja z instalatora: wystarczy skopiować gotowy skrót (bez PowerShella)
+        import shutil
+        shutil.copyfile(menu_start, sciezka_skrotu())
+        return True
     exe = str(sciezka_programu()).replace("'", "''")
     cel = str(sciezka_skrotu()).replace("'", "''")
     skrypt = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{cel}');"

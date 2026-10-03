@@ -198,20 +198,48 @@ def posprzataj(obecny: Path | None = None) -> None:
             pass
 
 
-def uruchom_nowa_wersje(exe: Path, opoznienie_s: int = 3) -> None:
-    """Uruchamia zaktualizowany program dopiero po zamknięciu bieżącego.
+def uruchom_nowa_wersje(exe: Path, argumenty: list[str] | None = None) -> None:
+    """Uruchamia zaktualizowany program; ten poczeka, aż bieżący proces się zakończy.
 
     Nowy proces dostaje czyste środowisko: bez zmiennych PyInstallera, które wskazywałyby mu folder
     tymczasowy starej wersji (stara wersja usuwa go przy zamykaniu, co kończyło się błędem krytycznym).
-    Opóźnienie daje starej wersji czas na zwolnienie pliku danych i nasłuchu „jednej kopii”.
+    Program startuje bezpośrednio (bez cmd i ping), co nie budzi podejrzeń antywirusa.
     """
     import subprocess
     srodowisko = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
     srodowisko["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    polecenie = [str(exe), "--po-aktualizacji", str(os.getpid()), *(argumenty or [])]
     if sys.platform == "win32":
-        polecenie = f'ping -n {opoznienie_s + 1} 127.0.0.1 >nul & start "" "{exe}"'
-        flagi = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        subprocess.Popen(["cmd", "/c", polecenie], env=srodowisko, creationflags=flagi, close_fds=True)
+        flagi = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(polecenie, env=srodowisko, creationflags=flagi, close_fds=True)
     else:
-        subprocess.Popen(["sh", "-c", f'sleep {opoznienie_s}; "{exe}" &'], env=srodowisko,
-                         start_new_session=True, close_fds=True)
+        subprocess.Popen(polecenie, env=srodowisko, start_new_session=True, close_fds=True)
+
+
+def czekaj_na_poprzednia(argumenty: list[str], limit_s: float = 30) -> list[str]:
+    """Po aktualizacji: czeka, aż stara wersja się zamknie (zwolni dane), i zwraca argumenty bez znacznika."""
+    if "--po-aktualizacji" not in argumenty:
+        return argumenty
+    i = argumenty.index("--po-aktualizacji")
+    reszta = argumenty[:i] + argumenty[i + 2:]
+    try:
+        pid = int(argumenty[i + 1])
+    except (IndexError, ValueError):
+        return reszta
+    if sys.platform == "win32":
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        uchwyt = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if uchwyt:
+            ctypes.windll.kernel32.WaitForSingleObject(uchwyt, int(limit_s * 1000))
+            ctypes.windll.kernel32.CloseHandle(uchwyt)
+    else:
+        import time
+        koniec = time.monotonic() + limit_s
+        while time.monotonic() < koniec:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.2)
+    return reszta
