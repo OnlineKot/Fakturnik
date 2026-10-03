@@ -135,10 +135,10 @@ def test_straznik_odtwarza_zmieniony_plik_danych_i_brakujace_pliki(tmp_path, ska
     problemy = b.sprawdz_integralnosc(tmp_path / "kopie")
     assert len(problemy) == 1 and "zmieniony" in problemy[0]
     b.zamknij()
-    assert [d.numer for d in Baza(b.sciezka).dokumenty()] == ["FV/1/10/2026"]  # dane wróciły
+    b = Baza(b.sciezka)  # ponowne otwarcie: dane wróciły
+    assert [d.numer for d in b.dokumenty()] == ["FV/1/10/2026"]
 
     # ktoś usuwa wrzucony plik
-    b = Baza(b.sciezka)
     b.blokada.zwolnij()
     plik = next(b.katalog_plikow.glob("*.bin"))
     tylko_do_odczytu(plik, False)
