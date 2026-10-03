@@ -155,10 +155,15 @@ def aktualizuj_program() -> str:
     if not aktualizacje.czy_spakowany():
         return "pominięto (wersja ze źródeł)"
     exe = Path(sys.executable)
+    przegladarka = exe.with_name("FakturnikPrzegladarka.exe")
     aktualizacje.posprzataj(exe)
+    aktualizacje.posprzataj(przegladarka)
     wydanie = aktualizacje.sprawdz()
     if not wydanie:
         return "program aktualny"
+    if wydanie.przegladarka:  # najpierw przeglądarka: główny program zmienia się na końcu
+        nowa = aktualizacje.pobierz(wydanie.przegladarka, exe.with_name("FakturnikPrzegladarka.new.exe"))
+        aktualizacje.zainstaluj(nowa, przegladarka)
     nowy = aktualizacje.pobierz(wydanie, exe.with_name("Fakturnik.new.exe"))
     aktualizacje.zainstaluj(nowy, exe)
     return f"zainstalowano wersję {wydanie.wersja}"

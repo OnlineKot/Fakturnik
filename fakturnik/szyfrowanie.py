@@ -68,7 +68,8 @@ class Szyfr:
         return naglowek + self.sol + nonce + AESGCM(self.klucz).encrypt(nonce, dane, naglowek)
 
     @classmethod
-    def otworz(cls, dane: bytes, haslo: str, sekret: bytes | None = None) -> tuple[bytes, "Szyfr"]:
+    def otworz(cls, dane: bytes, haslo: str | None, sekret: bytes | None = None,
+               klucz_hasla: bytes | None = None) -> tuple[bytes, "Szyfr"]:
         """Odszyfrowuje plik; zwraca dane i szyfr gotowy do kolejnych zapisów."""
         if dane.startswith(MAGIC2):
             id_pliku = dane[len(MAGIC2):len(MAGIC2) + 8]
@@ -80,7 +81,7 @@ class Szyfr:
         else:
             raise ValueError("Plik nie jest zaszyfrowany.")
         sol, nonce, szyfrogram = reszta[:16], reszta[16:28], reszta[28:]
-        szyfr = cls(haslo, sol, sekret)
+        szyfr = cls(haslo, sol, sekret, _klucz_hasla=klucz_hasla)  # klucz_hasla: logowanie z konta asystentki
         try:
             return AESGCM(szyfr.klucz).decrypt(nonce, szyfrogram, naglowek), szyfr
         except InvalidTag:

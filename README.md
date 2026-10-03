@@ -158,13 +158,26 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   połączenia zdalne trafiają do dziennika Fakturnika. Gdy komputer się blokuje, Fakturnik też.
   Nieudane próby odblokowania lub logowania do Windows (z dziennika zabezpieczeń, gdy program ma do
   niego dostęp) są zapisywane i zgłaszane powiadomieniem; połączenie zdalne zgłaszane od razu.
-- **Bezpieczna przeglądarka** (karta „Internet”): zakładki KSeF, e-Urząd Skarbowy, biała lista VAT,
+- **Bezpieczna przeglądarka** (karta „Internet”, osobny plik FakturnikPrzegladarka.exe instalowany
+  instalatorem, dzięki czemu główny program jest mały i szybko startuje): zakładki KSeF, e-Urząd Skarbowy, biała lista VAT,
   CEIDG, REGON i ZUS oraz dowolny adres (np. bank). Działa w osobnym, odizolowanym procesie (strony nie
   mają dostępu do danych pacjentów), w sesji bez zapisu na dysku, tylko przez HTTPS, z odrzucaniem
   błędnych certyfikatów i zablokowaną kamerą, mikrofonem i lokalizacją. Plików wykonywalnych nie da się
   pobrać, a pobrane pliki są oznaczone jako pochodzące z internetu (sprawdza je antywirus); pobrany PDF
   jednym kliknięciem trafia do zaszyfrowanych Plików. Blokada Fakturnika zamyka przeglądarkę i kończy
   sesję. Opcjonalnie tylko zaufane strony (gov.pl, zakładki i dopisane domeny).
+- **Konta asystentek**: każda loguje się własnym hasłem (bez nazwy użytkownika). Asystentka wystawia
+  dokumenty, szuka w historii, drukuje i dodaje pliki; przychody i ustawienia są dla niej ukryte,
+  a eksporty, anulowanie, edycja i korekty wymagają hasła właścicielki. Każdy dokument zapamiętuje,
+  kto go wystawił (kolumna w Historii, opcjonalnie na wydruku), a dziennik, kto co zrobił. Dane zostają
+  zaszyfrowane: konto ma własny klucz, a usunięcie konta odbiera dostęp od razu.
+- **Godziny pracy** (domyślnie wt 12–18, śr 10–17, czw 12–18, pt 8–14; do zmiany w Ustawieniach):
+  przypomnienie przed końcem (z szybkim zamknięciem dnia), po godzinach wylogowanie asystentek
+  (opcjonalnie wszystkich), a ponowne zalogowanie asystentki po godzinach tylko za zgodą właścicielki.
+  Ekran blokady pokazuje zegar, gabinet i najbliższe godziny pracy.
+- **Narzędzia**: dane firmy po NIP z oficjalnej białej listy VAT (Ministerstwo Finansów) z przyciskiem
+  „Wystaw fakturę dla tej firmy” (także w formularzu faktury), sprawdzanie PESEL/NIP/numeru konta,
+  kwota słownie i wspólny, zaszyfrowany notatnik gabinetu.
 - **Powiadomienia do ustawienia**: czas wyświetlania, dźwięk, powiadomienie startowe, blokada razem
   z komputerem.
 - **Tapeta pulpitu** (Ustawienia → Tapeta pulpitu): trzy warianty w kolorach Fakturnika z nazwą

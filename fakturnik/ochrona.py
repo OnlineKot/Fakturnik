@@ -68,6 +68,7 @@ class Dziennik:
         self.sciezka = sciezka
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.po_zapisie = None  # wywoływane ze skrótem nowego wpisu (zapamiętanym w zaszyfrowanej bazie)
+        self.kto = ""           # zalogowane konto (właścicielka albo asystentka), dopisywane do wpisów
 
     @staticmethod
     def _skrot(poprzedni: str, tresc: str) -> str:
@@ -78,7 +79,9 @@ class Dziennik:
         return wpisy[-1][2] if wpisy else "0" * 64
 
     def zapisz(self, zdarzenie: str) -> None:
-        tresc = f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{zdarzenie}"
+        if self.kto:
+            zdarzenie = f"[{self.kto}] {zdarzenie}"
+        tresc = f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{zdarzenie.replace(chr(9), ' ').replace(chr(10), ' ')}"
         skrot = self._skrot(self._ostatni_skrot(), tresc)
         tylko_do_odczytu(self.sciezka, False)
         with open(self.sciezka, "a", encoding="utf-8") as f:

@@ -18,6 +18,7 @@ from datetime import date
 from pathlib import Path
 
 from .ochrona import BlokadaPliku, tylko_do_odczytu
+from . import konta
 from .szyfrowanie import (
     BledneHaslo, Szyfr, WymaganeUrzadzenie, czy_kopia_szyfrowana, czy_powiazane_z_urzadzeniem, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
     zaszyfruj_plik,
@@ -63,6 +64,13 @@ DOMYSLNE_USTAWIENIA = {
     "powiadomienia_sekund": "6",         # jak długo widać powiadomienie
     "powiadomienia_dzwiek": "0",         # "1" = dźwięk przy powiadomieniu
     "blokuj_z_komputerem": "1",          # "1" = blokada Windows blokuje też Fakturnik
+    "nazwa_wlascicielki": "Właścicielka",  # nazwa konta właścicielki (w dzienniku i na dokumentach)
+    "godziny_pracy": "",               # JSON {0=pon..6=nd: "GG:MM-GG:MM"}; puste = wt 12-18, śr 10-17, czw 12-18, pt 8-14
+    "przypomnienie_min": "15",          # ile minut przed końcem godzin przypomnieć
+    "wyloguj_po_godzinach": "asystentki",  # "asystentki", "wszyscy" albo "nikt"
+    "asystentki_zamkniecie_dnia": "1",  # "1" = asystentka może zrobić zamknięcie dnia bez hasła właścicielki
+    "druk_wystawil": "1",               # "1" = „Wystawił(a): …” na dokumencie
+    "notatki": "",                      # wspólny notatnik gabinetu (w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach
@@ -99,6 +107,7 @@ class Dokument:
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     termin_platnosci: str = ""   # RRRR-MM-DD, przy przelewie
+    wystawil: str = ""           # kto wystawił (konto właścicielki lub asystentki)
     # faktura korygująca (rodzaj "Korekta"): której faktury dotyczy, dlaczego i jak wyglądała przed korektą
     korekta_do: str = ""         # numer korygowanej faktury
     korekta_data: str = ""       # data wystawienia korygowanej faktury
@@ -300,8 +309,10 @@ class Baza:
     Gdy ustawione jest hasło, plik jest szyfrowany (patrz szyfrowanie.py).
     """
 
-    def __init__(self, sciezka: Path | str, haslo: str | None = None, sekret: bytes | None = None):
+    def __init__(self, sciezka: Path | str, haslo: str | None = None, sekret: bytes | None = None,
+                 klucz_hasla: bytes | None = None):
         self.sciezka = Path(sciezka)
+        self._klucz_hasla = klucz_hasla  # zamiast hasła: klucz danych z konta asystentki
         self._sekret = sekret  # sekret urządzenia (weryfikacja urządzenia), gdy dane są z nim powiązane
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.szyfr: Szyfr | None = None
@@ -342,10 +353,11 @@ class Baza:
     def _wczytaj(self, sciezka: Path, haslo: str | None, ustaw_szyfr: bool = False) -> bytes:
         dane = Path(sciezka).read_bytes()
         if czy_zaszyfrowane(dane):
-            if haslo is None:
+            klucz = self._klucz_hasla if ustaw_szyfr else None
+            if haslo is None and klucz is None:
                 raise PermissionError("Dane są chronione hasłem.")
             sekret = self._sekret or (self.szyfr.sekret if self.szyfr else None)
-            dane, szyfr = Szyfr.otworz(dane, haslo, sekret)
+            dane, szyfr = Szyfr.otworz(dane, haslo, sekret, klucz)
             if ustaw_szyfr:
                 self.szyfr = szyfr
         elif not dane.startswith(b"SQLite format 3"):
@@ -407,6 +419,70 @@ class Baza:
         self.szyfr = Szyfr(haslo, sekret=sekret) if haslo else None
         self._sekret = self.szyfr.sekret if self.szyfr else None
         self._utrwal()
+        if self.szyfr:
+            self._odnow_konta()
+        else:  # bez hasła nie ma szyfrowania, więc i kont asystentek
+            self.db.execute("DELETE FROM ustawienia WHERE klucz = 'konta_klucze'")
+            self._utrwal()
+            konta.zapisz(self.sciezka.parent, [])
+
+    # ---------- konta asystentek ----------
+    def _klucze_kont(self) -> dict:
+        try:
+            return json.loads(self.ustawienia().get("konta_klucze") or "{}")
+        except ValueError:
+            return {}
+
+    def konta(self) -> list[dict]:
+        """Aktywne konta: [{id, nazwa, rola}] (z zaszyfrowanych danych, nie z pliku kont)."""
+        return [{"id": i, "nazwa": k["nazwa"], "rola": k["rola"]} for i, k in self._klucze_kont().items()]
+
+    def konto_aktywne(self, id_: str) -> bool:
+        return id_ in self._klucze_kont()
+
+    def dodaj_konto(self, nazwa: str, haslo: str, rola: str = "asystentka") -> str:
+        if not self.szyfr:
+            raise PermissionError("Konta asystentek wymagają hasła właścicielki (szyfrowania danych).")
+        nazwa = nazwa.strip()
+        if not nazwa or any(k["nazwa"].lower() == nazwa.lower() for k in self.konta()):
+            raise ValueError("Podaj inną nazwę konta (np. imię asystentki).")
+        if any(konta.sprawdz_haslo(w, haslo) for w in konta.wczytaj(self.sciezka.parent)):
+            raise ValueError("To hasło ma już inne konto. Każde konto musi mieć własne hasło.")
+        wpis, klucz_konta = konta.nowe_konto(nazwa, haslo, rola, self.szyfr.klucz_hasla)
+        klucze = self._klucze_kont()
+        klucze[wpis["id"]] = {"nazwa": nazwa, "rola": rola, "klucz": base64.b64encode(klucz_konta).decode("ascii")}
+        self.zapisz_ustawienia({"konta_klucze": json.dumps(klucze)})
+        konta.zapisz(self.sciezka.parent, konta.wczytaj(self.sciezka.parent) + [wpis])
+        return wpis["id"]
+
+    def usun_konto(self, id_: str) -> None:
+        klucze = self._klucze_kont()
+        klucze.pop(id_, None)
+        self.zapisz_ustawienia({"konta_klucze": json.dumps(klucze)})
+        konta.zapisz(self.sciezka.parent, [w for w in konta.wczytaj(self.sciezka.parent) if w["id"] != id_])
+
+    def ustaw_haslo_konta(self, id_: str, haslo: str) -> None:
+        klucze = self._klucze_kont()
+        if id_ not in klucze or not self.szyfr:
+            raise KeyError(id_)
+        wpisy = konta.wczytaj(self.sciezka.parent)
+        if any(konta.sprawdz_haslo(w, haslo) for w in wpisy if w["id"] != id_):
+            raise ValueError("To hasło ma już inne konto. Każde konto musi mieć własne hasło.")
+        klucz_konta = base64.b64decode(klucze[id_]["klucz"])
+        stary = next((w for w in wpisy if w["id"] == id_),
+                     {"id": id_, "nazwa": klucze[id_]["nazwa"], "rola": klucze[id_]["rola"]})
+        nowy = konta.nowe_haslo(stary, haslo, klucz_konta, self.szyfr.klucz_hasla)
+        konta.zapisz(self.sciezka.parent, [w for w in wpisy if w["id"] != id_] + [nowy])
+
+    def _odnow_konta(self) -> None:
+        """Po zmianie hasła właścicielki: klucze danych wszystkich kont na nowo (bez haseł asystentek)."""
+        klucze = self._klucze_kont()
+        wpisy = konta.wczytaj(self.sciezka.parent)
+        if not wpisy:
+            return
+        konta.zapisz(self.sciezka.parent, [
+            konta.odnow_klucz_danych(w, base64.b64decode(klucze[w["id"]]["klucz"]), self.szyfr.klucz_hasla)
+            for w in wpisy if w["id"] in klucze])
 
     # ---------- weryfikacja urządzenia ----------
     @property

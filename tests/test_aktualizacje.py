@@ -162,3 +162,10 @@ def test_nowa_wersja_czeka_na_zamkniecie_starej():
     assert stara.poll() is not None and time.monotonic() - start < 10
     assert aktualizacje.czekaj_na_poprzednia(["--dodaj", "a.pdf"]) == ["--dodaj", "a.pdf"]
     assert aktualizacje.czekaj_na_poprzednia(["--po-aktualizacji", "x"]) == []
+
+
+def test_instalacja_przegladarki_ktorej_jeszcze_nie_bylo(tmp_path):
+    nowy = tmp_path / "FakturnikPrzegladarka.new.exe"
+    nowy.write_bytes(b"przegladarka")
+    cel = aktualizacje.zainstaluj(nowy, tmp_path / "FakturnikPrzegladarka.exe")
+    assert cel.read_bytes() == b"przegladarka" and not nowy.exists()

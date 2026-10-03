@@ -34,7 +34,9 @@ jobs:
 
       - name: Metadane .exe (wydawca, wersja) dla antywirusów
         shell: bash
-        run: python skrypty/wersja_exe.py ${{ env.WERSJA }} > wersja_exe.txt
+        run: |
+          python skrypty/wersja_exe.py ${{ env.WERSJA }} > wersja_exe.txt
+          python skrypty/wersja_exe.py ${{ env.WERSJA }} FakturnikPrzegladarka "Fakturnik - bezpieczna przegladarka" > wersja_przegladarki.txt
 
       - name: Budowanie .exe (Python spakowany do środka)
         run: >
@@ -42,8 +44,19 @@ jobs:
           --exclude-module tkinter --exclude-module unittest
           --icon fakturnik/zasoby/ikona.ico
           --version-file wersja_exe.txt
+          --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineCore
+          --exclude-module PySide6.QtWebChannel --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQml
           --add-data "fakturnik/zasoby;fakturnik/zasoby"
           main.py
+
+      - name: Budowanie przeglądarki (osobny plik, żeby główny program był mały)
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name FakturnikPrzegladarka --noupx
+          --exclude-module tkinter --exclude-module unittest
+          --icon fakturnik/zasoby/ikona.ico
+          --version-file wersja_przegladarki.txt
+          --add-data "fakturnik/zasoby;fakturnik/zasoby"
+          przegladarka_main.py
 
       - name: Instalator (Inno Setup)
         shell: pwsh
@@ -61,6 +74,7 @@ jobs:
           cd dist
           sha256sum Fakturnik.exe | cut -d' ' -f1 > Fakturnik.exe.sha256
           sha256sum FakturnikSetup.exe | cut -d' ' -f1 > FakturnikSetup.exe.sha256
+          sha256sum FakturnikPrzegladarka.exe | cut -d' ' -f1 > FakturnikPrzegladarka.exe.sha256
           cat Fakturnik.exe.sha256 FakturnikSetup.exe.sha256
 
       - uses: actions/upload-artifact@v4
@@ -69,6 +83,8 @@ jobs:
           path: |
             dist/Fakturnik.exe
             dist/Fakturnik.exe.sha256
+            dist/FakturnikPrzegladarka.exe
+            dist/FakturnikPrzegladarka.exe.sha256
             dist/FakturnikSetup.exe
             dist/FakturnikSetup.exe.sha256
 
@@ -85,6 +101,8 @@ jobs:
             dist/FakturnikSetup.exe.sha256
             dist/Fakturnik.exe
             dist/Fakturnik.exe.sha256
+            dist/FakturnikPrzegladarka.exe
+            dist/FakturnikPrzegladarka.exe.sha256
           body: |
             ${{ github.event.head_commit.message }}
 

@@ -55,6 +55,7 @@ Name: "{commonappdata}\Fakturnik\kopie"
 
 [Files]
 Source: "..\dist\Fakturnik.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
+Source: "..\dist\FakturnikPrzegladarka.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
 
 [Icons]
 Name: "{commonprograms}\Fakturnik"; Filename: "{app}\Fakturnik.exe"; AppUserModelID: "TeodorTeo.Fakturnik"
@@ -89,6 +90,8 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie po
 [UninstallDelete]
 Type: files; Name: "{app}\Fakturnik.old.exe"
 Type: files; Name: "{app}\Fakturnik.new.exe"
+Type: files; Name: "{app}\FakturnikPrzegladarka.old.exe"
+Type: files; Name: "{app}\FakturnikPrzegladarka.new.exe"
 
 [Messages]
 polski.FinishedLabel=Fakturnik został zainstalowany. Dane są kopiowane co 10 minut i co godzinę do chronionego katalogu, i nie znikają przy aktualizacji ani odinstalowaniu.
