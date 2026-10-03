@@ -49,6 +49,7 @@ DOMYSLNE_USTAWIENIA = {
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
     "format_numeru_korekty": "KOR/{n}/{mm}/{rrrr}",
     "termin_dni": "7",       # termin płatności przy przelewie (dni od wystawienia)
+    "druk_qr": "1",          # "1" = kod QR do przelewu (rekomendacja ZBP) na dokumentach płatnych przelewem
     "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
     "ostrzezenie_secure_boot": "0",  # "1" = już pokazano wskazówkę o wyłączonym Secure Boot
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive

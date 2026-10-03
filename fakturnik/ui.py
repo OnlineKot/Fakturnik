@@ -1728,7 +1728,8 @@ class StronaHistoria(Strona):
         naglowek = QHBoxLayout()
         naglowek.addLayout(naglowek_strony("Historia", "Rachunki i faktury. Szukaj po nazwisku, numerze lub PESEL."))
         naglowek.addStretch()
-        for b in (przycisk("Drukuj zestawienie", "drukarka", akcja=self.drukuj_zestawienie),
+        for b in (przycisk("Zamknięcie dnia", "kalendarz", akcja=lambda: self.okno.zamkniecie_dnia()),
+                  przycisk("Drukuj zestawienie", "drukarka", akcja=self.drukuj_zestawienie),
                   przycisk("Zestawienie PDF", "pdf", akcja=self.zestawienie_pdf),
                   przycisk("Excel", "arkusz", akcja=self.eksport)):
             b.setToolTip("Dotyczy wyników widocznych poniżej")
@@ -2206,7 +2207,9 @@ class StronaUstawienia(Strona):
         self.data_wydruku = QCheckBox("Drukuj na dokumencie datę i godzinę wydruku")
         self.data_wygenerowania = QCheckBox("Drukuj na zestawieniach datę i godzinę wygenerowania")
         self.druk_pesel = QCheckBox("Drukuj PESEL pacjenta na rachunku (nie jest wymagany)")
-        for w in (self.okno_drukarki, self.kopia, self.data_wydruku, self.data_wygenerowania, self.druk_pesel):
+        self.druk_qr = QCheckBox("Kod QR do przelewu (skanowany aplikacją banku wypełnia przelew)")
+        for w in (self.okno_drukarki, self.kopia, self.data_wydruku, self.data_wygenerowania, self.druk_pesel,
+                  self.druk_qr):
             ku.addWidget(w)
         prawa.addWidget(k)
         prawa.addSpacing(10)
@@ -2546,6 +2549,7 @@ class StronaUstawienia(Strona):
         self.data_wydruku.setChecked(u["druk_data_wydruku"] == "1")
         self.data_wygenerowania.setChecked(u["druk_data_wygenerowania"] == "1")
         self.druk_pesel.setChecked(u["druk_pesel"] == "1")
+        self.druk_qr.setChecked(u["druk_qr"] == "1")
         self.ochrona_ekranu.setChecked(u["ochrona_ekranu"] == "1")
         self.kopia_folder.setText(u["kopia_folder"])
         self._pokaz_stan_kopii()
@@ -2612,6 +2616,7 @@ class StronaUstawienia(Strona):
         wartosci["druk_data_wygenerowania"] = "1" if self.data_wygenerowania.isChecked() else "0"
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
         wartosci["druk_pesel"] = "1" if self.druk_pesel.isChecked() else "0"
+        wartosci["druk_qr"] = "1" if self.druk_qr.isChecked() else "0"
         wartosci["ochrona_ekranu"] = "1" if self.ochrona_ekranu.isChecked() else "0"
         wartosci["kopia_folder"] = self.kopia_folder.text().strip()
         wartosci["rodo_lat"] = str(self.rodo_lat.value())
@@ -3887,6 +3892,7 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("nowy", TEKST_2), "Otwórz Fakturnik", self.pokaz_okno)
         menu.addAction(ikona("plus", TEKST_2), "Nowy rachunek", lambda: self._nowy_z_zasobnika("Rachunek"))
         menu.addAction(ikona("faktura", TEKST_2), "Nowa faktura", lambda: self._nowy_z_zasobnika("Faktura"))
+        menu.addAction(ikona("kalendarz", TEKST_2), "Zamknięcie dnia…", self._zamkniecie_z_zasobnika)
         menu.addSeparator()
         menu.addAction(ikona("klodka", TEKST_2), "Zablokuj", self.zablokuj)
         menu.addAction(ikona("zamknij", TEKST_2), "Zakończ program…", self.zakoncz)
@@ -3936,6 +3942,26 @@ class OknoGlowne(QMainWindow):
         if self.isVisible() and self.strona_nowy.porzuc_tryb():
             self.przejdz(STRONA_NOWY)
             self.strona_nowy.ustaw_rodzaj(rodzaj)
+
+    def _zamkniecie_z_zasobnika(self):
+        self.pokaz_okno()
+        if self.isVisible():
+            self.zamkniecie_dnia()
+
+    def zamkniecie_dnia(self):
+        """Raport utargu z dzisiejszego dnia do wydruku (gotówka do przeliczenia w kasie)."""
+        if not self.potwierdz_haslem("zamknięcie dnia", "Raport zawiera kwoty, dlatego wymaga hasła."):
+            return
+        dzis = date.today()
+        dokumenty = [d for d in self.baza.dokumenty(rok=dzis.year, miesiac=dzis.month)
+                     if d.data_wystawienia == dzis.isoformat()]
+        wybor = self.ustawienia_wydruku(self, "Zamknięcie dnia", dokument=False, zawsze=True)
+        if not wybor:
+            return
+        drukarka, u, _ = wybor
+        druk.drukuj(druk.html_zamkniecia_dnia(dokumenty, u, dzis), drukarka)
+        self.dziennik.zapisz(f"zamknięcie dnia {dzis.isoformat()} ({len(dokumenty)} dok.)")
+        self.komunikat(f"Wydrukowano zamknięcie dnia: {druk.zl(podsumuj(dokumenty).suma)} zł")
 
     def obsluz_polecenie(self, polecenie: dict):
         """Polecenie od drugiej kopii programu: pokaż okno albo dodaj pliki (menu prawego przycisku)."""

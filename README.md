@@ -108,6 +108,10 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Historia** z wyszukiwaniem po nazwisku, imieniu, numerze lub PESEL (bez względu na polskie
   znaki) i filtrami **rok** i **miesiąc**; podsumowanie wyników z podziałem na gotówkę, kartę i przelew.
 - **Zestawienie wyników** (np. za miesiąc, dla księgowej): drukowanie, zapis do PDF i do Excela (CSV).
+- **Kod QR do przelewu** na fakturach i rachunkach płatnych przelewem (rekomendacja Związku Banków
+  Polskich): nabywca skanuje go aplikacją banku, a numer konta, kwota, odbiorca i tytuł wpisują się same.
+- **Zamknięcie dnia** (Historia albo menu ikony obok zegara): raport dzisiejszego utargu z podziałem
+  na gotówkę, kartę i przelew, z listą dokumentów i miejscem na przeliczoną gotówkę z kasy.
 - **Duplikat**: ponowny wydruk jest oznaczony „duplikat z dnia …”.
 - **Data wydruku i wygenerowania** na dokumentach i zestawieniach: każdą można włączyć lub wyłączyć
   w Ustawieniach → Drukowanie.

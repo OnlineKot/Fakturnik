@@ -96,7 +96,7 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     <span style="font-size:8pt;">NABYWCA</span><br>{'<br>'.join(s for s in nabywca if s)}</td>
 </tr></table>
 <br>
-{_tresc(dok, platnosc)}
+{_tresc(dok, platnosc, u)}
 <p style="font-size:8.5pt;">{escape(u['adnotacja'])}</p>
 {'<br>' if dok.jest_korekta else '<br><br><br>'}
 <table width="100%" style="font-size:8pt;"><tr>
@@ -131,13 +131,43 @@ def _podsumowanie_stawek(netto: float) -> str:
 </table><br clear="all">"""
 
 
-def _tresc(dok: Dokument, platnosc: str) -> str:
+def tekst_qr_przelewu(dok: Dokument, u: dict[str, str]) -> str | None:
+    """Treść kodu QR do przelewu według rekomendacji Związku Banków Polskich (aplikacje polskich banków):
+    NIP|PL|rachunek|kwota w groszach (6 cyfr)|odbiorca (do 20 znaków)|tytuł (do 32 znaków)|||"""
+    konto = "".join(c for c in u.get("konto", "") if c.isdigit())
+    if dok.platnosc != "przelew" or len(konto) != 26 or dok.suma <= 0:
+        return None
+    nip = "".join(c for c in u.get("nip", "") if c.isdigit())
+    grosze = round(dok.suma * 100)
+    kwota = f"{grosze:06d}" if grosze <= 999999 else ""  # większych kwot standard nie mieści: wpisze się ręcznie
+    return "|".join([nip if len(nip) == 10 else "", "PL", konto, kwota, _ascii(u.get("nazwa", ""))[:20].strip(),
+                     _ascii(f"{dok.nazwa_druku} {dok.numer}")[:32].strip(), "", "", ""])
+
+
+def _ascii(tekst: str) -> str:
+    """Bez polskich znaków i separatora pól (nie każda aplikacja bankowa je przyjmuje)."""
+    zamiana = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ|", "acelnoszzACELNOSZZ/")
+    return " ".join(tekst.translate(zamiana).split())
+
+
+def _kod_qr(tresc: str) -> str:
+    import segno
+    return segno.make(tresc, error="m", micro=False).png_data_uri(scale=3, border=1)
+
+
+def _tresc(dok: Dokument, platnosc: str, u: dict[str, str] | None = None) -> str:
     if not dok.jest_korekta:
         stawki = _podsumowanie_stawek(dok.suma) if dok.tytul == "Faktura" else ""
+        kwota = f"""<p style="font-size:12pt;"><b>Do zapłaty: {zl(dok.suma)} zł</b><br>
+<span style="font-size:10.5pt;">Słownie: {kwota_slownie(dok.suma)}<br>Sposób płatności: {platnosc}</span></p>"""
+        qr = tekst_qr_przelewu(dok, u) if u and u.get("druk_qr", "1") == "1" else None
+        if qr:
+            kwota = f"""<table width="100%" cellspacing="0" cellpadding="0"><tr><td valign="top">{kwota}</td>
+<td width="120" align="center" valign="top" style="font-size:7.5pt; color:#444444;">
+<img src="{_kod_qr(qr)}" width="96" height="96"><br>Zapłać kodem QR<br>w aplikacji banku</td></tr></table>"""
         return f"""{_tabela_pozycji(dok.pozycje)}
 {stawki}
-<p style="font-size:12pt;"><b>Do zapłaty: {zl(dok.suma)} zł</b><br>
-<span style="font-size:10.5pt;">Słownie: {kwota_slownie(dok.suma)}<br>Sposób płatności: {platnosc}</span></p>"""
+{kwota}"""
     roznica = dok.suma
     if roznica < 0:
         wynik = f"Do zwrotu nabywcy: {zl(-roznica)} zł"
@@ -216,6 +246,53 @@ def html_zestawienia(dokumenty: list[Dokument], u: dict[str, str], okres: str, f
 </table>
 <p style="font-size:10pt;">Suma: <b>{zl(pods.suma)} zł</b>{anul}</p>
 </body></html>"""
+
+
+def html_zamkniecia_dnia(dokumenty: list[Dokument], u: dict[str, str], dzien: date) -> str:
+    """Raport na koniec dnia: utarg według sposobu płatności (gotówka do przeliczenia w kasie) i lista dokumentów."""
+    pods = podsumuj(dokumenty)
+    kolejnosc = ["gotówka", "karta", "przelew"]
+    sposoby = kolejnosc + sorted(k for k in pods.wg_platnosci if k not in kolejnosc)
+    kafelki = "".join(
+        f"<td width='{100 // len(sposoby)}%' align='center' style='border:1px solid #bbbbbb; padding:10px;'>"
+        f"<span style='font-size:9pt; color:#555555;'>{escape(k.upper())}</span><br>"
+        f"<span style='font-size:17pt; font-weight:bold;'>{zl(pods.wg_platnosci.get(k, 0))}</span>"
+        f"<span style='font-size:10pt;'> zł</span><br><span style='font-size:8pt; color:#555555;'>"
+        f"{sum(1 for d in dokumenty if d.wazny and d.platnosc == k)} dok.</span></td>"
+        for k in sposoby)
+    szary = ' style="color:#888888;"'
+    wiersze = "".join(
+        f"<tr{szary if d.anulowano else ''}><td>{escape(d.numer)}</td>"
+        f"<td>{escape(d.nazwa_druku)}</td><td>{escape(d.nabywca)}</td><td>{escape(d.platnosc)}</td>"
+        f"<td align='right'>{'anulowany' if d.anulowano else zl(d.suma)}</td></tr>"
+        for d in sorted(dokumenty, key=lambda d: (d.numer, d.id or 0)))
+    return f"""<html><body style='font-family: Inter, Arial; font-size:9.5pt;'>
+<table width="100%" cellspacing="0" cellpadding="0"><tr>
+  <td><span style="font-size:18pt; font-weight:bold;">Zamknięcie dnia</span><br>
+      <span style="font-size:11pt;">{DNI_TYGODNIA[dzien.weekday()]}, {data_pl(dzien.isoformat())}</span></td>
+  <td align="right" valign="top" style="font-size:9pt;"><b>{escape(u['nazwa'])}</b><br>
+      {f"Wygenerowano {datetime.now():%d.%m.%Y, %H:%M}" if u.get("druk_data_wygenerowania", "1") == "1" else ""}</td>
+</tr></table>
+<br>
+<table width="100%" cellspacing="6" cellpadding="0"><tr>{kafelki}</tr></table>
+<p style="font-size:13pt;"><b>Razem: {zl(pods.suma)} zł</b> &nbsp; <span style="font-size:10pt;">
+({pods.liczba} dok.{f", anulowane: {pods.anulowanych}" if pods.anulowanych else ""})</span></p>
+<table width="100%" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black;">
+  <tr style="background:#e8e8e8;"><th>Numer</th><th>Dokument</th><th width="40%">Nabywca</th><th>Płatność</th>
+      <th>Kwota (zł)</th></tr>
+  {wiersze or '<tr><td colspan="5" align="center">Dziś nie wystawiono dokumentów</td></tr>'}
+</table>
+<br><br>
+<table width="100%" style="font-size:9.5pt;"><tr>
+  <td width="28%">Gotówka w kasie (przeliczona):</td>
+  <td width="17%" style="border-bottom: 1px dotted black;">&nbsp;</td>
+  <td width="10%"></td>
+  <td width="45%" align="center" style="border-top: 1px dotted black;">podpis</td>
+</tr></table>
+</body></html>"""
+
+
+DNI_TYGODNIA = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
 
 
 def html_danych_osoby(nazwa: str, identyfikator: str, adres: str, dokumenty: list[Dokument],
