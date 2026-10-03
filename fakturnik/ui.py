@@ -2228,6 +2228,8 @@ class OknoGlowne(QMainWindow):
             QApplication.quit()
 
     def closeEvent(self, event):
+        QApplication.instance().removeEventFilter(self.straznik)
+        self.timer.stop()
         self.dziennik.zapisz("zamknięcie programu")
         self.baza.zamknij()
         try:
