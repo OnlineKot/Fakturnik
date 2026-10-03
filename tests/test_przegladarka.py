@@ -4,7 +4,8 @@ from fakturnik.przegladarka import (
 
 
 def test_blokada_plikow_wykonywalnych():
-    for zly in ("instalator.exe", "FAKTURA.PDF.exe", "skrypt.js", "x.bat", "makro.docm", "obraz.iso", "a.exe."):
+    for zly in ("instalator.exe", "FAKTURA.PDF.exe", "skrypt.js", "x.bat", "makro.docm", "obraz.iso", "a.exe.",
+                "skrot.url", "polaczenie.rdp", "strona.html", "obraz.svg", "skrypt.py", "dodatek.xll", "bez"):
         assert plik_niebezpieczny(zly), zly
     for dobry in ("faktura.pdf", "skan.jpg", "jpk.xml", "wyciag.csv", "dokumenty.zip"):
         assert not plik_niebezpieczny(dobry), dobry

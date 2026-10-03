@@ -98,7 +98,7 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
 <br>
 {_tresc(dok, platnosc, u)}
 <p style="font-size:8.5pt;">{escape(u['adnotacja'])}</p>
-{f'<p style="font-size:8.5pt;">Wystawił(a): {escape(dok.wystawil)}</p>' if dok.wystawil and dok.wystawil != "Właścicielka" and u.get("druk_wystawil", "1") == "1" else ""}
+{f'<p style="font-size:8.5pt;">Wystawił(a): {escape(dok.wystawil)}</p>' if dok.wystawil and dok.wystawil not in ("Właściciel", "Właścicielka") and u.get("druk_wystawil", "1") == "1" else ""}
 {'<br>' if dok.jest_korekta else '<br><br><br>'}
 <table width="100%" style="font-size:8pt;"><tr>
   <td width="40%" align="center" style="border-top: 1px dotted black;">podpis osoby upoważnionej do odbioru</td>

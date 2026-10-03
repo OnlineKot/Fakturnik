@@ -68,7 +68,7 @@ class Dziennik:
         self.sciezka = sciezka
         self.sciezka.parent.mkdir(parents=True, exist_ok=True)
         self.po_zapisie = None  # wywoływane ze skrótem nowego wpisu (zapamiętanym w zaszyfrowanej bazie)
-        self.kto = ""           # zalogowane konto (właścicielka albo asystentka), dopisywane do wpisów
+        self.kto = ""           # zalogowane konto (właściciel albo asystentka), dopisywane do wpisów
 
     @staticmethod
     def _skrot(poprzedni: str, tresc: str) -> str:

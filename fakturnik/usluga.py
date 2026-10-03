@@ -16,6 +16,8 @@ Moduł nie używa Qt: działa bez okien, w tle, także zanim ktokolwiek się zal
 import hashlib
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import traceback
 from datetime import datetime, timedelta
@@ -23,6 +25,73 @@ from pathlib import Path
 
 NAZWA_DANYCH = Path("AppData") / "Roaming" / "Fakturnik" / "Fakturnik"
 PLIK_DANYCH = "fakturnik.db"
+MAKS_ROZMIAR = 1024 * 1024 * 1024  # 1 GB na plik: usługa (SYSTEM) nie zapcha dysku cudzym plikiem
+
+
+class Dowiazanie(Exception):
+    """Ścieżka prowadzi przez dowiązanie (symlink/junction): usługa SYSTEM nie pójdzie za nim."""
+
+
+def _dowiazanie(sciezka: Path) -> bool:
+    try:
+        st = os.lstat(sciezka)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400)  # REPARSE_POINT
+
+
+def sprawdz_sciezke(sciezka: Path, korzen: Path) -> Path:
+    """Żaden element ścieżki od katalogu korzen (włącznie z nim) nie może być dowiązaniem.
+    Inaczej użytkownik mógłby podstawić junction i kazać usłudze z konta SYSTEM czytać lub
+    zapisywać cudze pliki."""
+    sciezka, korzen = Path(sciezka), Path(korzen)
+    czesci = [korzen, *[korzen.joinpath(*sciezka.relative_to(korzen).parts[:i + 1])
+                        for i in range(len(sciezka.relative_to(korzen).parts))]]
+    for c in czesci:
+        if _dowiazanie(c):
+            raise Dowiazanie(str(c))
+    return sciezka
+
+
+def _kopiuj(zrodlo: Path, cel: Path) -> None:
+    if _dowiazanie(zrodlo) or not zrodlo.is_file():
+        raise Dowiazanie(str(zrodlo))
+    if zrodlo.stat().st_size > MAKS_ROZMIAR:
+        raise ValueError(f"plik za duży: {zrodlo.name}")
+    if _dowiazanie(cel):
+        cel.unlink()
+    shutil.copyfile(zrodlo, cel, follow_symlinks=False)
+
+
+def sid_profilu(profil: Path) -> str | None:
+    """SID konta Windows, do którego należy katalog profilu (z rejestru ProfileList)."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+    klucz = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, klucz) as lista:
+            for i in range(winreg.QueryInfoKey(lista)[0]):
+                sid = winreg.EnumKey(lista, i)
+                try:
+                    with winreg.OpenKey(lista, sid) as k:
+                        sciezka = os.path.expandvars(winreg.QueryValueEx(k, "ProfileImagePath")[0])
+                except OSError:
+                    continue
+                if os.path.normcase(os.path.normpath(sciezka)) == os.path.normcase(os.path.normpath(str(profil))):
+                    return sid
+    except OSError:
+        pass
+    return None
+
+
+def zabezpiecz_katalog(cel: Path, sid: str | None) -> None:
+    """Kopie użytkownika czyta tylko on sam (i SYSTEM/Administratorzy), nie inni użytkownicy komputera."""
+    if sys.platform != "win32" or not sid:
+        return
+    subprocess.run(["icacls", str(cel), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F",
+                    "*S-1-5-32-544:(OI)(CI)F", f"*{sid}:(OI)(CI)RX"],
+                   capture_output=True, timeout=60, creationflags=0x08000000, check=False)
 
 
 def katalog_uslugi() -> Path:
@@ -68,15 +137,19 @@ def kopia_uzytkownika(dane: Path, cel: Path, teraz: datetime | None = None) -> b
     """Kopia danych jednego użytkownika. Zwraca True, gdy powstała nowa kopia pliku danych
     (gdy nic się nie zmieniło od ostatniej, nowej nie robi)."""
     teraz = teraz or datetime.now()
+    if _dowiazanie(cel.parent) or _dowiazanie(cel):
+        raise Dowiazanie(str(cel))
     cel.mkdir(parents=True, exist_ok=True)
     nowa = False
     plik = dane / PLIK_DANYCH
+    if _dowiazanie(plik) or plik.stat().st_size > MAKS_ROZMIAR:
+        raise Dowiazanie(str(plik))
     skrot = _skrot(plik)
     znacznik = cel / "ostatnia.sha256"
     if not znacznik.exists() or znacznik.read_text().strip() != skrot:
         docelowy = cel / f"fakturnik-{teraz:%Y-%m-%d-%H%M}.db"
         tymczasowy = docelowy.with_suffix(".tmp")
-        shutil.copyfile(plik, tymczasowy)
+        _kopiuj(plik, tymczasowy)
         if _skrot(tymczasowy) != skrot:  # plik zmienił się w trakcie kopiowania: spróbujemy za godzinę
             tymczasowy.unlink(missing_ok=True)
         else:
@@ -84,15 +157,19 @@ def kopia_uzytkownika(dane: Path, cel: Path, teraz: datetime | None = None) -> b
             znacznik.write_text(skrot)
             nowa = True
     pliki = dane / "pliki"
-    if pliki.is_dir():
+    if pliki.is_dir() and not _dowiazanie(pliki):
+        if _dowiazanie(cel / "pliki"):
+            raise Dowiazanie(str(cel / "pliki"))
         (cel / "pliki").mkdir(exist_ok=True)
         for zrodlo in pliki.glob("*.bin"):  # wrzucone pliki nigdy się nie zmieniają, wystarczy dołożyć nowe
+            if len(zrodlo.stem) != 32 or any(c not in "0123456789abcdef" for c in zrodlo.stem):
+                continue  # tylko pliki zapisane przez Fakturnik
             docelowy = cel / "pliki" / zrodlo.name
-            if not docelowy.exists():
-                shutil.copyfile(zrodlo, docelowy)
+            if not docelowy.exists() and not _dowiazanie(zrodlo):
+                _kopiuj(zrodlo, docelowy)
     dziennik = dane / "dziennik.log"
-    if dziennik.is_file():
-        shutil.copyfile(dziennik, cel / "dziennik.log")
+    if dziennik.is_file() and not _dowiazanie(dziennik):
+        _kopiuj(dziennik, cel / "dziennik.log")
     (cel / "ostatnia-kopia.txt").write_text(f"{teraz:%Y-%m-%d %H:%M}")
     rotacja(cel, teraz)
     return nowa
@@ -193,7 +270,11 @@ def uruchom_usluge() -> int:
     profile = profile_z_danymi()
     for uzytkownik, dane in profile:
         try:
-            nowa = kopia_uzytkownika(dane, katalog_kopii_chronionych() / uzytkownik)
+            profil = katalog_profili() / uzytkownik
+            sprawdz_sciezke(dane, profil)
+            cel = katalog_kopii_chronionych() / uzytkownik
+            nowa = kopia_uzytkownika(dane, cel)
+            zabezpiecz_katalog(cel, sid_profilu(profil))
             _zapisz_log(f"kopia {uzytkownik}: {'nowa' if nowa else 'bez zmian'}")
         except Exception:  # noqa: BLE001 - błąd jednego profilu nie zatrzymuje pozostałych
             _zapisz_log(f"kopia {uzytkownik}: BŁĄD\n{traceback.format_exc()}")

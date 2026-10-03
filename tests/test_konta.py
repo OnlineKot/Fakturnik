@@ -9,7 +9,7 @@ def baza_z_kontem(tmp_path):
     b = Baza(tmp_path / "d.db")
     b.ustaw_haslo("haslo-wlascicielki")
     b.zapisz_dokument(Dokument("1/10/2026", "2026-10-01", "2026-10-01", "gotówka", "Jan", pozycje=[Pozycja("A", 1, 10)],
-                               wystawil="Właścicielka"))
+                               wystawil="Właściciel"))
     id_ = b.dodaj_konto("Kasia", "haslo-kasi-123")
     return b, id_
 
@@ -20,7 +20,7 @@ def test_asystentka_otwiera_dane_wlasnym_haslem(tmp_path):
     wpis, klucz = konta.zaloguj(tmp_path, "haslo-kasi-123")
     assert wpis["nazwa"] == "Kasia" and wpis["rola"] == "asystentka"
     b2 = Baza(tmp_path / "d.db", klucz_hasla=klucz)
-    assert b2.konto_aktywne(id_) and [d.wystawil for d in b2.dokumenty()] == ["Właścicielka"]
+    assert b2.konto_aktywne(id_) and [d.wystawil for d in b2.dokumenty()] == ["Właściciel"]
     assert konta.zaloguj(tmp_path, "zle-haslo") is None
     with pytest.raises(BledneHaslo):
         Baza(tmp_path / "d.db", "haslo-kasi-123")  # hasło asystentki nie jest hasłem danych

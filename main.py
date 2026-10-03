@@ -15,6 +15,9 @@ def _uruchom_od_nowa() -> None:
 
 
 if __name__ == "__main__":
+    # wtyczki Qt tylko z programu: zmienne środowiskowe użytkownika nie podsuną obcej biblioteki
+    for _zmienna in [k for k in os.environ if k.startswith(("QT_PLUGIN", "QT_QPA_PLATFORM_PLUGIN", "QML2_IMPORT", "QML_IMPORT"))]:
+        del os.environ[_zmienna]
     if "--usluga" in sys.argv:  # kopie i aktualizacje z Harmonogramu zadań (konto SYSTEM), bez okien
         from fakturnik.usluga import uruchom_usluge
         sys.exit(uruchom_usluge())

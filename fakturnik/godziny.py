@@ -1,5 +1,5 @@
 """Godziny pracy gabinetu: kiedy asystentki mogą pracować w programie, przypomnienie przed końcem
-i wylogowanie po godzinach. Właścicielka może zalogować się zawsze i udzielić zgody na pracę po godzinach."""
+i wylogowanie po godzinach. Właściciel może zalogować się zawsze i udzielić zgody na pracę po godzinach."""
 
 import json
 from datetime import date, datetime, time, timedelta
@@ -72,7 +72,7 @@ def dzis(teraz: datetime | None = None) -> date:
     return (teraz or datetime.now()).date()
 
 
-# zgoda właścicielki na pracę asystentek po godzinach (do końca bieżącego dnia)
+# zgoda właściciela na pracę asystentek po godzinach (do końca bieżącego dnia)
 zgoda_do: datetime | None = None
 
 
@@ -97,4 +97,4 @@ def odmowa(ustawienia: dict, rola: str, teraz: datetime | None = None) -> str | 
     if w_godzinach(godz, teraz) or zgoda_aktywna(teraz):
         return None
     return (f"Poza godzinami pracy ({opis_tygodnia(godz)}). Pracę po godzinach może zatwierdzić "
-            "właścicielka przyciskiem „Zgoda właścicielki”.")
+            "właściciel przyciskiem „Zgoda właściciela”.")

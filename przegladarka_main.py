@@ -4,7 +4,12 @@ Osobny plik, bo silnik przeglądarki (Chromium) jest duży: główny Fakturnik.e
 i szybko się uruchamia, a przeglądarka startuje dopiero, gdy jest potrzebna.
 """
 
+import os
 import sys
+
+# wtyczki Qt tylko z programu: zmienne środowiskowe użytkownika nie podsuną obcej biblioteki
+for _zmienna in [k for k in os.environ if k.startswith(("QT_PLUGIN", "QT_QPA_PLATFORM_PLUGIN", "QML2_IMPORT", "QML_IMPORT"))]:
+    del os.environ[_zmienna]
 
 from fakturnik.przegladarka import uruchom_przegladarke
 

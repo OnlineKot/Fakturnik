@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QProcess, QRect, QSize, QStandardPaths, Qt,
+    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QProcess, QRect, QSettings, QSize, QStandardPaths, Qt,
     QThread,
     QTime, QTimer, QUrl, Signal,
 )
@@ -360,8 +360,9 @@ def naglowek_strony(tytul: str, podtytul: str = "") -> QVBoxLayout:
     u = QVBoxLayout()
     u.setSpacing(2)
     u.addWidget(QLabel(tytul, objectName="tytul"))
-    if podtytul:
-        u.addWidget(QLabel(podtytul, objectName="podtytul"))
+    opis = QLabel(podtytul, objectName="podtytul")
+    opis.hide()  # bez opisów pod tytułami: same nazwy ekranów
+    u.addWidget(opis)
     return u
 
 
@@ -396,7 +397,7 @@ class OknoHasla(QDialog):
                  zgoda=None):
         """`sprawdz(haslo)` zwraca True, False albo tekst (odmowa z powodem, np. poza godzinami pracy).
         `ekran_blokady`: {"gabinet", "godziny"} pokazuje zegar i godziny pracy (ekran blokady programu).
-        `zgoda`: funkcja wywoływana przyciskiem „Zgoda właścicielki” (praca po godzinach)."""
+        `zgoda`: funkcja wywoływana przyciskiem „Zgoda właściciela” (praca po godzinach)."""
         super().__init__(parent)
         self.sprawdz, self.dziennik, self.cel, self.zgoda = sprawdz, dziennik, cel, zgoda
         self.proby = 0
@@ -441,7 +442,7 @@ class OknoHasla(QDialog):
         self.blad = QLabel(styleSheet=f"color: {CZERWONY}; font-size: 12px;")
         u.addWidget(self.blad)
         rzad = QHBoxLayout()
-        self.btn_zgoda = przycisk("Zgoda właścicielki…", "klucz", "plaski", self._zgoda)
+        self.btn_zgoda = przycisk("Zgoda właściciela…", "klucz", "plaski", self._zgoda)
         self.btn_zgoda.hide()
         rzad.addWidget(self.btn_zgoda)
         rzad.addStretch()
@@ -990,7 +991,6 @@ class StronaNowy(Strona):
         naglowek_podgladu = QHBoxLayout()
         naglowek_podgladu.addWidget(QLabel("Podgląd wydruku", objectName="sekcja"))
         naglowek_podgladu.addStretch()
-        naglowek_podgladu.addWidget(QLabel("aktualizuje się na bieżąco", objectName="drobny"))
         rp.addLayout(naglowek_podgladu)
         self.kartka = PodgladKartki()
         self.kartka.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2079,7 +2079,6 @@ class StronaHistoria(Strona):
         tabela.doubleClicked.connect(lambda i: self.okno.podglad(wersje[i.row()][2]))
         ku.addWidget(tabela)
         u.addWidget(k, 1)
-        u.addWidget(QLabel("Dwuklik pokazuje dokument sprzed zmiany.", objectName="drobny"))
         u.addWidget(przycisk("Zamknij", akcja=okno.accept), alignment=Qt.AlignmentFlag.AlignRight)
         okno.exec()
 
@@ -2197,6 +2196,14 @@ class StronaNarzedzia(Strona):
         ku.addStretch()
         siatka.addWidget(k, 0, 1)
 
+        # stoper, minutnik, kalkulator
+        rzad_narzedzi = QHBoxLayout()
+        rzad_narzedzi.setSpacing(14)
+        rzad_narzedzi.addWidget(self._karta_stopera(), 1)
+        rzad_narzedzi.addWidget(self._karta_minutnika(), 1)
+        rzad_narzedzi.addWidget(self._karta_kalkulatora(), 1)
+        siatka.addLayout(rzad_narzedzi, 1, 0, 1, 2)
+
         # notatnik
         k, ku = karta()
         ku.addWidget(self._tytul("Notatnik gabinetu", "Wspólny dla wszystkich kont, zaszyfrowany razem z danymi"))
@@ -2208,11 +2215,155 @@ class StronaNarzedzia(Strona):
         ku.addWidget(self.notatki)
         self.stan_notatek = QLabel(objectName="drobny")
         ku.addWidget(self.stan_notatek)
-        siatka.addWidget(k, 1, 0, 1, 2)
+        siatka.addWidget(k, 2, 0, 1, 2)
         siatka.setColumnStretch(0, 1)
         siatka.setColumnStretch(1, 1)
         u.addLayout(siatka)
         u.addStretch()
+
+    @staticmethod
+    def _duzy_czas() -> QLabel:
+        etykieta = QLabel("00:00", alignment=Qt.AlignmentFlag.AlignCenter)
+        etykieta.setStyleSheet(f"color: {AKCENT}; font-size: 38px; font-weight: 300; letter-spacing: -0.5px;")
+        etykieta.setMinimumHeight(54)
+        return etykieta
+
+    # ---- stoper
+    def _karta_stopera(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Stoper", ""))
+        self.czas_stopera = self._duzy_czas()
+        ku.addWidget(self.czas_stopera)
+        self._stoper_start: float | None = None
+        self._stoper_suma = 0.0
+        self._tik_stopera = QTimer(self, interval=100)
+        self._tik_stopera.timeout.connect(self._pokaz_stoper)
+        rzad = QHBoxLayout()
+        self.btn_stoper = przycisk("Start", "odswiez", "glowny", self._stoper_start_stop)
+        rzad.addWidget(self.btn_stoper)
+        rzad.addWidget(przycisk("Zeruj", akcja=self._stoper_zeruj))
+        ku.addLayout(rzad)
+        return k
+
+    def _stoper_minelo(self) -> float:
+        return self._stoper_suma + (time.monotonic() - self._stoper_start if self._stoper_start else 0.0)
+
+    def _pokaz_stoper(self):
+        sekundy = self._stoper_minelo()
+        m, s_ = divmod(sekundy, 60)
+        self.czas_stopera.setText(f"{int(m):02d}:{int(s_):02d}.{int((s_ % 1) * 10)}")
+
+    def _stoper_start_stop(self):
+        if self._stoper_start is None:
+            self._stoper_start = time.monotonic()
+            self._tik_stopera.start()
+            self.btn_stoper.setText("Stop")
+        else:
+            self._stoper_suma = self._stoper_minelo()
+            self._stoper_start = None
+            self._tik_stopera.stop()
+            self.btn_stoper.setText("Start")
+        self._pokaz_stoper()
+
+    def _stoper_zeruj(self):
+        self._stoper_start, self._stoper_suma = None, 0.0
+        self._tik_stopera.stop()
+        self.btn_stoper.setText("Start")
+        self._pokaz_stoper()
+
+    # ---- minutnik
+    def _karta_minutnika(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Minutnik", ""))
+        self.czas_minutnika = self._duzy_czas()
+        ku.addWidget(self.czas_minutnika)
+        szybkie = QHBoxLayout()
+        szybkie.setSpacing(4)
+        for minuty in (1, 2, 3, 5, 10, 15):
+            b = przycisk(f"{minuty}′", styl="plaski", akcja=lambda _=False, m=minuty: self._minutnik_ustaw(m * 60))
+            b.setToolTip(f"{minuty} min")
+            szybkie.addWidget(b)
+        ku.addLayout(szybkie)
+        rzad = QHBoxLayout()
+        self.minuty_minutnika = QSpinBox(minimum=1, maximum=180, suffix=" min", value=5)
+        rzad.addWidget(self.minuty_minutnika)
+        self.btn_minutnik = przycisk("Start", "odswiez", "glowny", self._minutnik_start_stop)
+        rzad.addWidget(self.btn_minutnik)
+        rzad.addWidget(przycisk("Zeruj", akcja=lambda: self._minutnik_ustaw(self.minuty_minutnika.value() * 60,
+                                                                           start=False)))
+        ku.addLayout(rzad)
+        self._minutnik_koniec: float | None = None
+        self._minutnik_zostalo = 5 * 60.0
+        self._tik_minutnika = QTimer(self, interval=200)
+        self._tik_minutnika.timeout.connect(self._pokaz_minutnik)
+        self._pokaz_minutnik()
+        return k
+
+    def _minutnik_ustaw(self, sekundy: int, start: bool = True):
+        self._minutnik_koniec = None
+        self._tik_minutnika.stop()
+        self._minutnik_zostalo = float(sekundy)
+        self.minuty_minutnika.setValue(max(1, sekundy // 60))
+        self.btn_minutnik.setText("Start")
+        self._pokaz_minutnik()
+        if start:
+            self._minutnik_start_stop()
+
+    def _minutnik_start_stop(self):
+        if self._minutnik_koniec is None:
+            if self._minutnik_zostalo <= 0:
+                self._minutnik_zostalo = self.minuty_minutnika.value() * 60.0
+            self._minutnik_koniec = time.monotonic() + self._minutnik_zostalo
+            self._tik_minutnika.start()
+            self.btn_minutnik.setText("Pauza")
+        else:
+            self._minutnik_zostalo = max(0.0, self._minutnik_koniec - time.monotonic())
+            self._minutnik_koniec = None
+            self._tik_minutnika.stop()
+            self.btn_minutnik.setText("Start")
+        self._pokaz_minutnik()
+
+    def _pokaz_minutnik(self):
+        zostalo = self._minutnik_zostalo if self._minutnik_koniec is None else self._minutnik_koniec - time.monotonic()
+        if self._minutnik_koniec is not None and zostalo <= 0:
+            self._minutnik_koniec = None
+            self._minutnik_zostalo = 0.0
+            self._tik_minutnika.stop()
+            self.btn_minutnik.setText("Start")
+            QApplication.beep()
+            self.okno.powiadom("Minutnik: czas minął", f"Minęło {self.minuty_minutnika.value()} min.", "uwaga",
+                               czas_ms=20000)
+            zostalo = 0
+        m, s_ = divmod(max(0, int(zostalo + 0.999)), 60)
+        self.czas_minutnika.setText(f"{m:02d}:{s_:02d}")
+
+    # ---- kalkulator
+    def _karta_kalkulatora(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Kalkulator", ""))
+        self.wynik_kalkulatora = self._duzy_czas()
+        self.wynik_kalkulatora.setText("0")
+        self.wynik_kalkulatora.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ku.addWidget(self.wynik_kalkulatora)
+        self.dzialanie = QLineEdit(placeholderText="np. 900+150 albo 1200*0,9")
+        self.dzialanie.textChanged.connect(self._licz)
+        ku.addWidget(self.dzialanie)
+        self.blad_kalkulatora = QLabel(objectName="drobny")
+        ku.addWidget(self.blad_kalkulatora)
+        ku.addStretch()
+        return k
+
+    def _licz(self, tekst: str):
+        from .kalkulator import formatuj, oblicz
+        if not tekst.strip():
+            self.wynik_kalkulatora.setText("0")
+            self.blad_kalkulatora.clear()
+            return
+        try:
+            self.wynik_kalkulatora.setText(formatuj(oblicz(tekst)))
+            self.blad_kalkulatora.clear()
+        except (ValueError, SyntaxError) as e:
+            self.blad_kalkulatora.setText(str(e) if isinstance(e, ValueError) else "Niepełne działanie")
 
     @staticmethod
     def _tytul(tytul: str, opis: str) -> QWidget:
@@ -2223,7 +2374,6 @@ class StronaNarzedzia(Strona):
         t = QLabel(tytul)
         t.setStyleSheet("font-weight: 650; font-size: 14px;")
         u.addWidget(t)
-        u.addWidget(QLabel(opis, objectName="drobny", wordWrap=True))
         return w
 
     def odswiez(self):
@@ -2317,24 +2467,6 @@ class StronaInternet(Strona):
         ku.addLayout(siatka)
         u.addWidget(k)
         u.addSpacing(10)
-        k, ku = karta()
-        t = QLabel("Jak chroni przeglądarka Fakturnika")
-        t.setStyleSheet("font-weight: 650;")
-        ku.addWidget(t)
-        for linia in ("Działa w osobnym procesie: strony nie mają dostępu do danych pacjentów w programie.",
-                      "Odizolowana sesja: ciasteczka i historia są tylko w pamięci, nic nie trafia na dysk; "
-                      "blokada Fakturnika kończy sesję (wylogowuje z banku).",
-                      "Tylko HTTPS, błędne certyfikaty odrzucane; kamera, mikrofon i lokalizacja zablokowane.",
-                      "Pliki wykonywalne nie do pobrania; pobrane pliki są oznaczone jako z internetu, więc "
-                      "sprawdza je antywirus; PDF jednym kliknięciem trafia do zaszyfrowanych Plików.",
-                      "Okno ukryte przed zrzutami ekranu (gdy ta ochrona jest włączona)."):
-            r = QHBoxLayout()
-            znak = QLabel()
-            znak.setPixmap(pixmapa("ok", ZIELONY, 15))
-            r.addWidget(znak, alignment=Qt.AlignmentFlag.AlignTop)
-            r.addWidget(QLabel(linia, wordWrap=True, objectName="podtytul"), 1)
-            ku.addLayout(r)
-        u.addWidget(k)
         u.addStretch()
 
     def odswiez(self):
@@ -2574,11 +2706,6 @@ class StronaUstawienia(Strona):
         # --- RODO
         prawa.addWidget(sekcja("RODO i prywatność"))
         k, ku = karta()
-        ku.addWidget(QLabel(
-            "Dane pacjentów są zaszyfrowane, listy pokazują tylko wyniki wyszukiwania, a dziennik nie zawiera "
-            "nazwisk. Rachunki trzeba przechowywać 5 lat od końca roku, w którym minął termin zapłaty podatku; "
-            "po tym czasie dane osobowe można usunąć. Numery i kwoty zostają do rozliczeń.",
-            objectName="drobny", wordWrap=True))
         rzad = QHBoxLayout()
         rzad.addWidget(QLabel("Przechowuj dane osobowe przez", objectName="etykieta"))
         self.rodo_lat = QSpinBox(minimum=1, maximum=50, suffix=" lat po roku wystawienia")
@@ -2590,8 +2717,6 @@ class StronaUstawienia(Strona):
         rzad.addWidget(przycisk("Usuń dane po okresie przechowywania…", "tarcza", akcja=self.anonimizuj))
         rzad.addStretch()
         ku.addLayout(rzad)
-        ku.addWidget(QLabel("Dane jednej osoby (prawo dostępu) wydrukujesz lub zapiszesz jako PDF "
-                            "w Pacjenci → Dane osoby.", objectName="drobny", wordWrap=True))
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -2624,11 +2749,7 @@ class StronaUstawienia(Strona):
         k, ku = karta()
         f = self._formularz(ku)
         self.nazwa_wlascicielki = QLineEdit(placeholderText="np. lek. dent. Anna Test")
-        f.addRow("Konto właścicielki", self.nazwa_wlascicielki)
-        ku.addWidget(QLabel("Asystentki logują się własnym hasłem. Wystawiają dokumenty, szukają w historii i "
-                            "drukują; przychody, ustawienia, eksporty, anulowanie, edycja i korekty wymagają "
-                            "hasła właścicielki. Każdy dokument i wpis w dzienniku zapamiętuje, kto go wykonał.",
-                            objectName="drobny", wordWrap=True))
+        f.addRow("Konto właściciela", self.nazwa_wlascicielki)
         self.tabela_kont = QTableWidget(0, 2)
         self.tabela_kont.setHorizontalHeaderLabels(["Konto", "Rola"])
         self.tabela_kont.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -2644,8 +2765,6 @@ class StronaUstawienia(Strona):
         rzad.addStretch()
         ku.addLayout(rzad)
         ku.addWidget(separator())
-        ku.addWidget(QLabel("Godziny pracy (asystentki logują się w tych godzinach, poza nimi za zgodą "
-                            "właścicielki)", objectName="etykieta"))
         siatka = QGridLayout()
         siatka.setHorizontalSpacing(10)
         self.dni_pracy = []
@@ -2672,7 +2791,7 @@ class StronaUstawienia(Strona):
                             ("Nie wylogowuj", "nikt")):
             self.wyloguj_po.addItem(tekst, dane)
         f.addRow("Po godzinach", self.wyloguj_po)
-        self.op_zamkniecie_asystentki = QCheckBox("Asystentki mogą robić zamknięcie dnia bez hasła właścicielki")
+        self.op_zamkniecie_asystentki = QCheckBox("Asystentki mogą robić zamknięcie dnia bez hasła właściciela")
         self.op_druk_wystawil = QCheckBox("Drukuj na dokumencie „Wystawił(a): …”")
         ku.addWidget(self.op_zamkniecie_asystentki)
         ku.addWidget(self.op_druk_wystawil)
@@ -2715,8 +2834,6 @@ class StronaUstawienia(Strona):
         # --- tapeta pulpitu
         prawa.addWidget(sekcja("Tapeta pulpitu"))
         k, ku = karta()
-        ku.addWidget(QLabel("Tapeta w kolorach Fakturnika z nazwą gabinetu, w rozdzielczości ekranu. Polecam "
-                            "„Turkus nocą”: spokojna i nie męczy oczu.", objectName="drobny", wordWrap=True))
         rzad = QHBoxLayout()
         from . import tapeta
         for klucz, opis in tapeta.WARIANTY.items():
@@ -2773,10 +2890,6 @@ class StronaUstawienia(Strona):
         ku.addLayout(rzad)
         self.auto_aktualizacje = QCheckBox("Sprawdzaj aktualizacje automatycznie (w instalacji administratora instaluje je usługa)")
         ku.addWidget(self.auto_aktualizacje)
-        ku.addWidget(QLabel("Aktualizacja wymienia tylko program. Dane zostają, a przed instalacją "
-                            "program robi ich kopię. Program nigdy nie podmienia się sam: robi to instalator za zgodą "
-                            "administratora albo usługa systemowa.",
-                            objectName="drobny", wordWrap=True))
         prawa.addWidget(k)
         prawa.addSpacing(14)
 
@@ -2941,7 +3054,7 @@ class StronaUstawienia(Strona):
 
     def dodaj_konto(self):
         if not self.okno.baza.ma_haslo:
-            QMessageBox.information(self, "Konta", "Najpierw ustaw hasło właścicielki (szyfrowanie danych).")
+            QMessageBox.information(self, "Konta", "Najpierw ustaw hasło właściciela (szyfrowanie danych).")
             return
         nazwa, ok = QInputDialog.getText(self, "Nowe konto", "Imię asystentki (widoczne w dzienniku i na dokumentach):")
         if not ok or not nazwa.strip():
@@ -2984,7 +3097,7 @@ class StronaUstawienia(Strona):
         self.okno.dziennik.zapisz(f"usunięto konto „{k['nazwa']}”")
         self._pokaz_konta()
         self.okno.odswiez_uprawnienia()
-        if QMessageBox.question(self, "Hasło właścicielki", "Zalecana jest teraz zmiana hasła właścicielki: unieważni "
+        if QMessageBox.question(self, "Hasło właściciela", "Zalecana jest teraz zmiana hasła właściciela: unieważni "
                                 "to klucze z ewentualnych starych kopii pliku kont. Zmienić teraz?") \
                 == QMessageBox.StandardButton.Yes:
             self.zmien_haslo()
@@ -3159,7 +3272,7 @@ class StronaUstawienia(Strona):
                     return
                 nowe_godziny[d] = (od.time().toPython(), do.time().toPython())
         wartosci.update({
-            "nazwa_wlascicielki": self.nazwa_wlascicielki.text().strip() or "Właścicielka",
+            "nazwa_wlascicielki": self.nazwa_wlascicielki.text().strip() or "Właściciel",
             "godziny_pracy": godziny.zapisz(nowe_godziny),
             "przypomnienie_min": str(self.przypomnienie_min.value()),
             "wyloguj_po_godzinach": self.wyloguj_po.currentData(),
@@ -3294,6 +3407,7 @@ class StronaUstawienia(Strona):
         if okno.exec() == QDialog.DialogCode.Accepted:
             self.okno.dziennik.zapisz("zmiana hasła" if self.okno.baza.ma_haslo else "ustawienie hasła (szyfrowanie)")
             self.okno.baza.ustaw_haslo(okno.haslo.text())
+            znacznik_szyfrowania(True)
             self.okno.komunikat("Hasło ustawione, dane zaszyfrowane")
             self.odswiez()
 
@@ -3303,6 +3417,7 @@ class StronaUstawienia(Strona):
         if QMessageBox.question(self, "Odszyfruj dane", "Hasło zostanie usunięte, a dane przestaną być "
                                 "zaszyfrowane. Kontynuować?") == QMessageBox.StandardButton.Yes:
             self.okno.baza.ustaw_haslo(None)
+            znacznik_szyfrowania(False)
             urzadzenie.usun_sekret(self.okno.baza.sciezka.parent)  # bez hasła nie ma też weryfikacji urządzenia
             self.okno.dziennik.zapisz("usunięcie hasła (odszyfrowanie danych)")
             self.okno.komunikat("Hasło usunięte, dane odszyfrowane")
@@ -3519,6 +3634,59 @@ class OknoKontroli(QDialog):
         self.odswiez()
 
 
+class OknoZamykaniaGabinetu(QDialog):
+    """„Zamykam gabinet”: podsumowanie dnia i porządki na koniec (kartka, kopia, przeglądarka, wylogowanie)."""
+
+    def __init__(self, okno: "OknoGlowne", dokumenty: list):
+        super().__init__(okno)
+        self.setWindowTitle("Zamykam gabinet")
+        self.setFixedWidth(460)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(26, 24, 26, 20)
+        u.setSpacing(10)
+        t = QLabel("Zamykam gabinet")
+        t.setStyleSheet("font-size: 18px; font-weight: 650;")
+        u.addWidget(t)
+        dzis = date.today()
+        u.addWidget(QLabel(f"{DNI[dzis.weekday()].capitalize()}, {dzis.day} {MIESIACE_DOP[dzis.month - 1]} {dzis.year}",
+                           objectName="podtytul"))
+        pods = podsumuj(dokumenty)
+        k, ku = karta(False)
+        siatka = QGridLayout()
+        siatka.setHorizontalSpacing(18)
+        wiersze = [("Dokumenty", str(pods.liczba))]
+        wiersze += [(sposob.capitalize(), f"{druk.zl(pods.wg_platnosci.get(sposob, 0))} zł")
+                    for sposob in ("gotówka", "karta", "przelew")]
+        wiersze.append(("Razem", f"{druk.zl(pods.suma)} zł"))
+        if pods.anulowanych:
+            wiersze.append(("Anulowane", str(pods.anulowanych)))
+        for r, (etykieta, wartosc) in enumerate(wiersze):
+            e = QLabel(etykieta)
+            w = QLabel(wartosc, alignment=Qt.AlignmentFlag.AlignRight)
+            if etykieta == "Razem":
+                for x in (e, w):
+                    x.setStyleSheet("font-weight: 650;")
+            siatka.addWidget(e, r, 0)
+            siatka.addWidget(w, r, 1)
+        ku.addLayout(siatka)
+        u.addWidget(k)
+        self.kartka = QCheckBox("Wydrukuj kartkę podsumowującą")
+        self.kopia = QCheckBox("Zrób kopię zapasową teraz")
+        self.przegladarka = QCheckBox("Zamknij przeglądarkę (wylogowanie ze stron)")
+        self.wyloguj = QCheckBox("Wyloguj i zablokuj program")
+        for w, domyslnie in ((self.kartka, False), (self.kopia, True), (self.przegladarka, True), (self.wyloguj, True)):
+            w.setChecked(domyslnie)
+            u.addWidget(w)
+        self.wyloguj.setVisible(okno.baza.ma_haslo)
+        r = QHBoxLayout()
+        r.addStretch()
+        r.addWidget(przycisk("Anuluj", akcja=self.reject))
+        b = przycisk("Zamknij gabinet", "klodka", "glowny", self.accept)
+        b.setDefault(True)
+        r.addWidget(b)
+        u.addLayout(r)
+
+
 class OknoKoduOdzyskiwania(QDialog):
     """Kod odzyskiwania weryfikacji urządzenia: do zapisania lub wydrukowania (nie zostaje na tym komputerze)."""
 
@@ -3621,7 +3789,6 @@ class OknoDruku(QDialog):
             uk.addWidget(QLabel("Na wydruku", objectName="etykieta"))
             for w in opcje:
                 uk.addWidget(w)
-        uk.addWidget(QLabel("Domyślne ustawienia zmienisz w Ustawieniach → Drukowanie.", objectName="drobny"))
         r = QHBoxLayout()
         r.addWidget(przycisk("Opcje drukarki…", "ustawienia", "plaski", self._opcje_systemowe))
         r.addStretch()
@@ -4149,6 +4316,10 @@ class OknoGlowne(QMainWindow):
         self.etykieta_konta = QLabel()
         self.etykieta_konta.setStyleSheet("padding: 0 24px 6px; color: #dfeef0; font-size: 12px;")
         m.addWidget(self.etykieta_konta)
+        self.btn_zamknij_gabinet = QPushButton("   Zamykam gabinet", cursor=Qt.CursorShape.PointingHandCursor)
+        self.btn_zamknij_gabinet.setIcon(ikona("kalendarz", MENU_TEKST))
+        self.btn_zamknij_gabinet.clicked.connect(self.zamknij_gabinet)
+        m.addWidget(self.btn_zamknij_gabinet)
         self.btn_blokuj = QPushButton("   Zablokuj", cursor=Qt.CursorShape.PointingHandCursor)
         self.btn_blokuj.setIcon(ikona("klodka", MENU_TEKST))
         self.btn_blokuj.clicked.connect(self.zablokuj)
@@ -4250,6 +4421,10 @@ class OknoGlowne(QMainWindow):
         self.zegar_godzin = QTimer(self, interval=30 * 1000)
         self.zegar_godzin.timeout.connect(self.sprawdz_godziny)
         self.zegar_godzin.start()
+        # ekrany z danymi odświeżają się same (np. przychody, gdy asystentka wystawi dokument)
+        self.zegar_odswiezania = QTimer(self, interval=60 * 1000)
+        self.zegar_odswiezania.timeout.connect(self._odswiez_widoczna_strone)
+        self.zegar_odswiezania.start()
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
         # kontrola komputera przy każdym uruchomieniu (także przy starcie Windows, gdy program startuje w tle)
@@ -4433,15 +4608,15 @@ class OknoGlowne(QMainWindow):
                 and self._przypomniano != dzis:
             self._przypomniano = dzis
             self.powiadom(f"Za {max(1, round((koniec - teraz).total_seconds() / 60))} min koniec godzin pracy",
-                          f"Dziś do {koniec:%H:%M}. Kliknij, aby zrobić zamknięcie dnia.", "info",
-                          lambda: (self.pokaz_okno(), self.zamkniecie_dnia() if self.isVisible() else None), 15000)
+                          f"Dziś do {koniec:%H:%M}. Kliknij, aby zamknąć gabinet.", "info",
+                          lambda: (self.pokaz_okno(), self.zamknij_gabinet() if self.isVisible() else None), 15000)
         if koniec and teraz >= koniec and self._koniec_zgloszony != dzis and self._uruchomiono < koniec:
             self._koniec_zgloszony = dzis
             self.dziennik.zapisz(f"koniec godzin pracy ({koniec:%H:%M})")
             self.powiadom("Godziny pracy się skończyły", f"Dziś pracowano do {koniec:%H:%M}. "
                           + ("Konta asystentek zostały wylogowane." if u["wyloguj_po_godzinach"] != "nikt" else ""),
                           "info", czas_ms=15000)
-        # po godzinach: wylogowanie (właścicielka może zalogować się zawsze, asystentka za jej zgodą)
+        # po godzinach: wylogowanie (właściciel może zalogować się zawsze, asystentka za jego zgodą)
         tryb = u["wyloguj_po_godzinach"]
         if tryb == "nikt" or not self.baza.ma_haslo or not self.isVisible():
             return
@@ -4449,11 +4624,16 @@ class OknoGlowne(QMainWindow):
             return
         asystentka = not self.jest_wlascicielka
         wlascicielka_dzis = tryb == "wszyscy" and self._koniec_zgloszony == dzis \
-            and getattr(self, "_wylogowano_dzis", "") != dzis  # właścicielkę raz, zaraz po końcu godzin
+            and getattr(self, "_wylogowano_dzis", "") != dzis  # właściciela raz, zaraz po końcu godzin
         if asystentka or wlascicielka_dzis:
             self._wylogowano_dzis = dzis
             self.dziennik.zapisz("wylogowanie po godzinach pracy")
             self.zablokuj()
+
+    def _odswiez_widoczna_strone(self):
+        if self.isVisible() and not QApplication.activeModalWidget() and self.strony.currentIndex() == STRONA_PRZYCHODY \
+                and self.strona_pulpit.zawartosc.isVisible():
+            self.strona_pulpit._wypelnij()  # odsłonięte kwoty: tylko nowe liczby, bez ponownego pytania o hasło
 
     def _co_10_minut(self):
         self.kopia_ciagla()
@@ -4616,7 +4796,7 @@ class OknoGlowne(QMainWindow):
     # ---- blokada i zamykanie
     def korekta_dokumentu(self, dok: Dokument):
         if not self.jest_wlascicielka and not self.potwierdz_haslem("korekta faktury",
-                                                                    "Wystawienie korekty wymaga zgody właścicielki."):
+                                                                    "Wystawienie korekty wymaga zgody właściciela."):
             return
         if dok.tytul != "Faktura" or dok.anulowano:
             QMessageBox.information(self, "Korekta", "Korektę wystawia się do ważnej faktury. Rachunek można "
@@ -4646,11 +4826,11 @@ class OknoGlowne(QMainWindow):
 
     # ---- hasło do ważnych operacji
     def potwierdz_haslem(self, cel: str, opis: str = "Ta operacja wymaga hasła.") -> bool:
-        """Ważne operacje zawsze wymagają hasła właścicielki (także gdy pracuje asystentka)."""
+        """Ważne operacje zawsze wymagają hasła właściciela (także gdy pracuje asystentka)."""
         if not self.baza.ma_haslo:
             return True
         if not self.jest_wlascicielka:
-            opis += "\n(hasło właścicielki)"
+            opis += "\n(hasło właściciela)"
         return OknoHasla(self.baza.sprawdz_haslo, "Potwierdź hasłem", self, self.dziennik, cel, opis).exec() \
             == QDialog.DialogCode.Accepted
 
@@ -4662,6 +4842,8 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("nowy", TEKST_2), "Otwórz Fakturnik", self.pokaz_okno)
         menu.addAction(ikona("plus", TEKST_2), "Nowy rachunek", lambda: self._nowy_z_zasobnika("Rachunek"))
         menu.addAction(ikona("faktura", TEKST_2), "Nowa faktura", lambda: self._nowy_z_zasobnika("Faktura"))
+        menu.addAction(ikona("klodka", TEKST_2), "Zamykam gabinet…",
+                       lambda: (self.pokaz_okno(), self.zamknij_gabinet() if self.isVisible() else None))
         menu.addAction(ikona("kalendarz", TEKST_2), "Zamknięcie dnia…", self._zamkniecie_z_zasobnika)
         menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
@@ -4700,9 +4882,12 @@ class OknoGlowne(QMainWindow):
                           "Pilnuje bezpieczeństwa danych i robi kopie. Kliknij ikonę obok zegara, aby go otworzyć.",
                           "info", self.pokaz_okno, 5000)
 
-    # ---- konta: właścicielka i asystentki
+    # ---- konta: właściciel i asystentki
     def wlascicielka(self) -> dict:
-        return {"id": "", "nazwa": self.baza.ustawienia()["nazwa_wlascicielki"] or "Właścicielka",
+        nazwa = self.baza.ustawienia()["nazwa_wlascicielki"]
+        if nazwa in ("", "Właścicielka"):  # wcześniejsza domyślna nazwa
+            nazwa = "Właściciel"
+        return {"id": "", "nazwa": nazwa,
                 "rola": "wlascicielka"}
 
     @property
@@ -4718,7 +4903,7 @@ class OknoGlowne(QMainWindow):
         self.odswiez_uprawnienia()
 
     def odswiez_uprawnienia(self):
-        """Asystentka nie widzi przychodów ani ustawień; reszta operacji wymaga hasła właścicielki."""
+        """Asystentka nie widzi przychodów ani ustawień; reszta operacji wymaga hasła właściciela."""
         wl = self.jest_wlascicielka
         for i in (STRONA_PRZYCHODY, STRONA_USTAWIENIA):
             self.grupa.button(i).setVisible(wl)
@@ -4730,7 +4915,7 @@ class OknoGlowne(QMainWindow):
             self.przejdz(STRONA_NOWY)
 
     def zaloguj_haslem(self, haslo: str):
-        """Hasło właścicielki albo konta asystentki; asystentka poza godzinami pracy tylko za zgodą."""
+        """Hasło właściciela albo konta asystentki; asystentka poza godzinami pracy tylko za zgodą."""
         if self.baza.sprawdz_haslo(haslo):
             self._ustaw_uzytkownika(self.wlascicielka())
             return True
@@ -4738,20 +4923,21 @@ class OknoGlowne(QMainWindow):
         if not wynik or not self.baza.szyfr:
             return False
         wpis, klucz = wynik
-        if not hmac.compare_digest(klucz, self.baza.szyfr.klucz_hasla) or not self.baza.konto_aktywne(wpis["id"]):
+        konto = self.baza.konto(wpis["id"])
+        if not hmac.compare_digest(klucz, self.baza.szyfr.klucz_hasla) or not konto:
             return False
-        if powod := godziny.odmowa(self.baza.ustawienia(), wpis["rola"]):
+        if powod := godziny.odmowa(self.baza.ustawienia(), konto["rola"]):
             return powod
-        self._ustaw_uzytkownika({"id": wpis["id"], "nazwa": wpis["nazwa"], "rola": wpis["rola"]})
+        self._ustaw_uzytkownika(konto)
         return True
 
     def udziel_zgody(self) -> bool:
-        if OknoHasla(self.baza.sprawdz_haslo, "Zgoda właścicielki", self, self.dziennik, "zgoda na pracę po godzinach",
-                     "Praca asystentek po godzinach do końca dnia.\nPodaj hasło właścicielki.").exec() \
+        if OknoHasla(self.baza.sprawdz_haslo, "Zgoda właściciela", self, self.dziennik, "zgoda na pracę po godzinach",
+                     "Praca asystentek po godzinach do końca dnia.\nPodaj hasło właściciela.").exec() \
                 != QDialog.DialogCode.Accepted:
             return False
         godziny.udziel_zgody()
-        self.dziennik.zapisz("zgoda właścicielki na pracę po godzinach (do końca dnia)")
+        self.dziennik.zapisz("zgoda właściciela na pracę po godzinach (do końca dnia)")
         return True
 
     def okno_logowania(self, tytul: str, cel: str, opis: str) -> "OknoHasla":
@@ -4801,6 +4987,37 @@ class OknoGlowne(QMainWindow):
         self.dziennik.zapisz(f"zamknięcie dnia {dzis.isoformat()} ({len(dokumenty)} dok.)")
         self.komunikat(f"Wydrukowano zamknięcie dnia: {druk.zl(podsumuj(dokumenty).suma)} zł")
 
+    def zamknij_gabinet(self):
+        """Koniec dnia jednym przyciskiem: podsumowanie, opcjonalna kartka, kopia, przeglądarka, wylogowanie."""
+        asystentka_moze = not self.jest_wlascicielka and self.baza.ustawienia()["asystentki_zamkniecie_dnia"] == "1"
+        if not asystentka_moze and not self.potwierdz_haslem("zamknięcie gabinetu",
+                                                             "Podsumowanie zawiera kwoty, dlatego wymaga hasła."):
+            return
+        dzis = date.today()
+        dokumenty = [d for d in self.baza.dokumenty(rok=dzis.year, miesiac=dzis.month)
+                     if d.data_wystawienia == dzis.isoformat()]
+        okno = OknoZamykaniaGabinetu(self, dokumenty)
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return
+        if okno.kartka.isChecked():
+            wybor = self.ustawienia_wydruku(self, "Kartka podsumowująca", dokument=False, zawsze=True)
+            if wybor:
+                drukarka, u, _ = wybor
+                druk.drukuj(druk.html_zamkniecia_dnia(dokumenty, u, dzis), drukarka)
+        if okno.kopia.isChecked():
+            self.kopia_ciagla(wymus=True)
+        if okno.przegladarka.isChecked():
+            self.strona_internet.zamknij_przegladarki()
+        self.dziennik.zapisz(f"zamknięcie gabinetu ({len(dokumenty)} dok., {druk.zl(podsumuj(dokumenty).suma)} zł)")
+        g = godziny.wczytaj(self.baza.ustawienia()["godziny_pracy"])
+        nast = godziny.nastepne(g, datetime.now() + timedelta(minutes=1))
+        dalej = (f"Następne godziny pracy: {godziny.DNI[nast[0].weekday()]} {nast[0]:%H:%M}–{nast[1]:%H:%M}."
+                 if nast else "")
+        self.powiadom("Gabinet zamknięty", ("Kopia zapasowa zrobiona. " if okno.kopia.isChecked() else "") + dalej,
+                      "ok", czas_ms=8000)
+        if okno.wyloguj.isChecked() and self.baza.ma_haslo:
+            self.zablokuj()
+
     def obsluz_polecenie(self, polecenie: dict):
         """Polecenie od drugiej kopii programu: pokaż okno albo dodaj pliki (menu prawego przycisku)."""
         if polecenie.get("akcja") == "w_tle":
@@ -4839,8 +5056,8 @@ class OknoGlowne(QMainWindow):
         if (uciety or not self.dziennik.nienaruszony()) and not self._dziennik_zgloszony:
             self._dziennik_zgloszony = True
             problemy.append("Dziennik logowań został zmieniony, ucięty lub usunięto z niego wpisy.")
-        for p in problemy:
-            self.dziennik.zapisz(f"STRAŻNIK: {p}")
+        if problemy:  # bez treści: nazwy plików bywają nazwiskami pacjentów, a dziennik nie jest szyfrowany
+            self.dziennik.zapisz(f"STRAŻNIK: wykryto problemy z danymi ({len(problemy)})")
         if problemy:
             self.powiadom("Wykryto problem z danymi", "\n".join(problemy)[:400], "blad", czas_ms=12000)
             if self.isVisible():
@@ -5061,14 +5278,14 @@ def _zaloguj_konto(plik: Path, haslo: str, sekret: bytes | None, wynik: dict):
         baza = Baza(plik, None, sekret, klucz_hasla=klucz)
     except (BledneHaslo, WymaganeUrzadzenie, ValueError):
         return None
-    if not baza.konto_aktywne(wpis["id"]):
+    if not (dane_konta := baza.konto(wpis["id"])):
         baza.zamknij()
         return None
-    if powod := godziny.odmowa(baza.ustawienia(), wpis["rola"]):
+    if powod := godziny.odmowa(baza.ustawienia(), dane_konta["rola"]):
         baza.zamknij()
         return powod
     wynik["baza"] = baza
-    wynik["uzytkownik"] = {"id": wpis["id"], "nazwa": wpis["nazwa"], "rola": wpis["rola"]}
+    wynik["uzytkownik"] = dane_konta
     return True
 
 
@@ -5098,6 +5315,15 @@ def _nowe_urzadzenie(plik: Path, haslo: str, dziennik: Dziennik, wynik: dict) ->
         pass  # bez zapamiętania: przy następnym uruchomieniu znów zapyta o kod
     dziennik.zapisz(f"weryfikacja urządzenia: nowe urządzenie {urzadzenie.nazwa_urzadzenia()} (kod odzyskiwania)")
     return True
+
+
+def znacznik_szyfrowania(ustaw: bool | None = None) -> bool:
+    """Zapamiętane w rejestrze użytkownika (HKCU), że dane są szyfrowane: wtedy plik bez szyfrowania
+    w miejscu danych oznacza podmianę z zewnątrz i nie zostanie otwarty."""
+    ustawienia = QSettings("Fakturnik", "Fakturnik")
+    if ustaw is not None:
+        ustawienia.setValue("dane_zaszyfrowane", int(ustaw))
+    return str(ustawienia.value("dane_zaszyfrowane", 0)) == "1"
 
 
 def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dziennik,
@@ -5164,13 +5390,13 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
             return False
 
         def zgoda() -> bool:
-            if OknoHasla(lambda h: Baza.da_sie_otworzyc(plik, h, sekret), "Zgoda właścicielki", dziennik=dziennik,
+            if OknoHasla(lambda h: Baza.da_sie_otworzyc(plik, h, sekret), "Zgoda właściciela", dziennik=dziennik,
                          cel="zgoda na pracę po godzinach",
-                         opis="Praca asystentek po godzinach do końca dnia.\nPodaj hasło właścicielki.").exec() \
+                         opis="Praca asystentek po godzinach do końca dnia.\nPodaj hasło właściciela.").exec() \
                     != QDialog.DialogCode.Accepted:
                 return False
             godziny.udziel_zgody()
-            dziennik.zapisz("zgoda właścicielki na pracę po godzinach (do końca dnia)")
+            dziennik.zapisz("zgoda właściciela na pracę po godzinach (do końca dnia)")
             return True
 
         if OknoHasla(sprawdz, dziennik=dziennik, opis="Podaj swoje hasło, aby otworzyć program.",
@@ -5181,6 +5407,17 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
             raise wynik["blad"]
         baza = wynik["baza"]
     else:
+        if plik.exists() and znacznik_szyfrowania():
+            dziennik.zapisz("STRAŻNIK: plik danych bez szyfrowania zamiast zaszyfrowanego (podmiana)")
+            haslo, ok = QInputDialog.getText(
+                None, "Fakturnik", "Plik danych został podmieniony na niezaszyfrowany (zmiana z zewnątrz).\n"
+                "Nie zostanie otwarty. Podaj hasło, aby przywrócić ostatnią zaszyfrowaną kopię:",
+                QLineEdit.EchoMode.Password)
+            if not ok or not _zaproponuj_kopie(plik, haslo, "Podmieniony plik danych.", dziennik):
+                QMessageBox.critical(None, "Fakturnik", "Nie otwarto podmienionego pliku danych:\n"
+                                     f"{plik}\n\nPrzywróć zaszyfrowaną kopię z katalogu:\n{katalog_kopii()}")
+                return 1, None
+            return _otworz(app, plik, dziennik, jedna, polecenie)
         try:
             baza = Baza(plik)
         except ValueError:
@@ -5197,6 +5434,8 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
     except OSError:
         pass
 
+    if baza.ma_haslo:
+        znacznik_szyfrowania(True)
     okno = OknoGlowne(baza, dziennik, wynik.get("uzytkownik"))
     jedna.polecenie.connect(okno.obsluz_polecenie)
     if w_tle and okno._w_tle_dostepne() and baza.ustawienia()["skonfigurowano"] == "1":

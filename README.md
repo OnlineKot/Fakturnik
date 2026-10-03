@@ -168,14 +168,18 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   sesję. Opcjonalnie tylko zaufane strony (gov.pl, zakładki i dopisane domeny).
 - **Konta asystentek**: każda loguje się własnym hasłem (bez nazwy użytkownika). Asystentka wystawia
   dokumenty, szuka w historii, drukuje i dodaje pliki; przychody i ustawienia są dla niej ukryte,
-  a eksporty, anulowanie, edycja i korekty wymagają hasła właścicielki. Każdy dokument zapamiętuje,
+  a eksporty, anulowanie, edycja i korekty wymagają hasła właściciela. Każdy dokument zapamiętuje,
   kto go wystawił (kolumna w Historii, opcjonalnie na wydruku), a dziennik, kto co zrobił. Dane zostają
   zaszyfrowane: konto ma własny klucz, a usunięcie konta odbiera dostęp od razu.
 - **Godziny pracy** (domyślnie wt 12–18, śr 10–17, czw 12–18, pt 8–14; do zmiany w Ustawieniach):
   przypomnienie przed końcem (z szybkim zamknięciem dnia), po godzinach wylogowanie asystentek
-  (opcjonalnie wszystkich), a ponowne zalogowanie asystentki po godzinach tylko za zgodą właścicielki.
+  (opcjonalnie wszystkich), a ponowne zalogowanie asystentki po godzinach tylko za zgodą właściciela.
   Ekran blokady pokazuje zegar, gabinet i najbliższe godziny pracy.
-- **Narzędzia**: dane firmy po NIP z oficjalnej białej listy VAT (Ministerstwo Finansów) z przyciskiem
+- **Zamykam gabinet** (przycisk w menu, w menu ikony obok zegara i w przypomnieniu o końcu godzin):
+  podsumowanie dnia (dokumenty, gotówka, karta, przelew), opcjonalna kartka podsumowująca do druku,
+  kopia zapasowa od razu, zamknięcie przeglądarki i wylogowanie.
+- **Narzędzia**: stoper, minutnik (szybkie 1–15 min, powiadomienie i dźwięk po czasie), kalkulator
+  (tylko działania, bez wykonywania kodu), dane firmy po NIP z oficjalnej białej listy VAT (Ministerstwo Finansów) z przyciskiem
   „Wystaw fakturę dla tej firmy” (także w formularzu faktury), sprawdzanie PESEL/NIP/numeru konta,
   kwota słownie i wspólny, zaszyfrowany notatnik gabinetu.
 - **Powiadomienia do ustawienia**: czas wyświetlania, dźwięk, powiadomienie startowe, blokada razem
@@ -218,6 +222,23 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   odmówi otwarcia danych z nowszej, zamiast je uszkodzić.
 
 Dane programu: `%APPDATA%\Fakturnik\Fakturnik\fakturnik.db`, dziennik obok (`dziennik.log`).
+
+## Audyt bezpieczeństwa (wersja 1.0.24)
+
+Poprawione:
+- Rola i nazwa konta asystentki są brane z zaszyfrowanych danych, nie z pliku `konta.json`. Edycja tego pliku nie da już roli właściciela.
+- Gdy dane były zaszyfrowane, plik bez szyfrowania podłożony w ich miejsce nie zostanie otwarty. Program proponuje przywrócenie ostatniej zaszyfrowanej kopii. Kopia bez szyfrowania nie zastąpi też zaszyfrowanych danych przy odtwarzaniu.
+- Usługa kopii (konto SYSTEM) nie idzie za dowiązaniami ani junctionami, kopiuje tylko pliki Fakturnika i ma limit rozmiaru pliku.
+- Kopie chronione każdego użytkownika może czytać tylko on sam (oraz SYSTEM i Administratorzy).
+- Instalator przejmuje katalog `ProgramData\Fakturnik` na Administratorów, nawet jeśli wcześniej założył go ktoś inny. Starą wersję odinstalowuje bez uprawnień administratora.
+- Przeglądarka pobiera tylko dozwolone typy plików: PDF, obrazy, XML, ZIP, dokumenty bez makr. Strony `http://` zawsze przechodzą na `https://`.
+- Dziennik nie zapisuje nazw plików, które mogą zawierać nazwiska pacjentów.
+- Program ignoruje zmienne środowiskowe wskazujące obce wtyczki Qt.
+
+Znane ograniczenia (do zrobienia w przyszłości):
+- Pliki programu nie mają jeszcze podpisu cyfrowego (certyfikat Authenticode). Aktualizacja sprawdza sumę SHA-256 z wydania, ale nie podpis.
+- Asystentka zna klucz danych, więc po usunięciu jej konta warto zmienić hasło właściciela. Pełne unieważnienie dostępu wymaga przebudowy szyfrowania kont.
+- Hasło przy odinstalowaniu tylko utrudnia odinstalowanie. Administrator komputera zawsze może usunąć program.
 
 ## Uwaga o KSeF
 

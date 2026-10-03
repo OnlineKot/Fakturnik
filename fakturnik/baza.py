@@ -64,11 +64,11 @@ DOMYSLNE_USTAWIENIA = {
     "powiadomienia_sekund": "6",         # jak długo widać powiadomienie
     "powiadomienia_dzwiek": "0",         # "1" = dźwięk przy powiadomieniu
     "blokuj_z_komputerem": "1",          # "1" = blokada Windows blokuje też Fakturnik
-    "nazwa_wlascicielki": "Właścicielka",  # nazwa konta właścicielki (w dzienniku i na dokumentach)
+    "nazwa_wlascicielki": "Właściciel",  # nazwa konta właściciela (w dzienniku i na dokumentach)
     "godziny_pracy": "",               # JSON {0=pon..6=nd: "GG:MM-GG:MM"}; puste = wt 12-18, śr 10-17, czw 12-18, pt 8-14
     "przypomnienie_min": "15",          # ile minut przed końcem godzin przypomnieć
     "wyloguj_po_godzinach": "asystentki",  # "asystentki", "wszyscy" albo "nikt"
-    "asystentki_zamkniecie_dnia": "1",  # "1" = asystentka może zrobić zamknięcie dnia bez hasła właścicielki
+    "asystentki_zamkniecie_dnia": "1",  # "1" = asystentka może zrobić zamknięcie dnia bez hasła właściciela
     "druk_wystawil": "1",               # "1" = „Wystawił(a): …” na dokumencie
     "notatki": "",                      # wspólny notatnik gabinetu (w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
@@ -107,7 +107,7 @@ class Dokument:
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
     termin_platnosci: str = ""   # RRRR-MM-DD, przy przelewie
-    wystawil: str = ""           # kto wystawił (konto właścicielki lub asystentki)
+    wystawil: str = ""           # kto wystawił (konto właściciela lub asystentki)
     # faktura korygująca (rodzaj "Korekta"): której faktury dotyczy, dlaczego i jak wyglądała przed korektą
     korekta_do: str = ""         # numer korygowanej faktury
     korekta_data: str = ""       # data wystawienia korygowanej faktury
@@ -378,7 +378,8 @@ class Baza:
                 if haslo is None:
                     return False
                 dane, _ = Szyfr.otworz(dane, haslo, sekret)
-            elif not dane.startswith(b"SQLite format 3"):
+            elif haslo is not None or not dane.startswith(b"SQLite format 3"):
+                # dane chronione hasłem nie mogą zostać zastąpione plikiem bez szyfrowania
                 return False
             db = sqlite3.connect(":memory:")
             db.deserialize(dane)
@@ -440,9 +441,14 @@ class Baza:
     def konto_aktywne(self, id_: str) -> bool:
         return id_ in self._klucze_kont()
 
+    def konto(self, id_: str) -> dict | None:
+        """Rola i nazwa konta z zaszyfrowanych danych (plik kont da się edytować, więc mu nie ufamy)."""
+        k = self._klucze_kont().get(id_)
+        return {"id": id_, "nazwa": k["nazwa"], "rola": k["rola"]} if k else None
+
     def dodaj_konto(self, nazwa: str, haslo: str, rola: str = "asystentka") -> str:
         if not self.szyfr:
-            raise PermissionError("Konta asystentek wymagają hasła właścicielki (szyfrowania danych).")
+            raise PermissionError("Konta asystentek wymagają hasła właściciela (szyfrowania danych).")
         nazwa = nazwa.strip()
         if not nazwa or any(k["nazwa"].lower() == nazwa.lower() for k in self.konta()):
             raise ValueError("Podaj inną nazwę konta (np. imię asystentki).")
@@ -475,7 +481,7 @@ class Baza:
         konta.zapisz(self.sciezka.parent, [w for w in wpisy if w["id"] != id_] + [nowy])
 
     def _odnow_konta(self) -> None:
-        """Po zmianie hasła właścicielki: klucze danych wszystkich kont na nowo (bez haseł asystentek)."""
+        """Po zmianie hasła właściciela: klucze danych wszystkich kont na nowo (bez haseł asystentek)."""
         klucze = self._klucze_kont()
         wpisy = konta.wczytaj(self.sciezka.parent)
         if not wpisy:

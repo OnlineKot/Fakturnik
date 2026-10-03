@@ -75,6 +75,9 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.webp\shell\Fakturn
 
 [Run]
 ; kopie chronione: pełny dostęp tylko SYSTEM i Administratorzy, zwykli użytkownicy tylko czytają (i przywracają)
+; katalog mógł założyć wcześniej zwykły użytkownik: najpierw właścicielem zostają Administratorzy i znikają cudze uprawnienia
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Fakturnik"" /setowner *S-1-5-32-544 /T /C /Q"; Flags: runhidden waituntilterminated
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Fakturnik"" /reset /T /C /Q"; Flags: runhidden waituntilterminated
 Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Fakturnik"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX"; Flags: runhidden waituntilterminated; StatusMsg: "Zabezpieczanie katalogu kopii..."
 ; usługa kopii i aktualizacji: co godzinę oraz 5 minut po starcie komputera, z konta SYSTEM
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC HOURLY /TN ""Fakturnik\Kopie co godzine"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated; StatusMsg: "Włączanie usługi kopii..."
@@ -108,11 +111,12 @@ var
   Kod: Integer;
 begin
   Result := '';
+  { wpis w HKCU może zmienić każdy program użytkownika, więc uruchamiamy go bez uprawnień administratora }
   if RegQueryStringValue(HKCU, StaryKlucz, 'UninstallString', Odinstaluj) then
   begin
     Odinstaluj := RemoveQuotes(Odinstaluj);
     if FileExists(Odinstaluj) then
-      Exec(Odinstaluj, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Kod);
+      ExecAsOriginalUser(Odinstaluj, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Kod);
   end;
 end;
 

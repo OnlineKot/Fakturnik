@@ -27,15 +27,15 @@ ZAKLADKI = [
     ("REGON", "https://wyszukiwarkaregon.stat.gov.pl/"),
     ("ZUS PUE/eZUS", "https://www.zus.pl/portal/logowanie.npi"),
 ]
-NIEBEZPIECZNE = {".exe", ".msi", ".msix", ".bat", ".cmd", ".com", ".scr", ".ps1", ".psm1", ".vbs", ".vbe", ".js",
-                 ".jse", ".wsf", ".wsh", ".hta", ".jar", ".dll", ".sys", ".lnk", ".reg", ".cpl", ".msc", ".pif",
-                 ".appx", ".appxbundle", ".application", ".iso", ".img", ".vhd", ".vhdx", ".chm", ".docm", ".xlsm",
-                 ".pptm"}
+# lista dozwolonych typów (zamiast listy zakazanych: nowych groźnych rozszerzeń nie da się przewidzieć)
+DOZWOLONE = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".xml", ".zip",
+             ".txt", ".csv", ".docx", ".xlsx", ".odt", ".ods", ".rtf", ".dcm", ".stl", ".epp", ".xades", ".sig"}
 
 
 def plik_niebezpieczny(nazwa: str) -> bool:
-    nazwa = nazwa.lower().strip().rstrip(".")
-    return any(nazwa.endswith(roz) for roz in NIEBEZPIECZNE)
+    """Pobierać wolno tylko dokumenty, obrazy i archiwa z listy DOZWOLONE (bez makr i plików wykonywalnych)."""
+    nazwa = nazwa.lower().strip().rstrip(". ")
+    return Path(nazwa).suffix not in DOZWOLONE
 
 
 def host_dozwolony(host: str, zaufane: list[str]) -> bool:
@@ -87,7 +87,7 @@ class Przegladarka(QWidget):
         class Straznik(QWebEngineUrlRequestInterceptor):
             def interceptRequest(self, info):
                 url = info.requestUrl()
-                if url.scheme() == "http" and url.host() not in ("localhost", "127.0.0.1"):
+                if url.scheme() == "http":
                     https = QUrl(url)
                     https.setScheme("https")
                     info.redirect(https)

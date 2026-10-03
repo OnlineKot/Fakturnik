@@ -1,12 +1,12 @@
 """Konta asystentek: każda loguje się własnym hasłem (bez nazwy użytkownika), a dane zostają zaszyfrowane.
 
-Plik danych szyfruje klucz z hasła właścicielki. Żeby asystentka mogła go otworzyć bez znajomości tego
+Plik danych szyfruje klucz z hasła właściciela. Żeby asystentka mogła go otworzyć bez znajomości tego
 hasła, każde konto ma w pliku konta.json:
   * losowy klucz konta (KA), zaszyfrowany kluczem z hasła asystentki (PBKDF2-SHA256, AES-256-GCM),
-  * klucz danych (z hasła właścicielki), zaszyfrowany kluczem konta KA.
-Klucze kont są też zapisane w zaszyfrowanych danych, więc gdy właścicielka zmienia hasło, program
+  * klucz danych (z hasła właściciela), zaszyfrowany kluczem konta KA.
+Klucze kont są też zapisane w zaszyfrowanych danych, więc gdy właściciel zmienia hasło, program
 przepisuje klucze wszystkich kont bez pytania asystentek o hasła. Usunięcie konta kasuje jego wpis
-i klucz; po usunięciu zalecana jest zmiana hasła właścicielki (unieważnia stare kopie pliku kont).
+i klucz; po usunięciu zalecana jest zmiana hasła właściciela (unieważnia stare kopie pliku kont).
 Wpisu nie da się podrobić ani podmienić: bez klucza danych nie powstanie poprawny wpis, a identyfikator
 konta jest uwierzytelniony (AAD).
 """
@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .szyfrowanie import klucz_z_hasla
 
 PLIK_KONT = "konta.json"
-ROLE = {"wlascicielka": "właścicielka", "asystentka": "asystentka"}
+ROLE = {"wlascicielka": "właściciel", "asystentka": "asystentka"}
 
 
 def _b64(dane: bytes) -> str:
@@ -69,7 +69,7 @@ def nowe_haslo(wpis: dict, haslo: str, klucz_konta: bytes, klucz_danych: bytes) 
 
 
 def odnow_klucz_danych(wpis: dict, klucz_konta: bytes, klucz_danych: bytes) -> dict:
-    """Po zmianie hasła właścicielki: nowy klucz danych dla konta (hasło asystentki bez zmian)."""
+    """Po zmianie hasła właściciela: nowy klucz danych dla konta (hasło asystentki bez zmian)."""
     n2 = os.urandom(12)
     return dict(wpis, n2=_b64(n2), dane=_b64(AESGCM(klucz_konta).encrypt(n2, klucz_danych,
                                                                           f"dane:{wpis['id']}".encode())))
