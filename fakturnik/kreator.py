@@ -350,7 +350,7 @@ class Kreator(QDialog):
             n = (self.cennik.item(r, 0).text() if self.cennik.item(r, 0) else "").strip().replace(";", ",")
             c = liczba(self.cennik.item(r, 1).text()) if self.cennik.item(r, 1) else 0
             if n:
-                wynik.append(f"{n};{c:g}")
+                wynik.append(f"{n};{c:.2f}")
         return wynik
 
     def _sprawdz_krok(self) -> str:

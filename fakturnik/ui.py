@@ -1,10 +1,14 @@
 """Okno główne programu Fakturnik."""
 
 import base64
+import math
+import re
 from html import escape as html_escape
+import os
 import sys
 import time
-from datetime import date
+import zipfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -25,7 +29,7 @@ from PySide6.QtWidgets import (
 from . import aktualizacje, druk, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
-from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna
+from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
 from .system import (
     JednaKopia, autostart_wlaczony, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
     ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
@@ -188,11 +192,38 @@ def sciezka_danych() -> Path:
     return Path(katalog) / "fakturnik.db"
 
 
+def zapytanie_dozwolone(tekst: str) -> bool:
+    """Bez hasła lista pokazuje tylko trafienia konkretnego wyszukiwania, a nie „wszystko z 2026 roku”:
+    co najmniej 3 litery nazwiska, pełny PESEL/NIP albo pełny numer dokumentu."""
+    t = tekst.strip()
+    if sum(c.isalpha() for c in t) >= 3:
+        return True
+    cyfry = re.sub(r"[\s-]", "", t)
+    if cyfry.isdigit() and len(cyfry) >= 10:
+        return True
+    return bool(re.fullmatch(r"([A-Za-z]+/)?\d+/\d{1,2}/\d{2,4}", t))
+
+
+def liczba_lub_none(tekst: str) -> float | None:
+    """Kwota lub ilość wpisana po polsku: „1 200,50”, „1.200,50”, „150 zł”, „2”. None = nie da się odczytać."""
+    t = tekst.strip().lower().replace("zł", "").replace("zl", "")
+    t = t.replace(" ", "").replace("\xa0", "")
+    if re.fullmatch(r"-?\d{1,3}(\.\d{3})+(,\d+)?", t):
+        t = t.replace(".", "")  # kropki jako separator tysięcy
+    t = t.replace(",", ".")
+    if not re.fullmatch(r"-?\d+(\.\d+)?|-?\.\d+", t):
+        return None
+    wartosc = float(t)
+    return wartosc if math.isfinite(wartosc) and abs(wartosc) < 1e9 else None
+
+
 def liczba(tekst: str) -> float:
-    try:
-        return float(tekst.replace(" ", "").replace("\xa0", "").replace(",", "."))
-    except ValueError:
-        return 0.0
+    return liczba_lub_none(tekst) or 0.0
+
+
+def ilosc_z_tekstu(tekst: str) -> float | None:
+    """Puste pole ilości = 1; inaczej liczba (None, gdy nieczytelna)."""
+    return 1.0 if not tekst.strip() else liczba_lub_none(tekst)
 
 
 class UkladPlynny(QLayout):
@@ -657,6 +688,8 @@ class StronaPulpit(Strona):
         self._docs: list[Dokument] = []
 
     def _nowy(self, rodzaj: str):
+        if not self.okno.strona_nowy.porzuc_tryb():
+            return
         self.okno.przejdz(STRONA_NOWY)
         self.okno.strona_nowy.ustaw_rodzaj(rodzaj)
         self.okno.strona_nowy.nabywca.setFocus()
@@ -711,8 +744,10 @@ class StronaPulpit(Strona):
             self.k_przychod_zm.setText(f"{okres}: {druk.zl(do_dnia.suma)} zł")
         wszystkie_teraz = baza.dokumenty(rok=dzis.year, miesiac=dzis.month)
         faktur = sum(1 for d in wszystkie_teraz if d.wazny and d.tytul == "Faktura")
+        rachunkow = sum(1 for d in wszystkie_teraz if d.wazny and d.tytul == "Rachunek")
+        korekt = sum(1 for d in wszystkie_teraz if d.wazny and d.jest_korekta)
         self.k_liczba.setText(str(teraz.liczba))
-        self.k_liczba_zm.setText(f"rachunki: {teraz.liczba - faktur}, faktury: {faktur}")
+        self.k_liczba_zm.setText(f"rachunki: {rachunkow}, faktury: {faktur}" + (f", korekty: {korekt}" if korekt else ""))
         wczesniej = podsumuj(baza.dokumenty(rok=pr, miesiac=pm))
         self.k_srednia.setText(f"{druk.zl(teraz.suma / teraz.liczba) if teraz.liczba else '0,00'} zł")
         self.k_srednia_zm.setText(f"w {MIESIACE_MIEJSC[pm - 1]}: "
@@ -974,6 +1009,7 @@ class StronaNowy(Strona):
         self.btn_anuluj_edycje.hide()
         dol.addWidget(self.btn_anuluj_edycje)
         self.edytowany: Dokument | None = None
+        self.korygowany: Dokument | None = None  # faktura, do której wystawiamy fakturę korygującą
         self.drukuj_btn = przycisk("Drukuj", "drukarka", "glowny", self.glowna_akcja)
         self.drukuj_btn.setToolTip("F5 lub Ctrl+P")
         dol.addWidget(self.drukuj_btn)
@@ -1071,7 +1107,7 @@ class StronaNowy(Strona):
         if ostatni:
             ile = len(self.pozycje())
             self.podsumowanie_tekst.setText(
-                f"<b>{self.rodzaj}</b> dla <b>{html_escape(self.nabywca.text().strip()) or '…'}</b><br>"
+                f"<b>{'Faktura korygująca' if self.korygowany else self.rodzaj}</b> dla <b>{html_escape(self.nabywca.text().strip()) or '…'}</b><br>"
                 f"Pozycji: {ile}, razem <b>{druk.zl(sum(p.wartosc for p in self.pozycje()))} zł</b>")
             self.zaplanuj_podglad()
         elif self.krok == 0:
@@ -1085,6 +1121,7 @@ class StronaNowy(Strona):
             self.drukuj()
 
     def zaladuj_do_edycji(self, dok: Dokument):
+        self.korygowany = None
         self.edytowany = dok
         self.ustaw_rodzaj(dok.tytul)
         for b in self.rodzaj_grupa.buttons():
@@ -1128,8 +1165,38 @@ class StronaNowy(Strona):
         self.okno.przejdz(STRONA_HISTORIA)
         self.okno.podglad(self.okno.baza.dokument(dok.id), duplikat=True)
 
+    def porzuc_tryb(self) -> bool:
+        """Przed nowym dokumentem: wyjście z edycji lub korekty (po potwierdzeniu)."""
+        if not (self.edytowany or self.korygowany):
+            return True
+        if QMessageBox.question(self, "Nowy dokument", "Trwa edycja lub korekta dokumentu. Porzucić zmiany?") \
+                != QMessageBox.StandardButton.Yes:
+            return False
+        self.zakoncz_edycje()
+        return True
+
+    def zaladuj_do_korekty(self, dok: Dokument):
+        """Faktura korygująca (art. 106j): pozycje i dane nabywcy z faktury, którą poprawiamy."""
+        self.zakoncz_edycje()
+        self.korygowany = dok
+        for b in self.rodzaj_grupa.buttons():
+            b.setEnabled(False)
+        self.platnosc.setCurrentText(dok.platnosc)
+        self.nabywca.setText(dok.nabywca)
+        self.nabywca_id.setText(dok.nabywca_id)
+        self.nabywca_adres.setText(dok.nabywca_adres.replace("\n", ", "))
+        self.data_uslugi.setDate(QDate.fromString(dok.data_uslugi, "yyyy-MM-dd"))
+        self.tabela.setRowCount(0)
+        for p in dok.pozycje:
+            self.dodaj_pozycje(p.nazwa, p.cena, p.ilosc)
+        self.drukuj_btn.setText("Wystaw korektę")
+        self.btn_anuluj_edycje.show()
+        self.zmien_rodzaj()
+        self.pokaz_krok(1 if self.tryb != "zaawansowany" else 0)
+
     def zakoncz_edycje(self):
         self.edytowany = None
+        self.korygowany = None
         for b in self.rodzaj_grupa.buttons():
             b.setEnabled(True)
         self.numer.setReadOnly(False)
@@ -1153,7 +1220,20 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
-            pozycje=self.pozycje())
+            pozycje=self.pozycje(),
+            **self._pola_dodatkowe())
+
+    def _pola_dodatkowe(self) -> dict:
+        """Termin płatności (przelew) i dane faktury korygowanej."""
+        pola = {}
+        if self.platnosc.currentText() == "przelew":
+            dni = int(liczba(self.okno.baza.ustawienia()["termin_dni"]) or 0)
+            pola["termin_platnosci"] = (self.data_wyst.date().toPython() + timedelta(days=dni)).isoformat()
+        if self.korygowany:
+            k = self.korygowany
+            pola.update(korekta_do=k.numer, korekta_data=k.data_wystawienia, korekta_id=k.id or 0,
+                        pozycje_przed=[Pozycja(p.nazwa, p.ilosc, p.cena, p.jm) for p in k.pozycje])
+        return pola
 
     def odswiez_podglad(self):
         if self.ramka_podgladu.isVisible() or not self.isVisible():
@@ -1171,7 +1251,10 @@ class StronaNowy(Strona):
         okno = OknoPacjentow(self.okno.baza, self, self.nabywca.text().strip(), self.okno.potwierdz_haslem)
         wynik = okno.exec()
         tekst, ident, adres = self.nabywca.text(), self.nabywca_id.text(), self.nabywca_adres.text()
+        numer, kopia = self.numer.text(), self.kopia.isChecked()
         self.odswiez()  # lista podpowiedzi mogła się zmienić (nowi lub poprawieni pacjenci)
+        self.numer.setText(numer)
+        self.kopia.setChecked(kopia)
         self.nabywca.setText(tekst)
         self.nabywca_id.setText(ident)
         self.nabywca_adres.setText(adres)
@@ -1184,6 +1267,11 @@ class StronaNowy(Strona):
     # ---- dane z formularza
     def odswiez(self):
         u = self.okno.baza.ustawienia()
+        dzis = QDate.currentDate()
+        if not (self.edytowany or self.korygowany or self.ma_niezapisane()) and self.data_wyst.date() < dzis:
+            # program działa w tle całymi dniami: pusty formularz zawsze zaczyna od dzisiejszej daty
+            self.data_wyst.setDate(dzis)
+            self.data_uslugi.setDate(dzis)
         self.kopia.setChecked(u["kopia"] == "1")
         wyczysc_uklad(self.przyciski_uslug)
         for linia in u["uslugi"].splitlines():
@@ -1205,6 +1293,8 @@ class StronaNowy(Strona):
 
     @property
     def rodzaj(self) -> str:
+        if self.korygowany:
+            return "Korekta"
         return "Faktura" if self.rodzaj_grupa.checkedId() == 1 else "Rachunek"
 
     def ustaw_rodzaj(self, rodzaj: str):
@@ -1217,11 +1307,14 @@ class StronaNowy(Strona):
         if self.edytowany:
             tytul.setText(f"Edycja: {self.edytowany.tytul.lower()} nr {self.edytowany.numer}")
             podtytul.setText("Numer zostaje bez zmian. Poprzednia wersja trafi do historii zmian.")
+        elif self.korygowany:
+            tytul.setText(f"Korekta faktury nr {self.korygowany.numer}")
+            podtytul.setText("Wpisz pozycje tak, jak powinny wyglądać po korekcie. Wydruk pokaże stan przed i po.")
         else:
             tytul.setText("Nowa faktura" if self.rodzaj == "Faktura" else "Nowy rachunek")
             podtytul.setText("Numer nadaje się sam: kolejny w danym miesiącu.")
         self.zaplanuj_podglad()
-        self.etykieta_nabywcy.setText("Nabywca (pacjent lub firma)" if self.rodzaj == "Faktura" else "Pacjent")
+        self.etykieta_nabywcy.setText("Nabywca (pacjent lub firma)" if self.rodzaj != "Rachunek" else "Pacjent")
         self.odswiez_numer()
 
     def odswiez_numer(self):
@@ -1283,15 +1376,28 @@ class StronaNowy(Strona):
         for r in range(self.tabela.rowCount()):
             nazwa = self.tabela.item(r, 0).text().strip()
             if nazwa:
-                wynik.append(Pozycja(nazwa, liczba(self.tabela.item(r, 1).text()) or 1,
+                wynik.append(Pozycja(nazwa, ilosc_z_tekstu(self.tabela.item(r, 1).text()) or 0.0,
                                      liczba(self.tabela.item(r, 2).text())))
         return wynik
+
+    def bledne_wiersze(self) -> list[int]:
+        """Numery wierszy (od 1) z usługą, w których ilości lub ceny nie da się odczytać albo ilość jest zerowa."""
+        bledne = []
+        for r in range(self.tabela.rowCount()):
+            if not self.tabela.item(r, 0).text().strip():
+                continue
+            ilosc = ilosc_z_tekstu(self.tabela.item(r, 1).text())
+            cena_tekst = self.tabela.item(r, 2).text()
+            cena = liczba_lub_none(cena_tekst) if cena_tekst.strip() else 0.0
+            if not ilosc or ilosc <= 0 or cena is None or cena < 0:
+                bledne.append(r + 1)
+        return bledne
 
     def przelicz(self, *_):
         self.tabela.blockSignals(True)
         suma = 0.0
         for r in range(self.tabela.rowCount()):
-            w = liczba(self.tabela.item(r, 1).text()) * liczba(self.tabela.item(r, 2).text())
+            w = (ilosc_z_tekstu(self.tabela.item(r, 1).text()) or 0.0) * liczba(self.tabela.item(r, 2).text())
             self.tabela.item(r, 3).setText(druk.zl(w) if w else "")
             suma += w
         self.tabela.blockSignals(False)
@@ -1305,8 +1411,14 @@ class StronaNowy(Strona):
             self.nabywca.setFocus()
             return None
         pozycje = self.pozycje()
-        if not pozycje:
+        if not pozycje and not self.korygowany:
             QMessageBox.warning(self, "Brak usług", "Dodaj przynajmniej jedną usługę.")
+            return None
+        if bledne := self.bledne_wiersze():
+            QMessageBox.warning(self, "Usługi", f"Sprawdź ilość i cenę w wierszu {', '.join(map(str, bledne))}: "
+                                "ilość musi być większa od zera, a cena liczbą (np. 150 albo 1 200,50).")
+            return None
+        if not self._dane_faktury_kompletne():
             return None
         return Dokument(
             numer=self.numer.text().strip(),
@@ -1317,7 +1429,29 @@ class StronaNowy(Strona):
             nabywca_adres=self.nabywca_adres.text().strip(),
             nabywca_id=self.nabywca_id.text().strip(),
             rodzaj=self.rodzaj,
-            pozycje=pozycje)
+            pozycje=pozycje,
+            **self._pola_dodatkowe())
+
+    def _dane_faktury_kompletne(self) -> bool:
+        """Elementy obowiązkowe faktury (art. 106e ustawy o VAT) przed jej wystawieniem."""
+        if self.rodzaj == "Rachunek":
+            return True
+        u = self.okno.baza.ustawienia()
+        braki = [n for n, k in (("nazwa gabinetu", "nazwa"), ("adres gabinetu", "adres"), ("NIP gabinetu", "nip"),
+                                ("podstawa zwolnienia z VAT (adnotacja)", "adnotacja")) if not u[k].strip()]
+        if braki:
+            QMessageBox.warning(self, "Faktura niekompletna",
+                                "Na fakturze muszą być: " + ", ".join(braki) + ".\n\nUzupełnij je w Ustawieniach.")
+            return False
+        if not self.nabywca_adres.text().strip():
+            QMessageBox.warning(self, "Faktura niekompletna", "Na fakturze musi być adres nabywcy.")
+            self.nabywca_adres.setFocus()
+            return False
+        if self.platnosc.currentText() == "przelew" and not u["konto"].strip() and QMessageBox.question(
+                self, "Brak numeru konta", "Płatność przelewem, ale w Ustawieniach nie ma numeru konta gabinetu. "
+                "Wystawić mimo to?") != QMessageBox.StandardButton.Yes:
+            return False
+        return True
 
     def ma_niezapisane(self) -> bool:
         if self.nabywca.text().strip():
@@ -1346,6 +1480,13 @@ class StronaNowy(Strona):
         if not dok.numer:
             QMessageBox.warning(self, "Brak numeru", "Wpisz numer dokumentu.")
             return None
+        if self.korygowany:
+            powod, ok = QInputDialog.getText(self, "Faktura korygująca",
+                                             f"Przyczyna korekty faktury nr {self.korygowany.numer}:\n"
+                                             "(np. błędna cena, zwrot za niewykonaną usługę, błąd w danych nabywcy)")
+            if not ok or not powod.strip():
+                return None
+            dok.powod_korekty = powod.strip()
         if self.okno.baza.numer_istnieje(dok.numer):
             odp = QMessageBox.question(self, "Numer już użyty",
                                        f"Dokument nr {dok.numer} już istnieje. Wystawić mimo to?")
@@ -1363,8 +1504,8 @@ class StronaNowy(Strona):
         drukarka, u, z_kopia = wybor
         self.okno.baza.zapisz_dokument(dok)
         druk.drukuj(druk.html_dokumentu(dok, u, z_kopia), drukarka)
-        self.okno.komunikat(f"Wydrukowano: {dok.tytul.lower()} nr {dok.numer}")
-        self.wyczysc()
+        self.okno.komunikat(f"Wydrukowano: {dok.nazwa_druku.lower()} nr {dok.numer}")
+        self.zakoncz_edycje()
 
     def zapisz_pdf(self):
         dok = self._zatwierdz()
@@ -1378,7 +1519,7 @@ class StronaNowy(Strona):
         self.okno.baza.zapisz_dokument(dok)
         druk.drukuj(druk.html_dokumentu(dok, u, self.kopia.isChecked()), druk.przygotuj_drukarke(u, sciezka))
         self.okno.komunikat(f"Zapisano PDF: {sciezka}")
-        self.wyczysc()
+        self.zakoncz_edycje()
 
     def podglad(self):
         dok = self.dokument()
@@ -1435,7 +1576,7 @@ class OknoPacjentow(QDialog):
         self.tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tabela.doubleClicked.connect(self.wybierz)
         ku.addWidget(self.tabela)
-        self.zaslona_listy = QLabel("Wpisz co najmniej 2 litery nazwiska albo PESEL, aby wyszukać pacjenta.",
+        self.zaslona_listy = QLabel("Wpisz co najmniej 3 litery nazwiska albo cały PESEL, aby wyszukać pacjenta.",
                                     objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
         ku.addWidget(self.zaslona_listy)
         self.pelny_dostep = False
@@ -1459,7 +1600,7 @@ class OknoPacjentow(QDialog):
         self.szukaj.setFocus()
 
     def odswiez(self):
-        zablokowane = self.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        zablokowane = self.baza.ma_haslo and not self.pelny_dostep and not zapytanie_dozwolone(self.szukaj.text())
         self.pacjenci = [] if zablokowane else self.baza.pacjenci(self.szukaj.text())
         self.tabela.setVisible(not zablokowane)
         self.zaslona_listy.setVisible(zablokowane)
@@ -1517,7 +1658,11 @@ class OknoPacjentow(QDialog):
     def dodaj(self):
         dane = self._formularz("Nowy pacjent")
         if dane:
-            self.baza.zapisz_pacjenta(*dane)
+            try:
+                self.baza.zapisz_pacjenta(*dane, nowy=True)
+            except ValueError as e:
+                QMessageBox.warning(self, "Pacjent", str(e))
+                return
             self.szukaj.setText(dane[0])
             self.odswiez()
 
@@ -1531,7 +1676,11 @@ class OknoPacjentow(QDialog):
             return
         dane = self._formularz("Edytuj pacjenta", p)
         if dane:
-            self.baza.zapisz_pacjenta(*dane, stara_nazwa=p.nazwa)
+            try:
+                self.baza.zapisz_pacjenta(*dane, stara_nazwa=p.nazwa)
+            except ValueError as e:
+                QMessageBox.warning(self, "Pacjent", str(e))
+                return
             self.odswiez()
 
     def usun(self):
@@ -1607,7 +1756,8 @@ class StronaHistoria(Strona):
         self.miesiac.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.miesiac)
         self.rodzaj = QComboBox(minimumWidth=150)
-        for tekst, dane in (("Rachunki i faktury", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura")):
+        for tekst, dane in (("Wszystkie dokumenty", None), ("Tylko rachunki", "Rachunek"), ("Tylko faktury", "Faktura"),
+                            ("Tylko korekty", "Korekta")):
             self.rodzaj.addItem(tekst, dane)
         self.rodzaj.currentIndexChanged.connect(self.filtruj)
         filtry.addWidget(self.rodzaj)
@@ -1623,7 +1773,8 @@ class StronaHistoria(Strona):
                       przycisk("Drukuj duplikat", "drukarka", akcja=self.drukuj),
                       przycisk("Edytuj", "edytuj", akcja=self.edytuj),
                       przycisk("Historia zmian", "historia", akcja=self.historia_zmian),
-                      przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor)]
+                      przycisk("Użyj jako wzór", "kopiuj", akcja=self.wzor),
+                      przycisk("Korekta", "faktura", akcja=self.korekta)]
         self.btn_anuluj = przycisk("Anuluj dokument", "anuluj", "niebezpieczny", self.anuluj)
         for b in self.akcje + [self.btn_anuluj]:
             akcje.addWidget(b)
@@ -1655,7 +1806,7 @@ class StronaHistoria(Strona):
         self.tabela.itemSelectionChanged.connect(self._stan_akcji)
         ku.addWidget(self.tabela)
         self.zaslona_listy = QLabel(
-            "Wpisz co najmniej 2 znaki (nazwisko, numer lub PESEL), aby wyszukać.\n"
+            "Wpisz co najmniej 3 litery nazwiska, pełny numer dokumentu albo PESEL, aby wyszukać.\n"
             "Pełna lista jest dostępna po kliknięciu „Pokaż wszystko” i podaniu hasła.",
             objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
         self.zaslona_listy.setMinimumHeight(160)
@@ -1712,7 +1863,9 @@ class StronaHistoria(Strona):
         for b in self.akcje:
             b.setEnabled(d is not None)
         self.btn_anuluj.setEnabled(d is not None and d.wazny)
-        self.akcje[2].setEnabled(d is not None and d.wazny)
+        self.akcje[2].setEnabled(d is not None and d.wazny and not d.jest_korekta)
+        self.akcje[4].setEnabled(d is not None and not d.jest_korekta)
+        self.akcje[5].setEnabled(d is not None and d.wazny and d.tytul == "Faktura")
 
     def odswiez(self):
         self._wypelnij_lata()
@@ -1723,9 +1876,19 @@ class StronaHistoria(Strona):
             self.pelny_dostep = True
             self.filtruj()
 
+    def _dostep_do_zestawien(self) -> bool:
+        """Zestawienia i eksport zawierają kwoty i nazwiska: bez wcześniejszego „Pokaż wszystko” pytają o hasło."""
+        if self.pelny_dostep or not self.okno.baza.ma_haslo:
+            return True
+        if self.okno.potwierdz_haslem("zestawienie lub eksport", "Zestawienie i eksport wymagają hasła."):
+            self.pelny_dostep = True
+            self.filtruj()
+            return True
+        return False
+
     def _tylko_wyszukiwanie(self) -> bool:
-        """Bez hasła widać tylko wyniki wyszukiwania (min. 2 znaki), nie całą listę nazwisk."""
-        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        """Bez hasła widać tylko wyniki konkretnego wyszukiwania, nie całą listę nazwisk."""
+        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and not zapytanie_dozwolone(self.szukaj.text())
         self.tabela.setVisible(not zablokowane)
         self.zaslona_listy.setVisible(zablokowane)
         self.btn_wszystko.setVisible(self.okno.baza.ma_haslo and not self.pelny_dostep)
@@ -1755,8 +1918,10 @@ class StronaHistoria(Strona):
         self.tabela.clearSelection()
         self._stan_akcji()
         p = podsumuj(self.docs)
-        czesci = [f"{self.opis_okresu()}: {liczba_dokumentow(p.liczba)}", f"{druk.zl(p.suma)} zł"]
-        czesci += [f"{k} {druk.zl(v)} zł" for k, v in sorted(p.wg_platnosci.items())]
+        czesci = [f"{self.opis_okresu()}: {liczba_dokumentow(p.liczba)}"]
+        if self.pelny_dostep or not self.okno.baza.ma_haslo:  # kwoty razem tylko po haśle, jak na karcie Przychody
+            czesci.append(f"{druk.zl(p.suma)} zł")
+            czesci += [f"{k} {druk.zl(v)} zł" for k, v in sorted(p.wg_platnosci.items())]
         if p.anulowanych:
             czesci.append(f"anulowane: {p.anulowanych}")
         self.podsumowanie.setText("   •   ".join(czesci))
@@ -1781,9 +1946,14 @@ class StronaHistoria(Strona):
         if d := self.wybrany():
             self.okno.podglad(d, duplikat=True)
 
+    def korekta(self):
+        if d := self.wybrany():
+            self.okno.korekta_dokumentu(d)
+
     def wzor(self):
         if d := self.wybrany():
             s = self.okno.strona_nowy
+            s.zakoncz_edycje()
             s.nabywca.setText(d.nabywca)
             s.nabywca_adres.setText(d.nabywca_adres.replace("\n", ", "))
             s.nabywca_id.setText(d.nabywca_id)
@@ -1862,6 +2032,8 @@ class StronaHistoria(Strona):
                                      ", ".join(filtr))
 
     def drukuj_zestawienie(self):
+        if not self._dostep_do_zestawien():
+            return
         if not self.docs:
             QMessageBox.information(self, "Zestawienie", "Brak dokumentów do zestawienia.")
             return
@@ -1873,6 +2045,8 @@ class StronaHistoria(Strona):
         self.okno.komunikat("Wydrukowano zestawienie")
 
     def zestawienie_pdf(self):
+        if not self._dostep_do_zestawien():
+            return
         if not self.docs:
             QMessageBox.information(self, "Zestawienie", "Brak dokumentów do zestawienia.")
             return
@@ -1885,6 +2059,8 @@ class StronaHistoria(Strona):
             self.okno.komunikat(f"Zapisano zestawienie: {sciezka}")
 
     def eksport(self):
+        if not self._dostep_do_zestawien():
+            return
         nazwa = "rachunki-" + self.opis_okresu().lower().replace(" ", "-").replace("(", "").replace(")", "")
         sciezka, _ = QFileDialog.getSaveFileName(self, "Eksport do Excela", str(Path.home() / f"{nazwa}.csv"),
                                                  "CSV (*.csv)")
@@ -1898,7 +2074,9 @@ class StronaUstawienia(Strona):
     POLA = [("nazwa", "Nazwa"), ("nip", "NIP"), ("regon", "REGON"), ("miejsce", "Miejsce wystawienia"),
             ("konto", "Nr konta do przelewów"),
             ("format_numeru", "Numer rachunku"),
-            ("format_numeru_faktury", "Numer faktury")]
+            ("format_numeru_faktury", "Numer faktury"),
+            ("format_numeru_korekty", "Numer korekty"),
+            ("termin_dni", "Termin przelewu (dni)")]
 
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
@@ -1954,7 +2132,7 @@ class StronaUstawienia(Strona):
             if klucz == "nip":
                 self.pola["adres"] = QPlainTextEdit(maximumHeight=58)
                 f.addRow("Adres", self.pola["adres"])
-        for klucz in ("format_numeru", "format_numeru_faktury"):
+        for klucz in ("format_numeru", "format_numeru_faktury", "format_numeru_korekty"):
             self.pola[klucz].setToolTip("{n} = kolejny numer, {mm} = miesiąc, {rrrr} = rok")
         lewa.addWidget(k)
         lewa.addSpacing(10)
@@ -2067,7 +2245,26 @@ class StronaUstawienia(Strona):
         rzad.addWidget(przycisk("Eksport odszyfrowany…", "pobierz", akcja=self.eksport_odszyfrowany))
         rzad.addStretch()
         ku.addLayout(rzad)
-        ku.addWidget(QLabel(f"Kopie automatyczne: {katalog_kopii()}", objectName="drobny", wordWrap=True))
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
+        # --- kopie zapasowe: trzy niezależne miejsca
+        prawa.addWidget(sekcja("Kopie zapasowe"))
+        k, ku = karta()
+        self.stan_kopii = QLabel(objectName="drobny", wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        ku.addWidget(self.stan_kopii)
+        rzad = QHBoxLayout()
+        rzad.addWidget(QLabel("Trzecia kopia", objectName="etykieta"))
+        self.kopia_folder = QLineEdit(placeholderText="Pendrive, dysk sieciowy albo folder OneDrive", readOnly=True)
+        rzad.addWidget(self.kopia_folder, 1)
+        rzad.addWidget(przycisk("Wybierz…", "archiwum", akcja=self._wybierz_folder_kopii))
+        rzad.addWidget(przycisk("", "zamknij", "plaski", lambda: self.kopia_folder.clear()))
+        ku.addLayout(rzad)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Zrób kopię teraz", "odswiez", akcja=lambda: (self.okno.kopia_ciagla(wymus=True),
+                                                                            self._pokaz_stan_kopii())))
+        rzad.addStretch()
+        ku.addLayout(rzad)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -2152,6 +2349,31 @@ class StronaUstawienia(Strona):
         uklad.addLayout(f)
         return f
 
+    def _wybierz_folder_kopii(self):
+        folder = QFileDialog.getExistingDirectory(self, "Folder na trzecią kopię", self.kopia_folder.text()
+                                                  or str(Path.home()))
+        if folder:
+            self.kopia_folder.setText(folder)
+
+    def _pokaz_stan_kopii(self):
+        from . import usluga
+        u = self.okno.baza.ustawienia()
+        teraz = self.okno.ostatnia_kopia.strftime("%d.%m %H:%M") if self.okno.ostatnia_kopia else "przy zamknięciu"
+        chroniona = usluga.ostatnia_kopia_chroniona()
+        folder = u["kopia_folder"]
+        wiersze = [
+            f"<b>1.</b> Dokumenty, co 10 minut (ostatnio: {teraz})<br>&nbsp;&nbsp;&nbsp;"
+            f"{html_escape(str(katalog_kopii()))}",
+            "<b>2.</b> Chronione kopie usługi systemowej, co godzinę, nie do usunięcia bez uprawnień "
+            "administratora: " + (f"ostatnio {html_escape(chroniona)}" if chroniona else
+                                   "<span style='color:#a4303d'>nieaktywne. Zainstaluj program instalatorem "
+                                   "FakturnikSetup.exe</span>"),
+            "<b>3.</b> " + (f"{html_escape(folder)}, co 10 minut" + ("" if Path(folder).exists() else
+                            " <span style='color:#a4303d'>(niedostępny: podłącz dysk)</span>")
+                            if folder else "Wybierz pendrive, dysk sieciowy albo folder OneDrive poniżej."),
+        ]
+        self.stan_kopii.setText("<br>".join(wiersze))
+
     def _skrot(self):
         if utworz_skrot_na_pulpicie():
             self.okno.komunikat("Utworzono skrót na pulpicie")
@@ -2195,6 +2417,8 @@ class StronaUstawienia(Strona):
         self.data_wygenerowania.setChecked(u["druk_data_wygenerowania"] == "1")
         self.druk_pesel.setChecked(u["druk_pesel"] == "1")
         self.ochrona_ekranu.setChecked(u["ochrona_ekranu"] == "1")
+        self.kopia_folder.setText(u["kopia_folder"])
+        self._pokaz_stan_kopii()
         self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
@@ -2226,12 +2450,16 @@ class StronaUstawienia(Strona):
                 wartosci[klucz] = p.toPlainText().strip()
             else:
                 wartosci[klucz] = p.text().strip()
-        if "{n}" not in wartosci["format_numeru"] or "{n}" not in wartosci["format_numeru_faktury"]:
+        formaty = [wartosci[k] for k in ("format_numeru", "format_numeru_faktury", "format_numeru_korekty")]
+        if any("{n}" not in f for f in formaty):
             QMessageBox.warning(self, "Format numeru", "Format numeru musi zawierać {n} (kolejny numer).")
             return
-        if wartosci["format_numeru"] == wartosci["format_numeru_faktury"]:
-            QMessageBox.warning(self, "Format numeru", "Rachunki i faktury muszą mieć różne formaty numeru, "
-                                "np. faktury z przedrostkiem FV/.")
+        if len(set(formaty)) < 3:
+            QMessageBox.warning(self, "Format numeru", "Rachunki, faktury i korekty muszą mieć różne formaty numeru, "
+                                "np. faktury z przedrostkiem FV/, korekty KOR/.")
+            return
+        if not wartosci["termin_dni"].isdigit() or int(wartosci["termin_dni"]) > 365:
+            QMessageBox.warning(self, "Termin przelewu", "Termin przelewu to liczba dni od 0 do 365.")
             return
         nip = wartosci["nip"]
         if nip and not nip_poprawny(nip) and QMessageBox.warning(
@@ -2254,6 +2482,7 @@ class StronaUstawienia(Strona):
         wartosci["kopia"] = "1" if self.kopia.isChecked() else "0"
         wartosci["druk_pesel"] = "1" if self.druk_pesel.isChecked() else "0"
         wartosci["ochrona_ekranu"] = "1" if self.ochrona_ekranu.isChecked() else "0"
+        wartosci["kopia_folder"] = self.kopia_folder.text().strip()
         wartosci["rodo_lat"] = str(self.rodo_lat.value())
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
@@ -2325,7 +2554,7 @@ class StronaUstawienia(Strona):
             nazwa = (self.cennik.item(r, 0).text() if self.cennik.item(r, 0) else "").strip().replace(";", ",")
             cena = liczba(self.cennik.item(r, 1).text()) if self.cennik.item(r, 1) else 0
             if nazwa:
-                wiersze.append(f"{nazwa};{cena:g}")
+                wiersze.append(f"{nazwa};{cena:.2f}")
         return "\n".join(wiersze)
 
     def ustaw_logo(self, wartosc: str):
@@ -2433,16 +2662,23 @@ class StronaUstawienia(Strona):
                 != QMessageBox.StandardButton.Yes:
             return
         haslo = None
-        if self._kopia_wymaga_hasla(sciezka) or Baza.czy_kopia_szyfrowana(sciezka):
+        try:
+            wymaga = self._kopia_wymaga_hasla(sciezka) or Baza.czy_kopia_szyfrowana(sciezka)
+        except (OSError, KeyError, zipfile.BadZipFile):
+            QMessageBox.critical(self, "Nie udało się przywrócić", "To nie jest kopia Fakturnika.")
+            return
+        if wymaga:
             haslo, ok = QInputDialog.getText(self, "Hasło kopii", "Hasło, którym zaszyfrowano kopię:",
                                              QLineEdit.EchoMode.Password)
             if not ok:
                 return
-        # na wszelki wypadek: kopia obecnego stanu, zanim zostanie zastąpiony
-        kopia_automatyczna(self.okno.baza.sciezka, nazwa=f"przed-przywroceniem-{date.today().isoformat()}.db")
         try:
+            # na wszelki wypadek: kopia obecnego stanu, zanim zostanie zastąpiony
+            kopia_automatyczna(self.okno.baza.sciezka,
+                               nazwa=f"przed-przywroceniem-{datetime.now():%Y-%m-%d-%H%M%S}.db")
             self.okno.baza.przywroc(sciezka, haslo)
-        except (BledneHaslo, ValueError, NowszaBaza, PermissionError, KeyError) as e:
+        except (BledneHaslo, ValueError, NowszaBaza, PermissionError, KeyError, OSError, PlikZajety,
+                zipfile.BadZipFile) as e:
             self.okno.dziennik.zapisz("przywrócenie kopii: NIEUDANE")
             QMessageBox.critical(self, "Nie udało się przywrócić", str(e))
             return
@@ -2452,7 +2688,6 @@ class StronaUstawienia(Strona):
 
     @staticmethod
     def _kopia_wymaga_hasla(sciezka: str) -> bool:
-        import zipfile
         if zipfile.is_zipfile(sciezka):
             with zipfile.ZipFile(sciezka) as z:
                 return z.read("fakturnik.db")[:64].startswith(b"FAKTURNIK-AES")
@@ -2741,7 +2976,7 @@ class StronaPliki(Strona):
         self.tabela.itemSelectionChanged.connect(self._stan_akcji)
         ku.addWidget(self.tabela)
         self.zaslona_listy = QLabel(
-            "Wpisz co najmniej 2 znaki (nazwisko, numer lub PESEL), aby wyszukać.\n"
+            "Wpisz co najmniej 3 litery nazwiska, pełny numer dokumentu albo PESEL, aby wyszukać.\n"
             "Pełna lista jest dostępna po kliknięciu „Pokaż wszystko” i podaniu hasła.",
             objectName="podtytul", alignment=Qt.AlignmentFlag.AlignCenter)
         self.zaslona_listy.setMinimumHeight(160)
@@ -2783,8 +3018,8 @@ class StronaPliki(Strona):
             self.filtruj()
 
     def _tylko_wyszukiwanie(self) -> bool:
-        """Bez hasła widać tylko wyniki wyszukiwania (min. 2 znaki), nie całą listę nazwisk."""
-        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and len(self.szukaj.text().strip()) < 2
+        """Bez hasła widać tylko wyniki konkretnego wyszukiwania, nie całą listę nazwisk."""
+        zablokowane = self.okno.baza.ma_haslo and not self.pelny_dostep and not zapytanie_dozwolone(self.szukaj.text())
         self.tabela.setVisible(not zablokowane)
         self.zaslona_listy.setVisible(zablokowane)
         self.btn_wszystko.setVisible(self.okno.baza.ma_haslo and not self.pelny_dostep)
@@ -2975,7 +3210,7 @@ class OknoDokumentu(QDialog):
         du.setContentsMargins(20, 12, 20, 12)
         du.addWidget(QLabel(f"Stron: {self.strony.strony()}", objectName="drobny"))
         du.addStretch()
-        if dok.id and not dok.anulowano:
+        if dok.id and not dok.anulowano and not dok.jest_korekta:
             du.addWidget(przycisk("Edytuj", "edytuj", akcja=self.edytuj))
         du.addWidget(przycisk("Zapisz PDF", "pdf", akcja=self.pdf))
         du.addWidget(przycisk("Drukuj", "drukarka", "glowny", self.drukuj))
@@ -2993,6 +3228,10 @@ class OknoDokumentu(QDialog):
         self._skala((self.obszar.viewport().width() - 2 * PodgladStron.ODSTEP - 4) / PodgladStron.A4.width())
 
     def drukuj(self):
+        if self.dok.id is None:  # podgląd niezapisanego dokumentu: wystawienie (zapis i numer) jak z formularza
+            self.accept()
+            self.okno.strona_nowy.drukuj()
+            return
         wybor = self.okno.ustawienia_wydruku(self, f"{self.dok.tytul} nr {self.dok.numer}",
                                              z_kopia=self.z_kopia, zawsze=True)
         if not wybor:
@@ -3003,6 +3242,10 @@ class OknoDokumentu(QDialog):
         self.okno.komunikat(f"Wydrukowano nr {self.dok.numer}")
 
     def pdf(self):
+        if self.dok.id is None:
+            self.accept()
+            self.okno.strona_nowy.zapisz_pdf()
+            return
         sciezka, _ = QFileDialog.getSaveFileName(
             self, "Zapisz PDF", str(Path.home() / f"{self.dok.numer.replace('/', '-')}.pdf"), "PDF (*.pdf)")
         if sciezka:
@@ -3148,6 +3391,13 @@ class OknoGlowne(QMainWindow):
         self.zegar_aktualizacji = QTimer(self, interval=6 * 60 * 60 * 1000)
         self.zegar_aktualizacji.timeout.connect(self._okresowa_aktualizacja)
         self.zegar_aktualizacji.start()
+        # kopie co 10 minut (gdy dane się zmieniły) i sprawdzenie, czy usługa nie zainstalowała nowej wersji
+        self.ostatnia_kopia: datetime | None = None
+        self._skrot_kopii = ""
+        self._blad_kopii_zgloszony = ""
+        self.zegar_kopii = QTimer(self, interval=10 * 60 * 1000)
+        self.zegar_kopii.timeout.connect(self._co_10_minut)
+        self.zegar_kopii.start()
         if self.baza.ustawienia()["skonfigurowano"] != "1":
             QTimer.singleShot(200, self.pierwsze_uruchomienie)
 
@@ -3213,6 +3463,45 @@ class OknoGlowne(QMainWindow):
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
 
+    def _co_10_minut(self):
+        self.kopia_ciagla()
+        if aktualizacje.plik_programu_zmieniony() and not self.uruchom_po_zamknieciu:
+            self.uruchom_po_zamknieciu = Path(sys.executable)  # nową wersję zainstalowała usługa
+            self.dziennik.zapisz("nowa wersja zainstalowana przez usługę")
+            self.tekst_aktualizacji.setText("Zainstalowano nową wersję. Uruchomi się sama, gdy schowasz okno, "
+                                            "albo teraz:")
+            self.btn_instaluj.setText("Uruchom ponownie")
+            self.btn_instaluj.clicked.disconnect()
+            self.btn_instaluj.clicked.connect(lambda: self._uruchom_ponownie(w_tle=False))
+            self.pasek_aktualizacji.show()
+            self._restart_jesli_mozna()
+
+    def kopia_ciagla(self, wymus: bool = False):
+        """Kopia 1 (Dokumenty) i 3 (wybrany folder), gdy dane zmieniły się od ostatniej kopii."""
+        skrot = self.baza._skrot_zapisu
+        if not wymus and skrot == self._skrot_kopii:
+            return
+        try:
+            kopia_automatyczna(self.baza.sciezka)
+            self.baza.kopia_plikow(katalog_kopii() / "pliki")
+        except OSError as e:
+            self.dziennik.zapisz(f"kopia automatyczna: BŁĄD ({e.__class__.__name__})")
+            return
+        folder = self.baza.ustawienia()["kopia_folder"]
+        if folder:
+            cel = Path(folder) / "Fakturnik-kopie"
+            try:
+                kopia_automatyczna(self.baza.sciezka, cel)
+                self.baza.kopia_plikow(cel / "pliki")
+            except OSError:
+                if self._blad_kopii_zgloszony != date.today().isoformat():  # raz dziennie, bez zasypywania
+                    self._blad_kopii_zgloszony = date.today().isoformat()
+                    self.zasobnik.showMessage("Fakturnik: trzecia kopia niedostępna",
+                                              f"Nie można zapisać kopii w {folder}. Podłącz dysk lub sprawdź folder.",
+                                              QSystemTrayIcon.MessageIcon.Warning, 8000)
+        self._skrot_kopii = skrot
+        self.ostatnia_kopia = datetime.now()
+
     def _okresowa_aktualizacja(self):
         if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1" \
                 and not self.uruchom_po_zamknieciu:
@@ -3222,8 +3511,8 @@ class OknoGlowne(QMainWindow):
     def _aktualizuj_w_tle(self, wydanie: aktualizacje.Wydanie):
         """Automatyczna aktualizacja: kopia danych, pobranie, sprawdzenie SHA-256 i podmiana programu w tle.
         Nowa wersja startuje sama, gdy okno jest schowane (albo po kliknięciu „Uruchom ponownie”)."""
-        if self._aktualizacja_w_toku or self.uruchom_po_zamknieciu:
-            return
+        if self._aktualizacja_w_toku or self.uruchom_po_zamknieciu or not aktualizacje.mozna_zapisac_obok():
+            return  # w Program Files aktualizacje instaluje usługa Fakturnika
         try:
             kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-aktualizacja-do-{wydanie.wersja}.db")
         except OSError:
@@ -3302,10 +3591,15 @@ class OknoGlowne(QMainWindow):
             QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
 
     def instaluj_aktualizacje(self):
-        if not self.wydanie:
+        if not self.wydanie or self._aktualizacja_w_toku or self.uruchom_po_zamknieciu:
             return
         if not aktualizacje.czy_spakowany():
             QMessageBox.information(self, "Aktualizacje", "Aktualizacje instalują się tylko w wersji .exe.")
+            return
+        if not aktualizacje.mozna_zapisac_obok():
+            QMessageBox.information(self, "Aktualizacje", "Program jest zainstalowany dla wszystkich (Program Files). "
+                                    "Nową wersję zainstaluje automatycznie usługa Fakturnika w ciągu godziny, "
+                                    "a program uruchomi się ponownie, gdy schowasz okno.")
             return
         opis = self.wydanie.opis.strip()
         if QMessageBox.question(
@@ -3353,11 +3647,24 @@ class OknoGlowne(QMainWindow):
         QMessageBox.information(self, "Aktualizacja", "Aktualizacja zainstalowana. Program uruchomi się ponownie.")
         self._wyjscie = True
         self.close()
+        QApplication.quit()
 
     # ---- blokada i zamykanie
+    def korekta_dokumentu(self, dok: Dokument):
+        if dok.tytul != "Faktura" or dok.anulowano:
+            QMessageBox.information(self, "Korekta", "Korektę wystawia się do ważnej faktury. Rachunek można "
+                                    "poprawić przez Edytuj albo anulować i wystawić nowy.")
+            return
+        self.przejdz(STRONA_NOWY, odswiez=False)
+        self.strona_nowy.zaladuj_do_korekty(dok)
+
     def edytuj_dokument(self, dok: Dokument):
         if dok.anulowano:
             self.komunikat("Anulowanego dokumentu nie można edytować", blad=True)
+            return
+        if dok.jest_korekta:
+            QMessageBox.information(self, "Edycja", "Fakturę korygującą poprawia się kolejną korektą "
+                                    "pierwotnej faktury albo anuluje i wystawia od nowa.")
             return
         if not self.potwierdz_haslem("edycja dokumentu", f"Edycja dokumentu nr {dok.numer} wymaga hasła."):
             return
@@ -3399,7 +3706,14 @@ class OknoGlowne(QMainWindow):
     def _w_tle_dostepne(self) -> bool:
         return self.baza.ustawienia()["w_tle"] == "1" and QSystemTrayIcon.isSystemTrayAvailable()
 
+    def _zamknij_okna_podrzedne(self):
+        """Blokada nie może zostawić na ekranie otwartego podglądu, listy pacjentów itp."""
+        for w in QApplication.topLevelWidgets():
+            if w is not self and isinstance(w, QDialog) and w.isVisible() and type(w).__name__ != "Kreator":
+                w.reject()
+
     def ukryj_do_zasobnika(self):
+        self._zamknij_okna_podrzedne()
         self.strona_pulpit.zaslon()
         self.hide()
         self._ukryty = True
@@ -3424,7 +3738,7 @@ class OknoGlowne(QMainWindow):
 
     def _nowy_z_zasobnika(self, rodzaj: str):
         self.pokaz_okno()
-        if self.isVisible():
+        if self.isVisible() and self.strona_nowy.porzuc_tryb():
             self.przejdz(STRONA_NOWY)
             self.strona_nowy.ustaw_rodzaj(rodzaj)
 
@@ -3454,6 +3768,12 @@ class OknoGlowne(QMainWindow):
 
     # ---- strażnik integralności
     def sprawdz_integralnosc(self):
+        try:
+            self._sprawdz_integralnosc()
+        except (PlikZajety, OSError):
+            pass  # np. plik chwilowo zajęty przez antywirus; sprawdzimy za minutę
+
+    def _sprawdz_integralnosc(self):
         problemy = self.baza.sprawdz_integralnosc(katalog_kopii() / "pliki")
         zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
         uciety = self._dziennik_uciety or (bool(zapamietany) and not self.dziennik.zawiera(zapamietany))
@@ -3491,6 +3811,7 @@ class OknoGlowne(QMainWindow):
         if self._w_tle_dostepne():
             self.ukryj_do_zasobnika()  # odblokowanie hasłem po kliknięciu ikony
             return
+        self._zamknij_okna_podrzedne()
         self.hide()
         okno = OknoHasla(self.baza.sprawdz_haslo, "Fakturnik jest zablokowany", dziennik=self.dziennik,
                          cel="odblokowanie", opis="Podaj hasło, aby wrócić do pracy.")
@@ -3514,11 +3835,7 @@ class OknoGlowne(QMainWindow):
         self.timer.stop()
         self.dziennik.zapisz("zamknięcie programu")
         self.baza.zamknij()
-        try:
-            kopia_automatyczna(self.baza.sciezka)
-            self.baza.kopia_plikow(katalog_kopii() / "pliki")
-        except OSError:
-            pass
+        self.kopia_ciagla(wymus=True)
         event.accept()
 
     def pierwsze_uruchomienie(self):
@@ -3542,13 +3859,14 @@ def uruchom() -> int:
     czcionka.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app.setFont(czcionka)
     app.setStyleSheet(STYL)
-    aktualizacje.posprzataj()
     aktualizacje.zablokuj_program()
+    aktualizacje.zapamietaj_plik_programu()
     windows.przygotuj_proces()
     app.installEventFilter(OCHRONA_EKRANU)
 
     # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
     argumenty = aktualizacje.czekaj_na_poprzednia(sys.argv[1:])  # po aktualizacji: stara wersja musi się zamknąć
+    aktualizacje.posprzataj()  # dopiero teraz stary plik programu jest wolny
     polecenie = polecenie_z_argumentow(argumenty)
     jedna = JednaKopia()
     if jedna.wyslij_do_dzialajacej(polecenie):
@@ -3556,6 +3874,7 @@ def uruchom() -> int:
     jedna.nasluchuj()
 
     plik = sciezka_danych()
+    _obsluga_bledow(plik.parent / "bledy.log")
     dziennik = Dziennik(plik.parent / "dziennik.log")
     try:
         kod, okno = _otworz(app, plik, dziennik, jedna, polecenie)
@@ -3616,6 +3935,84 @@ def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polece
     return wynik.get("polecenie")
 
 
+def potwierdz_odinstalowanie() -> int:
+    """Wywoływane przez deinstalator (Fakturnik.exe --odinstaluj). 0 = zgoda, 1 = odmowa.
+
+    Gdy dane na tym komputerze są chronione hasłem, odinstalować można tylko po jego podaniu.
+    Dane i kopie zostają na dysku także po odinstalowaniu."""
+    from . import usluga
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("Fakturnik")
+    app.setOrganizationName("Fakturnik")
+    zaladuj_czcionki()
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYL)
+    pliki = [d / usluga.PLIK_DANYCH for _, d in usluga.profile_z_danymi()]
+    if sciezka_danych().exists() and sciezka_danych() not in pliki:
+        pliki.append(sciezka_danych())
+    chronione = [p for p in pliki if Baza.wymaga_hasla(p)]
+    if chronione:
+        okno = OknoHasla(lambda h: any(Baza.da_sie_otworzyc(p, h) for p in chronione), "Odinstaluj Fakturnik",
+                         opis="Podaj hasło Fakturnika, aby go odinstalować.\nDane i kopie zostaną na dysku.")
+        return 0 if okno.exec() == QDialog.DialogCode.Accepted else 1
+    odp = QMessageBox.question(None, "Odinstaluj Fakturnik", "Odinstalować Fakturnik?\n\nDane i kopie zostaną "
+                               "na dysku, a program przestanie robić kopie i pilnować danych.")
+    return 0 if odp == QMessageBox.StandardButton.Yes else 1
+
+
+def _obsluga_bledow(log: Path) -> None:
+    """Nieoczekiwany błąd nie zamyka programu po cichu: trafia do bledy.log, a użytkownik dostaje komunikat.
+    Dane są zapisywane po każdej zmianie, więc błąd nie powoduje ich utraty."""
+    import threading
+    import traceback
+    ostatni = [0.0]
+
+    def obsluz(typ, wartosc, tb):
+        if issubclass(typ, KeyboardInterrupt):
+            return
+        tekst = "".join(traceback.format_exception(typ, wartosc, tb))
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            if log.exists() and log.stat().st_size > 512 * 1024:
+                os.replace(log, log.with_suffix(".old.log"))
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(f"--- {datetime.now():%Y-%m-%d %H:%M:%S}  Fakturnik {WERSJA}\n{tekst}\n")
+        except OSError:
+            pass
+        if QApplication.instance() and time.monotonic() - ostatni[0] > 10:
+            ostatni[0] = time.monotonic()
+            komunikat = (str(wartosc) if isinstance(wartosc, OSError) else "") or typ.__name__
+            QMessageBox.warning(None, "Fakturnik", "Coś poszło nie tak, ale dane są bezpieczne (zapisywane na "
+                                f"bieżąco).\n\n{komunikat}\n\nSzczegóły zapisano w pliku:\n{log}")
+
+    sys.excepthook = obsluz
+    threading.excepthook = lambda a: obsluz(a.exc_type, a.exc_value, a.exc_traceback)
+
+
+def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dziennik) -> bool:
+    """Szuka najnowszej kopii automatycznej, która się otwiera (tym hasłem), i proponuje jej przywrócenie.
+
+    Sprawdza tylko 3 najnowsze kopie: każda próba z hasłem to kosztowne wyliczenie klucza.
+    """
+    from . import usluga
+    chronione = usluga.katalog_kopii_chronionych() / (os.environ.get("USERNAME") or os.environ.get("USER") or "?")
+    kopie = sorted(lista_kopii() + lista_kopii(chronione), key=lambda k: k.stat().st_mtime, reverse=True)
+    for kopia in kopie[:3]:
+        if not Baza.da_sie_otworzyc(kopia, haslo):
+            continue
+        kiedy = datetime.fromtimestamp(kopia.stat().st_mtime)
+        odp = QMessageBox.question(
+            None, "Fakturnik", f"{powod}\n\nZnaleziono kopię automatyczną z {kiedy:%d.%m.%Y, %H:%M}. "
+            "Przywrócić ją?\n\nObecny plik nie zostanie usunięty (zostanie obok z dopiskiem „uszkodzony”). "
+            "Dokumenty wystawione po utworzeniu kopii trzeba będzie wpisać ponownie.")
+        if odp != QMessageBox.StandardButton.Yes:
+            return False
+        odtworz_z_kopii(plik, kopia)
+        dziennik.zapisz(f"odtworzenie danych z kopii automatycznej z {kiedy:%Y-%m-%d %H:%M}")
+        return True
+    return False
+
+
 def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia,
             polecenie: dict) -> tuple[int, OknoGlowne | None]:
     w_tle = polecenie.get("akcja") == "w_tle" and QSystemTrayIcon.isSystemTrayAvailable()
@@ -3625,26 +4022,45 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
             return 0, None
         w_tle = False
     if Baza.wymaga_hasla(plik):
-        wynik: dict[str, Baza] = {}
+        wynik: dict = {}
 
         def sprawdz(haslo: str) -> bool:
             try:
                 wynik["baza"] = Baza(plik, haslo)
                 return True
             except BledneHaslo:
-                return False
+                powod = ("To hasło nie otwiera aktualnego pliku danych, ale otwiera kopię automatyczną. "
+                         "Jeśli zmieniano hasło po dacie tej kopii, wpisz nowe hasło. Jeśli nie, plik danych "
+                         "mógł zostać uszkodzony.")
+            except ValueError:
+                powod = "Plik danych jest uszkodzony."
+            except (NowszaBaza, PlikZajety) as e:
+                wynik["blad"] = e  # okno hasła się zamknie, a komunikat pokaże uruchom()
+                return True
+            if _zaproponuj_kopie(plik, haslo, powod, dziennik):
+                try:
+                    wynik["baza"] = Baza(plik, haslo)
+                    return True
+                except (BledneHaslo, ValueError):
+                    pass
+            return False
 
         if OknoHasla(sprawdz, dziennik=dziennik, opis="Podaj hasło, aby otworzyć program.").exec() \
                 != QDialog.DialogCode.Accepted:
             return 0, None
+        if "blad" in wynik:
+            raise wynik["blad"]
         baza = wynik["baza"]
     else:
         try:
             baza = Baza(plik)
         except ValueError:
-            QMessageBox.critical(None, "Fakturnik", f"Plik danych jest uszkodzony lub zmieniony z zewnątrz:\n{plik}\n\n"
-                                 f"Przywróć go z kopii automatycznej w:\n{katalog_kopii()}")
-            return 1, None
+            if not _zaproponuj_kopie(plik, None, "Plik danych jest uszkodzony lub zmieniony z zewnątrz.", dziennik):
+                QMessageBox.critical(None, "Fakturnik", f"Plik danych jest uszkodzony lub zmieniony z zewnątrz:\n"
+                                     f"{plik}\n\nPrzywróć go z kopii (Ustawienia → Przywróć) albo z katalogu:\n"
+                                     f"{katalog_kopii()}")
+                return 1, None
+            baza = Baza(plik)
         dziennik.zapisz("uruchomienie programu (bez hasła)")
     try:
         kopia_automatyczna(plik)

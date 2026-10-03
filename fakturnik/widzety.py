@@ -81,6 +81,7 @@ class Powiadomienie(QFrame):
 STYLE_PIGULEK = {
     "Rachunek": ("#eef1f3", "#3b4650"),
     "Faktura": ("#e3eff1", "#16525f"),
+    "Korekta": ("#fdf3e1", "#8a5a00"),
     "Anulowany": ("#fbeaec", "#a4303d"),
 }
 

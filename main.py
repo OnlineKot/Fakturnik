@@ -15,6 +15,12 @@ def _uruchom_od_nowa() -> None:
 
 
 if __name__ == "__main__":
+    if "--usluga" in sys.argv:  # kopie i aktualizacje z Harmonogramu zadań (konto SYSTEM), bez okien
+        from fakturnik.usluga import uruchom_usluge
+        sys.exit(uruchom_usluge())
+    if "--odinstaluj" in sys.argv:  # pytanie o hasło z deinstalatora
+        from fakturnik.ui import potwierdz_odinstalowanie
+        sys.exit(potwierdz_odinstalowanie())
     try:
         from fakturnik.ui import uruchom
     except ImportError:

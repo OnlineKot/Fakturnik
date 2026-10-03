@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .ochrona import BlokadaPliku, tylko_do_odczytu
 from .szyfrowanie import (
-    Szyfr, czy_kopia_szyfrowana, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
+    BledneHaslo, Szyfr, czy_kopia_szyfrowana, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
     zaszyfruj_plik,
 )
 
@@ -47,7 +47,10 @@ DOMYSLNE_USTAWIENIA = {
     "blokada_minut": "10",   # automatyczna blokada po tylu minutach bezczynności (gdy jest hasło)
     "w_tle": "1",            # "1" = zamknięcie okna chowa program do zasobnika zamiast go wyłączać
     "format_numeru_faktury": "FV/{n}/{mm}/{rrrr}",
+    "format_numeru_korekty": "KOR/{n}/{mm}/{rrrr}",
+    "termin_dni": "7",       # termin płatności przy przelewie (dni od wystawienia)
     "druk_pesel": "0",       # "1" = PESEL pacjenta drukuje się na rachunku (RODO: domyślnie nie)
+    "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach
     "ostatni_wpis_dziennika": "",  # skrót ostatniego wpisu dziennika (wykrywa ucięcie dziennika)
@@ -61,6 +64,7 @@ class Pozycja:
     nazwa: str
     ilosc: float
     cena: float
+    jm: str = "usł."             # jednostka miary (art. 106e ust. 1 pkt 8 ustawy o VAT)
 
     @property
     def wartosc(self) -> float:
@@ -81,11 +85,37 @@ class Dokument:
     poprawiono: str = ""         # data ostatniej edycji (RRRR-MM-DD); poprzednie wersje są w historii zmian
     anulowano: str = ""          # data anulowania (RRRR-MM-DD); pusta = dokument ważny
     powod_anulowania: str = ""
+    termin_platnosci: str = ""   # RRRR-MM-DD, przy przelewie
+    # faktura korygująca (rodzaj "Korekta"): której faktury dotyczy, dlaczego i jak wyglądała przed korektą
+    korekta_do: str = ""         # numer korygowanej faktury
+    korekta_data: str = ""       # data wystawienia korygowanej faktury
+    korekta_id: int = 0
+    powod_korekty: str = ""
+    pozycje_przed: list[Pozycja] = field(default_factory=list)
     id: int | None = None
 
     @property
-    def suma(self) -> float:
+    def suma_po(self) -> float:
         return round(sum(p.wartosc for p in self.pozycje), 2)
+
+    @property
+    def suma_przed(self) -> float:
+        return round(sum(p.wartosc for p in self.pozycje_przed), 2)
+
+    @property
+    def suma(self) -> float:
+        """Kwota dokumentu; dla korekty różnica (ujemna = do zwrotu), żeby sumy przychodów się zgadzały."""
+        if self.jest_korekta:
+            return round(self.suma_po - self.suma_przed, 2)
+        return self.suma_po
+
+    @property
+    def jest_korekta(self) -> bool:
+        return self.rodzaj == "Korekta"
+
+    @property
+    def nazwa_druku(self) -> str:
+        return "Faktura korygująca" if self.jest_korekta else self.tytul
 
     @property
     def wazny(self) -> bool:
@@ -156,6 +186,8 @@ def _bez_ogonkow(tekst: str) -> str:
 def bezpieczna_komorka(wartosc) -> str:
     """Chroni przed „CSV injection”: tekst zaczynający się od =, +, -, @ Excel wykonałby jako formułę."""
     tekst = str(wartosc)
+    if re.fullmatch(r"-?\d[\d ]*([.,]\d+)?", tekst):
+        return tekst  # zwykła liczba (np. ujemna kwota korekty) zostaje liczbą
     return "'" + tekst if tekst[:1] in ("=", "+", "-", "@", "\t", "\r") else tekst
 
 
@@ -163,7 +195,9 @@ def dokument_z_danych(id_: int, d: dict) -> Dokument:
     """Dokument z zapisanego JSON-a; pomija pola nieznane tej wersji (np. dodane w innej wersji programu)."""
     znane = {f for f in Dokument.__dataclass_fields__ if f != "id"}
     d = {k: v for k, v in d.items() if k in znane}
-    d["pozycje"] = [Pozycja(nazwa=p["nazwa"], ilosc=p["ilosc"], cena=p["cena"]) for p in d.get("pozycje", [])]
+    for klucz in ("pozycje", "pozycje_przed"):
+        d[klucz] = [Pozycja(nazwa=p["nazwa"], ilosc=p["ilosc"], cena=p["cena"], jm=p.get("jm") or "usł.")
+                    for p in d.get(klucz, [])]
     return Dokument(id=id_, **d)
 
 
@@ -263,7 +297,13 @@ class Baza:
         self.db = sqlite3.connect(":memory:")
         istnial = self.sciezka.exists()
         if istnial:
-            self.db.deserialize(self._wczytaj(self.sciezka, haslo, ustaw_szyfr=True))
+            try:
+                self.db.deserialize(self._wczytaj(self.sciezka, haslo, ustaw_szyfr=True))
+                spojnosc = self.db.execute("PRAGMA quick_check").fetchone()[0]
+            except sqlite3.DatabaseError:
+                spojnosc = "błąd odczytu"
+            if spojnosc != "ok":
+                raise ValueError("Plik danych jest uszkodzony.")
         self._migruj(kopia_przed=istnial)
         self._utrwal()
 
@@ -303,6 +343,23 @@ class Baza:
         tylko_do_odczytu(self.sciezka, True)
 
     @staticmethod
+    def da_sie_otworzyc(sciezka: Path | str, haslo: str | None) -> bool:
+        """Czy plik (np. kopia automatyczna) otwiera się tym hasłem i jest nieuszkodzony. Niczego nie zmienia."""
+        try:
+            dane = Path(sciezka).read_bytes()
+            if czy_zaszyfrowane(dane):
+                if haslo is None:
+                    return False
+                dane, _ = Szyfr.otworz(dane, haslo)
+            elif not dane.startswith(b"SQLite format 3"):
+                return False
+            db = sqlite3.connect(":memory:")
+            db.deserialize(dane)
+            return db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        except (BledneHaslo, OSError, ValueError, sqlite3.DatabaseError):
+            return False
+
+    @staticmethod
     def wymaga_hasla(sciezka: Path | str) -> bool:
         sciezka = Path(sciezka)
         if not sciezka.exists():
@@ -332,7 +389,7 @@ class Baza:
         if self.szyfr:
             dane = self.szyfr.zaszyfruj(dane)
         tymczasowy = self.sciezka.with_suffix(".tmp")
-        self._skrot_zapisu = hashlib.sha256(dane).hexdigest()
+        skrot = hashlib.sha256(dane).hexdigest()
         with open(tymczasowy, "wb") as f:
             f.write(dane)
             f.flush()
@@ -342,6 +399,7 @@ class Baza:
             for proba in range(10):
                 try:
                     os.replace(tymczasowy, self.sciezka)
+                    self._skrot_zapisu = skrot  # dopiero po udanym zapisie: inaczej strażnik spróbuje ponownie
                     break
                 except PermissionError:
                     # plik chwilowo trzymany np. przez antywirus lub drugą kopię programu
@@ -367,14 +425,22 @@ class Baza:
         self.db.execute("INSERT OR REPLACE INTO ustawienia VALUES ('ostatni_wpis_dziennika', ?)", (skrot,))
 
     # ---------- numeracja ----------
-    @staticmethod
-    def _klucz_licznika(d: date, rodzaj: str) -> str:
-        # rachunki mają osobną numerację od faktur; klucz rachunków bez prefiksu (zgodność ze starszymi danymi)
-        return ("FV:" if rodzaj == "Faktura" else "") + f"{d.year}-{d.month:02d}"
+    def _klucz_licznika(self, d: date, rodzaj: str) -> str:
+        """Licznik zależy od tego, co jest w formacie numeru: z miesiącem liczy od nowa co miesiąc,
+        tylko z rokiem co rok, bez daty ciągle. Rachunki, faktury i korekty mają osobne liczniki;
+        klucz rachunków bez prefiksu (zgodność ze starszymi danymi)."""
+        prefiks = {"Faktura": "FV:", "Korekta": "KOR:"}.get(rodzaj, "")
+        wzor = self._wzor_numeru(rodzaj)
+        if "{mm}" in wzor:
+            return prefiks + f"{d.year}-{d.month:02d}"
+        if "{rrrr}" in wzor or "{rr}" in wzor:
+            return prefiks + f"{d.year}"
+        return prefiks + "ciagly"
 
     def _wzor_numeru(self, rodzaj: str) -> str:
         u = self.ustawienia()
-        return u["format_numeru_faktury"] if rodzaj == "Faktura" else u["format_numeru"]
+        return {"Faktura": u["format_numeru_faktury"], "Korekta": u["format_numeru_korekty"]}.get(
+            rodzaj, u["format_numeru"])
 
     def nastepny_numer(self, d: date, rodzaj: str = "Rachunek") -> str:
         wiersz = self.db.execute("SELECT ostatni FROM liczniki WHERE miesiac = ?",
@@ -434,6 +500,7 @@ class Baza:
         nazwa = nazwa.strip()
         if not nazwa:
             return
+        self.db.execute("DELETE FROM ustawienia WHERE klucz = ?", (f"ukryty_pacjent:{nazwa}",))
         self.db.execute(
             "INSERT INTO pacjenci (nazwa, identyfikator, adres) VALUES (?, ?, ?) "
             "ON CONFLICT(nazwa) DO UPDATE SET identyfikator = CASE WHEN excluded.identyfikator != '' "
@@ -441,8 +508,14 @@ class Baza:
             "adres = CASE WHEN excluded.adres != '' THEN excluded.adres ELSE adres END",
             (nazwa, identyfikator.strip(), adres.strip()))
 
-    def zapisz_pacjenta(self, nazwa: str, identyfikator: str = "", adres: str = "", stara_nazwa: str = "") -> None:
+    def zapisz_pacjenta(self, nazwa: str, identyfikator: str = "", adres: str = "", stara_nazwa: str = "",
+                        nowy: bool = False) -> None:
         """Dodaje albo poprawia pacjenta w kartotece (bez zmiany wystawionych już dokumentów)."""
+        zmiana_nazwy = bool(stara_nazwa) and stara_nazwa != nazwa.strip()
+        if (zmiana_nazwy or nowy) and self.db.execute(
+                "SELECT 1 FROM pacjenci WHERE nazwa = ?", (nazwa.strip(),)).fetchone():
+            raise ValueError(f"Pacjent „{nazwa.strip()}” już jest w kartotece. Wybierz go z listy albo popraw jego dane.")
+        self.db.execute("DELETE FROM ustawienia WHERE klucz = ?", (f"ukryty_pacjent:{nazwa.strip()}",))
         if stara_nazwa and stara_nazwa != nazwa.strip():
             self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (stara_nazwa,))
         self.db.execute("INSERT OR REPLACE INTO pacjenci (nazwa, identyfikator, adres) VALUES (?, ?, ?)",
@@ -542,7 +615,10 @@ class Baza:
             if nazwa not in nowsi:
                 self.db.execute("DELETE FROM pacjenci WHERE nazwa = ?", (nazwa,))
                 self.db.execute("DELETE FROM ustawienia WHERE klucz = ?", (f"ukryty_pacjent:{nazwa}",))
-        self.db.execute("UPDATE pliki SET osoba = '' WHERE CAST(substr(data, 1, 4) AS INTEGER) <= ?", (granica,))
+        self.db.execute("UPDATE pliki SET osoba = '', opis = '' WHERE CAST(substr(data, 1, 4) AS INTEGER) <= ?",
+                        (granica,))
+        for d in stare:
+            self.db.execute("UPDATE wersje_dokumentow SET powod = '' WHERE dokument_id = ?", (d.id,))
         self.db.commit()
         self.db.execute("VACUUM")  # przepisuje bazę od nowa, bez śladów starych wartości
         self._utrwal()

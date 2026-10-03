@@ -60,17 +60,13 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
         elif u.get("druk_pesel") == "1":  # PESEL nie jest wymagany na rachunku (minimalizacja danych)
             nabywca.append("PESEL: " + escape(dok.nabywca_id))
 
-    pozycje = "".join(
-        f"<tr><td align='right'>{i}</td><td>{escape(p.nazwa)}</td>"
-        f"<td align='right'>{p.ilosc:g}</td><td align='right' style='white-space:nowrap'>{zl(p.cena)}</td>"
-        f"<td align='center'>zw</td><td align='right' style='white-space:nowrap'>{zl(p.wartosc)}</td></tr>"
-        for i, p in enumerate(dok.pozycje, 1))
-
     platnosc = escape(dok.platnosc)
     if dok.platnosc == "przelew":
+        if dok.termin_platnosci:
+            platnosc += f", termin: {data_pl(dok.termin_platnosci)}"
         if u["konto"]:
             platnosc += f"<br>Nr konta: {escape(formatuj_konto(u['konto']))}"
-    else:
+    elif not dok.jest_korekta:
         platnosc += " (zapłacono)"
 
     podzial = "page-break-before: always;" if nowa_strona else ""
@@ -82,7 +78,7 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     return f"""
 <div style="{podzial}">{anulowany}
 <table width="100%" cellspacing="0" cellpadding="0"><tr>
-  <td><span style="font-size:20pt; font-weight:bold;">{escape(dok.tytul)} nr {escape(dok.numer)}</span><br>
+  <td><span style="font-size:{15 if dok.jest_korekta else 20}pt; font-weight:bold;">{escape(dok.nazwa_druku)} nr {escape(dok.numer)}</span><br>
       <span style="font-size:9pt; letter-spacing:1px;">{etykieta.upper()}</span></td>
   <td align="right" valign="top" style="font-size:9.5pt;">{escape(u['miejsce'])}, {data_pl(dok.data_wystawienia)}<br>
       Data wykonania usługi: {data_pl(dok.data_uslugi)}</td>
@@ -100,16 +96,9 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
     <span style="font-size:8pt;">NABYWCA</span><br>{'<br>'.join(s for s in nabywca if s)}</td>
 </tr></table>
 <br>
-<table width="100%" border="1" cellspacing="0" cellpadding="5" style="border-collapse:collapse; border-color:black;">
-  <tr style="background:#e8e8e8; white-space:nowrap;"><th width="6%">Lp.</th><th>Nazwa usługi</th>
-      <th width="8%">Ilość</th><th width="15%">Cena (zł)</th><th width="7%">VAT</th><th width="16%">Wartość (zł)</th></tr>
-  {pozycje}
-  <tr><td colspan="5" align="right"><b>Razem</b></td><td align="right"><b>{zl(dok.suma)}</b></td></tr>
-</table>
-<p style="font-size:12pt;"><b>Do zapłaty: {zl(dok.suma)} zł</b><br>
-<span style="font-size:10.5pt;">Słownie: {kwota_slownie(dok.suma)}<br>Sposób płatności: {platnosc}</span></p>
+{_tresc(dok, platnosc)}
 <p style="font-size:8.5pt;">{escape(u['adnotacja'])}</p>
-<br><br><br>
+{'<br>' if dok.jest_korekta else '<br><br><br>'}
 <table width="100%" style="font-size:8pt;"><tr>
   <td width="40%" align="center" style="border-top: 1px dotted black;">podpis osoby upoważnionej do odbioru</td>
   <td width="20%"></td>
@@ -117,6 +106,59 @@ def _strona(dok: Dokument, u: dict[str, str], etykieta: str, nowa_strona: bool, 
 </tr></table>
 {_stopka_wydruku(u)}
 </div>"""
+
+
+def _tabela_pozycji(pozycje: list, podpis: str = "Razem") -> str:
+    wiersze = "".join(
+        f"<tr><td align='right'>{i}</td><td>{escape(p.nazwa)}</td><td align='center'>{escape(p.jm)}</td>"
+        f"<td align='right'>{p.ilosc:g}</td><td align='right' style='white-space:nowrap'>{zl(p.cena)}</td>"
+        f"<td align='center'>zw</td><td align='right' style='white-space:nowrap'>{zl(p.wartosc)}</td></tr>"
+        for i, p in enumerate(pozycje, 1))
+    suma = round(sum(p.wartosc for p in pozycje), 2)
+    return f"""<table width="100%" border="1" cellspacing="0" cellpadding="5" style="border-collapse:collapse; border-color:black;">
+  <tr style="background:#e8e8e8; white-space:nowrap;"><th width="6%">Lp.</th><th>Nazwa usługi</th><th width="7%">J.m.</th>
+      <th width="8%">Ilość</th><th width="14%">Cena jedn. (zł)</th><th width="7%">VAT</th><th width="15%">Wartość (zł)</th></tr>
+  {wiersze or '<tr><td colspan="7" align="center">brak pozycji</td></tr>'}
+  <tr><td colspan="6" align="right"><b>{podpis}</b></td><td align="right"><b>{zl(suma)}</b></td></tr>
+</table>"""
+
+
+def _podsumowanie_stawek(netto: float) -> str:
+    """Zestawienie według stawki VAT (dla faktur): usługi zwolnione, więc VAT 0 i brutto = netto."""
+    return f"""<table align="right" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black; font-size:9pt; margin-top:6px;">
+  <tr style="background:#e8e8e8;"><th>Stawka VAT</th><th>Wartość netto (zł)</th><th>Kwota VAT (zł)</th><th>Wartość brutto (zł)</th></tr>
+  <tr><td align="center">zw</td><td align="right">{zl(netto)}</td><td align="right">0,00</td><td align="right">{zl(netto)}</td></tr>
+</table><br clear="all">"""
+
+
+def _tresc(dok: Dokument, platnosc: str) -> str:
+    if not dok.jest_korekta:
+        stawki = _podsumowanie_stawek(dok.suma) if dok.tytul == "Faktura" else ""
+        return f"""{_tabela_pozycji(dok.pozycje)}
+{stawki}
+<p style="font-size:12pt;"><b>Do zapłaty: {zl(dok.suma)} zł</b><br>
+<span style="font-size:10.5pt;">Słownie: {kwota_slownie(dok.suma)}<br>Sposób płatności: {platnosc}</span></p>"""
+    roznica = dok.suma
+    if roznica < 0:
+        wynik = f"Do zwrotu nabywcy: {zl(-roznica)} zł"
+    elif roznica > 0:
+        wynik = f"Do zapłaty (dopłata): {zl(roznica)} zł"
+    else:
+        wynik = "Kwota bez zmian (korekta danych)"
+    return f"""<p style="font-size:10pt;">Dotyczy faktury nr <b>{escape(dok.korekta_do)}</b>
+z dnia {data_pl(dok.korekta_data) if dok.korekta_data else '—'}<br>
+Przyczyna korekty: <b>{escape(dok.powod_korekty) or '—'}</b></p>
+<p style="font-size:9pt; margin-bottom:2px;"><b>PRZED KOREKTĄ</b></p>
+{_tabela_pozycji(dok.pozycje_przed, "Razem przed korektą")}
+<p style="font-size:9pt; margin-bottom:2px;"><b>PO KOREKCIE</b></p>
+{_tabela_pozycji(dok.pozycje, "Razem po korekcie")}
+<table align="right" border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse; border-color:black; font-size:9pt; margin-top:6px;">
+  <tr style="background:#e8e8e8;"><th>Stawka VAT</th><th>Netto przed</th><th>Netto po</th><th>Różnica netto</th><th>Różnica VAT</th></tr>
+  <tr><td align="center">zw</td><td align="right">{zl(dok.suma_przed)}</td><td align="right">{zl(dok.suma_po)}</td>
+      <td align="right">{zl(roznica)}</td><td align="right">0,00</td></tr>
+</table><br clear="all">
+<p style="font-size:12pt;"><b>{wynik}</b><br>
+<span style="font-size:10.5pt;">Słownie: {kwota_slownie(abs(roznica))}<br>Sposób rozliczenia: {platnosc}</span></p>"""
 
 
 def _stopka_wydruku(u: dict[str, str]) -> str:

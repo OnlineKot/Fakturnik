@@ -140,3 +140,22 @@ def kopia_automatyczna(plik: Path, katalog: Path | None = None, nazwa: str | Non
         tylko_do_odczytu(stara, False)
         stara.unlink()
     return cel
+
+
+def lista_kopii(katalog: Path | None = None) -> list[Path]:
+    """Kopie automatyczne pliku danych, od najnowszej."""
+    katalog = katalog or katalog_kopii()
+    if not katalog.exists():
+        return []
+    return sorted((k for k in katalog.glob("*.db") if k.is_file()), key=lambda k: k.stat().st_mtime, reverse=True)
+
+
+def odtworz_z_kopii(plik: Path, kopia: Path) -> Path:
+    """Wstawia kopię w miejsce pliku danych; uszkodzony plik zostaje obok (nic nie jest kasowane)."""
+    uszkodzony = plik.with_name(f"{plik.stem}.uszkodzony-{datetime.now():%Y%m%d-%H%M%S}{plik.suffix}")
+    if plik.exists():
+        tylko_do_odczytu(plik, False)
+        os.replace(plik, uszkodzony)
+    shutil.copyfile(kopia, plik)
+    tylko_do_odczytu(plik, True)
+    return uszkodzony

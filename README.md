@@ -7,10 +7,15 @@ wrzuconych dokumentów (faktury kosztowe, skany), dla gabinetu zwolnionego z VAT
 ## Pobranie i instalacja
 
 **Instalator (zalecany):** https://github.com/OnlineKot/Fakturnik/releases/latest/download/FakturnikSetup.exe
-Instaluje program dla bieżącego użytkownika (bez uprawnień administratora) w
-`%LOCALAPPDATA%\Programs\Fakturnik`, dodaje skrót w Menu Start (opcjonalnie na pulpicie)
-i ustawia start w tle razem z Windows. Odinstalowanie (Ustawienia Windows → Aplikacje)
-nie usuwa danych ani kopii.
+Wymaga uprawnień administratora (Windows zapyta raz, przy instalacji) i daje najmocniejszą ochronę:
+- program trafia do `Program Files`, więc zwykłe konto ani żaden program uruchomiony na nim nie może
+  go zmienić ani usunąć,
+- **odinstalowanie wymaga hasła Fakturnika**, a dane i kopie zostają na dysku także po odinstalowaniu,
+- działa **usługa kopii** (Harmonogram zadań, konto SYSTEM): co godzinę i po każdym starcie komputera
+  kopiuje dane do `C:\ProgramData\Fakturnik\kopie`, skąd można je przywrócić, ale nie da się ich
+  usunąć bez uprawnień administratora; ta sama usługa instaluje aktualizacje,
+- skrót w Menu Start (opcjonalnie na pulpicie) i start w tle razem z Windows.
+Instalator sam usuwa poprzednią wersję zainstalowaną bez administratora; dane zostają.
 
 **Wersja przenośna:** https://github.com/OnlineKot/Fakturnik/releases/latest/download/Fakturnik.exe
 
@@ -46,6 +51,15 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Szybkie usługi**: przyciski z nazwą i ceną.
 - **Rachunek albo faktura**: przełącznik przy każdym nowym dokumencie. Faktury mają osobną
   numerację `FV/nr/miesiąc/rok` (format do zmiany w Ustawieniach).
+- **Kompletne faktury** (art. 106e ustawy o VAT): data wystawienia i wykonania usługi, kolejny numer,
+  dane i NIP sprzedawcy i nabywcy, nazwa usługi, jednostka miary, ilość, cena jednostkowa, wartość,
+  zestawienie według stawki (zw, VAT 0,00), kwota do zapłaty (też słownie), podstawa zwolnienia z VAT,
+  sposób płatności i termin przelewu (liczba dni w Ustawieniach) z numerem konta. Program nie wystawi
+  faktury, jeśli brakuje obowiązkowych danych (np. NIP gabinetu albo adresu nabywcy), i powie, czego brakuje.
+- **Faktura korygująca** (art. 106j): w Historii zaznacz fakturę → „Korekta”, popraw pozycje i podaj
+  przyczynę. Wydruk zawiera numer i datę korygowanej faktury, przyczynę, pozycje przed i po korekcie
+  oraz kwotę do zwrotu lub dopłaty. Korekty mają własną numerację `KOR/nr/miesiąc/rok`, a sumy
+  przychodów uwzględniają różnicę.
 - **Pliki**: wrzucanie PDF-ów i zdjęć (przycisk albo przeciągnięcie na okno) z datą, rodzajem
   (faktura kosztowa, dokument pacjenta…), pacjentem lub kontrahentem i opisem; wyszukiwanie po
   roku, miesiącu, rodzaju i nazwisku; podgląd, drukowanie, zapis kopii. Pliki są przechowywane
@@ -103,6 +117,19 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Hasło i szyfrowanie**: klucz 256-bitowy z hasła (PBKDF2-HMAC-SHA256, 600 000 iteracji),
   dane szyfrowane AES-256-GCM. Automatyczna blokada po ustawionym czasie bezczynności,
   rosnące opóźnienie po błędnych hasłach. Zapomnianego hasła nie da się odzyskać.
+- **Trzy niezależne kopie, robione cały czas**:
+  1. `Dokumenty\Fakturnik\kopie`: co 10 minut, gdy dane się zmieniły, i przy zamknięciu (30 dni),
+  2. `C:\ProgramData\Fakturnik\kopie`: usługa systemowa co godzinę i po starcie komputera, chronione
+     przed usunięciem; zostają wszystkie z ostatnich 7 dni, potem jedna dziennie przez rok i jedna
+     miesięcznie bez końca,
+  3. wybrany folder: pendrive, dysk sieciowy albo OneDrive (Ustawienia → Kopie zapasowe), co 10 minut.
+  Kopie są zaszyfrowane tak samo jak dane (gdy ustawiono hasło). Stan wszystkich trzech widać
+  w Ustawieniach.
+- **Odporność na awarie**: dane zapisują się po każdej zmianie (atomowo), a plik jest sprawdzany przy
+  każdym otwarciu. Gdy okaże się uszkodzony (np. awaria dysku lub prądu), program sam znajdzie
+  najnowszą działającą kopię automatyczną i zaproponuje jej przywrócenie, a uszkodzony plik zostawi
+  obok. Nieoczekiwany błąd nie zamyka programu: pojawia się komunikat, a szczegóły trafiają do
+  `bledy.log` obok danych.
 - **Dziennik logowań** każdej próby podania hasła i ważnych operacji (bez nazwisk i nazw plików),
   zabezpieczony łańcuchem skrótów SHA-256; skrót ostatniego wpisu jest też zapisany w zaszyfrowanej
   bazie, więc wykrywane jest również ucięcie końcówki dziennika.
@@ -119,7 +146,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   i usunięciem przez inne programy; po zamknięciu ma atrybut „tylko do odczytu”, a każda
   zmiana zaszyfrowanego pliku z zewnątrz zostanie wykryta. Na Windows nie da się zrobić pliku
   całkowicie nieusuwalnym dla administratora, dlatego program robi też codzienne
-  **kopie automatyczne** (ostatnie 30) w `Dokumenty\Fakturnik\kopie`.
+  **kopie automatyczne** w trzech miejscach (patrz wyżej).
 - **Szyfrowana kopia zapasowa** (`.fkopia`): jeden plik z danymi i wrzuconymi plikami, zaszyfrowany
   AES-256-GCM osobnym hasłem kopii (można ją bezpiecznie trzymać na pendrive lub w chmurze).
   Przywracanie przyjmuje `.fkopia`, `.zip` i `.db`; kopie automatyczne plików trafiają do `Dokumenty\Fakturnik\kopie\pliki`.

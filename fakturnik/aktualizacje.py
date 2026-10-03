@@ -143,15 +143,56 @@ def sprawdz_wlasny_plik(obecny: Path | None = None, wersja: str = WERSJA) -> boo
     return skrot_pliku(obecny) == oczekiwany
 
 
+# ---------------------------------------------------------------- instalacja w Program Files
+
+def mozna_zapisac_obok(exe: Path | None = None) -> bool:
+    """Czy program może sam podmienić swój plik. Nie, gdy zainstalowano go w Program Files
+    (tam zmiany robi tylko administrator, a aktualizacje instaluje usługa Fakturnika)."""
+    katalog = (exe or Path(sys.executable)).parent
+    proba = katalog / f".fakturnik-proba-{os.getpid()}"
+    try:
+        proba.write_bytes(b"")
+        proba.unlink()
+        return True
+    except OSError:
+        return False
+
+
+_stan_pliku: tuple[int, int] | None = None
+
+
+def zapamietaj_plik_programu() -> None:
+    global _stan_pliku
+    try:
+        st = Path(sys.executable).stat()
+        _stan_pliku = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        _stan_pliku = None
+
+
+def plik_programu_zmieniony() -> bool:
+    """True, gdy usługa podmieniła plik programu na nową wersję, odkąd program działa."""
+    if not czy_spakowany() or _stan_pliku is None:
+        return False
+    try:
+        st = Path(sys.executable).stat()
+    except OSError:
+        return False
+    return (st.st_size, st.st_mtime_ns) != _stan_pliku
+
+
 # ---------------------------------------------------------------- blokada działającego programu
 
 _blokada_programu = None
 
 
 def zablokuj_program() -> None:
-    """Gdy program działa, jego .exe jest otwarty bez zgody na zapis, zmianę nazwy i usunięcie (Windows)."""
+    """Gdy program działa, jego .exe jest otwarty bez zgody na zapis, zmianę nazwy i usunięcie (Windows).
+
+    Nie dotyczy instalacji w Program Files: tam plik chronią uprawnienia Windows, a blokada
+    uniemożliwiłaby usłudze zainstalowanie aktualizacji."""
     global _blokada_programu
-    if not czy_spakowany() or _blokada_programu is not None:
+    if not czy_spakowany() or _blokada_programu is not None or not mozna_zapisac_obok():
         return
     from .ochrona import BlokadaPliku
     _blokada_programu = BlokadaPliku(Path(sys.executable))
