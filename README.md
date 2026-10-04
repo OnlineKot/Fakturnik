@@ -179,6 +179,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   podsumowanie dnia (dokumenty, gotówka, karta, przelew), opcjonalna kartka podsumowująca do druku,
   kopia zapasowa od razu, zamknięcie przeglądarki i wylogowanie.
 - **Narzędzia**: stoper, minutnik (szybkie 1–15 min, powiadomienie i dźwięk po czasie), kalkulator
+- **Więcej narzędzi**: przypomnienia z godziną (np. „14:30” albo „+15” = za 15 minut; powiadomienie i dźwięk), liczenie kasy według nominałów z porównaniem do dzisiejszej gotówki z dokumentów, kalkulator dat (np. kontrola za 6 miesięcy, dni robocze do terminu), rabat i raty, generator haseł (schowek czyści się po 30 s), a PESEL pokazuje datę urodzenia, wiek i płeć
   (tylko działania, bez wykonywania kodu), dane firmy po NIP z oficjalnej białej listy VAT (Ministerstwo Finansów) z przyciskiem
   „Wystaw fakturę dla tej firmy” (także w formularzu faktury), sprawdzanie PESEL/NIP/numeru konta,
   kwota słownie i wspólny, zaszyfrowany notatnik gabinetu.

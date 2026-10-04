@@ -70,7 +70,8 @@ DOMYSLNE_USTAWIENIA = {
     "wyloguj_po_godzinach": "asystentki",  # "asystentki", "wszyscy" albo "nikt"
     "asystentki_zamkniecie_dnia": "1",  # "1" = asystentka może zrobić zamknięcie dnia bez hasła właściciela
     "druk_wystawil": "1",               # "1" = „Wystawił(a): …” na dokumencie
-    "notatki": "",                      # wspólny notatnik gabinetu (w zaszyfrowanych danych)
+    "notatki": "",
+    "przypomnienia": "",                # przypomnienia z godziną (JSON, w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
     "rodo_lat": "5",         # ile pełnych lat po roku wystawienia trzymać dane osobowe w dokumentach

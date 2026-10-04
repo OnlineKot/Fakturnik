@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QStackedWidget, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import aktualizacje, druk, godziny, konta, kontrola, mf, urzadzenie, windows
+from . import aktualizacje, druk, godziny, konta, kontrola, mf, narzedzia, urzadzenie, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
@@ -2204,6 +2204,21 @@ class StronaNarzedzia(Strona):
         rzad_narzedzi.addWidget(self._karta_kalkulatora(), 1)
         siatka.addLayout(rzad_narzedzi, 1, 0, 1, 2)
 
+        # przypomnienia, liczenie kasy, daty
+        rzad2 = QHBoxLayout()
+        rzad2.setSpacing(14)
+        rzad2.addWidget(self._karta_przypomnien(), 1)
+        rzad2.addWidget(self._karta_kasy(), 1)
+        rzad2.addWidget(self._karta_dat(), 1)
+        siatka.addLayout(rzad2, 2, 0, 1, 2)
+
+        # rabat i raty, generator haseł
+        rzad3 = QHBoxLayout()
+        rzad3.setSpacing(14)
+        rzad3.addWidget(self._karta_rabatu(), 1)
+        rzad3.addWidget(self._karta_hasel(), 1)
+        siatka.addLayout(rzad3, 3, 0, 1, 2)
+
         # notatnik
         k, ku = karta()
         ku.addWidget(self._tytul("Notatnik gabinetu", "Wspólny dla wszystkich kont, zaszyfrowany razem z danymi"))
@@ -2215,7 +2230,7 @@ class StronaNarzedzia(Strona):
         ku.addWidget(self.notatki)
         self.stan_notatek = QLabel(objectName="drobny")
         ku.addWidget(self.stan_notatek)
-        siatka.addWidget(k, 2, 0, 1, 2)
+        siatka.addWidget(k, 4, 0, 1, 2)
         siatka.setColumnStretch(0, 1)
         siatka.setColumnStretch(1, 1)
         u.addLayout(siatka)
@@ -2365,6 +2380,281 @@ class StronaNarzedzia(Strona):
         except (ValueError, SyntaxError) as e:
             self.blad_kalkulatora.setText(str(e) if isinstance(e, ValueError) else "Niepełne działanie")
 
+    # ---- przypomnienia
+    def _karta_przypomnien(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Przypomnienia", ""))
+        self.tekst_przyp = QLineEdit(placeholderText="Np. oddzwonić do laboratorium")
+        self.tekst_przyp.returnPressed.connect(self._dodaj_przypomnienie)
+        ku.addWidget(self.tekst_przyp)
+        rzad = QHBoxLayout()
+        self.godzina_przyp = QLineEdit(placeholderText="14:30 lub +15")
+        self.godzina_przyp.setMinimumWidth(100)
+        self.godzina_przyp.returnPressed.connect(self._dodaj_przypomnienie)
+        rzad.addWidget(self.godzina_przyp, 1)
+        szybkie = [("+15′", "+15"), ("+30′", "+30"), ("+1 h", "+60")]
+        for opis, wartosc in szybkie:
+            rzad.addWidget(przycisk(opis, styl="plaski", akcja=lambda _=False, w=wartosc: (
+                self.godzina_przyp.setText(w), self._dodaj_przypomnienie())))
+        rzad.addWidget(przycisk("Dodaj", "plus", "glowny", self._dodaj_przypomnienie))
+        ku.addLayout(rzad)
+        self.lista_przyp = QVBoxLayout()
+        self.lista_przyp.setSpacing(4)
+        ku.addLayout(self.lista_przyp)
+        self.blad_przyp = QLabel(objectName="drobny")
+        ku.addWidget(self.blad_przyp)
+        ku.addStretch()
+        self._zegar_przyp = QTimer(self, interval=20_000)
+        self._zegar_przyp.timeout.connect(self._sprawdz_przypomnienia)
+        self._zegar_przyp.start()
+        return k
+
+    def _przypomnienia(self) -> list[dict]:
+        return narzedzia.wczytaj_przypomnienia(self.okno.baza.ustawienia().get("przypomnienia", ""))
+
+    def _zapisz_przypomnienia(self, lista: list[dict]):
+        self.okno.baza.zapisz_ustawienia({"przypomnienia": narzedzia.zapisz_przypomnienia(lista)})
+        self._pokaz_przypomnienia()
+
+    def _dodaj_przypomnienie(self):
+        tekst = self.tekst_przyp.text().strip()
+        try:
+            kiedy = narzedzia.kiedy_przypomniec(self.godzina_przyp.text() or "+15", datetime.now())
+        except ValueError:
+            self.blad_przyp.setText("Godzina jak 14:30 albo +15 (za 15 minut).")
+            return
+        if not tekst:
+            self.blad_przyp.setText("Wpisz, o czym przypomnieć.")
+            return
+        self.blad_przyp.clear()
+        self._zapisz_przypomnienia(self._przypomnienia() + [{"kiedy": kiedy.isoformat(timespec="minutes"),
+                                                             "tekst": tekst}])
+        self.godzina_przyp.clear()
+        self.tekst_przyp.clear()
+
+    def _usun_przypomnienie(self, p: dict):
+        self._zapisz_przypomnienia([x for x in self._przypomnienia() if x != p])
+
+    def _pokaz_przypomnienia(self):
+        while self.lista_przyp.count():
+            w = self.lista_przyp.takeAt(0).widget()
+            if w:
+                w.hide()
+                w.deleteLater()
+        dzis = date.today()
+        for p in self._przypomnienia()[:8]:
+            kiedy = datetime.fromisoformat(p["kiedy"])
+            wiersz = QWidget()
+            wu = QHBoxLayout(wiersz)
+            wu.setContentsMargins(0, 0, 0, 0)
+            dzien = "" if kiedy.date() == dzis else ("jutro " if kiedy.date() == dzis + timedelta(days=1)
+                                                     else f"{kiedy:%d.%m} ")
+            godz = QLabel(f"{dzien}{kiedy:%H:%M}")
+            godz.setStyleSheet(f"color: {AKCENT}; font-weight: 650;")
+            wu.addWidget(godz)
+            opis = QLabel(p["tekst"], wordWrap=True)
+            wu.addWidget(opis, 1)
+            usun = przycisk("", "kosz", "plaski", lambda _=False, x=p: self._usun_przypomnienie(x))
+            usun.setToolTip("Usuń")
+            wu.addWidget(usun)
+            self.lista_przyp.addWidget(wiersz)
+
+    def _sprawdz_przypomnienia(self):
+        try:
+            teraz, reszta = narzedzia.do_przypomnienia(self._przypomnienia(), datetime.now())
+        except Exception:  # noqa: BLE001 - np. program zablokowany w trakcie
+            return
+        if not teraz:
+            return
+        for p in teraz:
+            QApplication.beep()
+            self.okno.powiadom("Przypomnienie", p["tekst"], "uwaga", czas_ms=30000)
+        self._zapisz_przypomnienia(reszta)
+
+    # ---- liczenie kasy
+    def _karta_kasy(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Liczenie kasy", ""))
+        siatka = QGridLayout()
+        siatka.setHorizontalSpacing(8)
+        siatka.setVerticalSpacing(4)
+        self.ilosci_kasy: dict[int, QSpinBox] = {}
+        for i, nominal in enumerate(narzedzia.NOMINALY):
+            pole = QSpinBox(minimum=0, maximum=9999)
+            pole.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            pole.setMaximumWidth(64)
+            pole.valueChanged.connect(self._policz_kase)
+            self.ilosci_kasy[nominal] = pole
+            wiersz, kol = i % 8, (i // 8) * 2
+            siatka.addWidget(QLabel(narzedzia.opis_nominalu(nominal)), wiersz, kol)
+            siatka.addWidget(pole, wiersz, kol + 1)
+        ku.addLayout(siatka)
+        self.suma_kasy = QLabel("0,00 zł")
+        self.suma_kasy.setStyleSheet(f"color: {AKCENT}; font-size: 24px; font-weight: 600;")
+        ku.addWidget(self.suma_kasy)
+        self.porownanie_kasy = QLabel(wordWrap=True, objectName="podtytul")
+        ku.addWidget(self.porownanie_kasy)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Porównaj z dzisiejszą gotówką", "wzrost", akcja=self._porownaj_kase))
+        rzad.addWidget(przycisk("Wyczyść", akcja=lambda: [p.setValue(0) for p in self.ilosci_kasy.values()]))
+        ku.addLayout(rzad)
+        ku.addStretch()
+        return k
+
+    def _kwota_kasy(self) -> float:
+        return narzedzia.suma_kasy({n: p.value() for n, p in self.ilosci_kasy.items()})
+
+    def _policz_kase(self):
+        self.suma_kasy.setText(f"{druk.zl(self._kwota_kasy())} zł")
+        self.porownanie_kasy.clear()
+
+    def _porownaj_kase(self):
+        o = self.okno
+        asystentka_moze = not o.jest_wlascicielka and o.baza.ustawienia()["asystentki_zamkniecie_dnia"] == "1"
+        if not o.jest_wlascicielka and not asystentka_moze and not o.potwierdz_haslem(
+                "porównanie kasy", "Porównanie pokazuje dzisiejszy utarg, dlatego wymaga hasła."):
+            return
+        dzis = date.today()
+        dokumenty = [d for d in o.baza.dokumenty(rok=dzis.year, miesiac=dzis.month)
+                     if d.data_wystawienia == dzis.isoformat()]
+        gotowka = round(podsumuj(dokumenty).wg_platnosci.get("gotówka", 0), 2)
+        roznica = round(self._kwota_kasy() - gotowka, 2)
+        if abs(roznica) < 0.005:
+            tekst, kolor = f"Zgadza się z gotówką z dokumentów ({druk.zl(gotowka)} zł).", ZIELONY
+        else:
+            tekst = (f"Gotówka z dokumentów: {druk.zl(gotowka)} zł. "
+                     f"{'Nadwyżka' if roznica > 0 else 'Brakuje'}: {druk.zl(abs(roznica))} zł.")
+            kolor = CZERWONY
+        self.porownanie_kasy.setText(tekst)
+        self.porownanie_kasy.setStyleSheet(f"color: {kolor};")
+        o.dziennik.zapisz(f"liczenie kasy: różnica {roznica:+.2f} zł")
+
+    # ---- daty
+    def _karta_dat(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Kalkulator dat", ""))
+        rzad = QHBoxLayout()
+        self.data_od = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
+        rzad.addWidget(self.data_od)
+        rzad.addWidget(QLabel("+"))
+        self.ile_dat = QSpinBox(minimum=-999, maximum=999, value=6)
+        rzad.addWidget(self.ile_dat)
+        self.jednostka_dat = QComboBox()
+        self.jednostka_dat.addItems(["dni", "tygodnie", "miesiące", "lata"])
+        self.jednostka_dat.setCurrentText("miesiące")
+        rzad.addWidget(self.jednostka_dat, 1)
+        ku.addLayout(rzad)
+        szybkie = QHBoxLayout()
+        szybkie.setSpacing(4)
+        for opis, ile, jedn in (("7 dni", 7, "dni"), ("14 dni", 14, "dni"), ("3 mies.", 3, "miesiące"),
+                                ("6 mies.", 6, "miesiące"), ("rok", 1, "lata")):
+            szybkie.addWidget(przycisk(opis, styl="plaski", akcja=lambda _=False, i=ile, j=jedn: (
+                self.ile_dat.setValue(i), self.jednostka_dat.setCurrentText(j))))
+        ku.addLayout(szybkie)
+        self.wynik_daty = QLabel()
+        self.wynik_daty.setStyleSheet(f"color: {AKCENT}; font-size: 20px; font-weight: 600;")
+        self.wynik_daty.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ku.addWidget(self.wynik_daty)
+        ku.addSpacing(4)
+        rzad2 = QHBoxLayout()
+        rzad2.addWidget(QLabel("Do dnia"))
+        self.data_do = QDateEdit(QDate.currentDate().addDays(30), calendarPopup=True, displayFormat="dd.MM.yyyy")
+        rzad2.addWidget(self.data_do, 1)
+        ku.addLayout(rzad2)
+        self.roznica_dat = QLabel(objectName="podtytul", wordWrap=True)
+        ku.addWidget(self.roznica_dat)
+        for sygnal in (self.data_od.dateChanged, self.ile_dat.valueChanged, self.jednostka_dat.currentTextChanged,
+                       self.data_do.dateChanged):
+            sygnal.connect(self._licz_daty)
+        self._licz_daty()
+        ku.addStretch()
+        return k
+
+    def _licz_daty(self, *_):
+        od = self.data_od.date().toPython()
+        wynik = narzedzia.przesun_date(od, self.ile_dat.value(), self.jednostka_dat.currentText())
+        self.wynik_daty.setText(f"{wynik:%d.%m.%Y} · {godziny.DNI[wynik.weekday()]}")
+        do = self.data_do.date().toPython()
+        dni = (do - od).days
+        self.roznica_dat.setText(f"Od {od:%d.%m} do {do:%d.%m.%Y}: {dni} dni "
+                                 f"({narzedzia.dni_robocze(od, do)} roboczych, bez świąt)")
+
+    # ---- rabat i raty
+    def _karta_rabatu(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Rabat i raty", ""))
+        forma = QFormLayout()
+        self.kwota_rabatu = QLineEdit(placeholderText="np. 2 400")
+        self.proc_rabatu = QSpinBox(minimum=0, maximum=100, suffix=" %")
+        self.raty = QSpinBox(minimum=1, maximum=48, value=1)
+        forma.addRow("Kwota", self.kwota_rabatu)
+        forma.addRow("Rabat", self.proc_rabatu)
+        forma.addRow("Liczba rat", self.raty)
+        ku.addLayout(forma)
+        self.wynik_rabatu = QLabel(wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        self.wynik_rabatu.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ku.addWidget(self.wynik_rabatu)
+        self.kwota_rabatu.textChanged.connect(self._licz_rabat)
+        self.proc_rabatu.valueChanged.connect(self._licz_rabat)
+        self.raty.valueChanged.connect(self._licz_rabat)
+        ku.addStretch()
+        return k
+
+    def _licz_rabat(self, *_):
+        kwota = liczba_lub_none(self.kwota_rabatu.text())
+        if kwota is None:
+            self.wynik_rabatu.clear()
+            return
+        try:
+            rabat, po, raty = narzedzia.rabat_i_raty(kwota, self.proc_rabatu.value(), self.raty.value())
+        except ValueError as e:
+            self.wynik_rabatu.setText(html_escape(str(e)))
+            return
+        tekst = (f"<span style='font-size:20px; font-weight:600; color:{AKCENT}'>{druk.zl(po)} zł</span>"
+                 + (f"<br>rabat {druk.zl(rabat)} zł" if rabat else ""))
+        if len(raty) > 1:
+            tekst += (f"<br>{len(raty)} rat po {druk.zl(raty[0])} zł"
+                      + (f" (ostatnia {druk.zl(raty[-1])} zł)" if raty[-1] != raty[0] else ""))
+        self.wynik_rabatu.setText(tekst)
+
+    # ---- generator haseł
+    def _karta_hasel(self) -> QFrame:
+        k, ku = karta()
+        ku.addWidget(self._tytul("Generator haseł", ""))
+        self.haslo_gen = QLineEdit(readOnly=True)
+        self.haslo_gen.setStyleSheet("font-family: Consolas, 'Cascadia Mono', monospace; font-size: 16px;")
+        ku.addWidget(self.haslo_gen)
+        rzad = QHBoxLayout()
+        self.dlugosc_hasla = QSpinBox(minimum=8, maximum=40, value=14, suffix=" znaków")
+        rzad.addWidget(self.dlugosc_hasla)
+        self.znaki_hasla = QCheckBox("znaki specjalne", checked=True)
+        rzad.addWidget(self.znaki_hasla)
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        rzad2 = QHBoxLayout()
+        rzad2.addWidget(przycisk("Nowe hasło", "odswiez", "glowny", self._nowe_haslo))
+        rzad2.addWidget(przycisk("Kopiuj", "kopiuj", akcja=self._kopiuj_haslo))
+        rzad2.addStretch()
+        ku.addLayout(rzad2)
+        self.stan_hasla = QLabel(objectName="drobny")
+        ku.addWidget(self.stan_hasla)
+        self.dlugosc_hasla.valueChanged.connect(self._nowe_haslo)
+        self.znaki_hasla.toggled.connect(self._nowe_haslo)
+        self._nowe_haslo()
+        ku.addStretch()
+        return k
+
+    def _nowe_haslo(self, *_):
+        self.haslo_gen.setText(narzedzia.generuj_haslo(self.dlugosc_hasla.value(), self.znaki_hasla.isChecked()))
+        self.stan_hasla.clear()
+
+    def _kopiuj_haslo(self):
+        schowek = QApplication.clipboard()
+        schowek.setText(self.haslo_gen.text())
+        self.stan_hasla.setText("Skopiowano. Schowek wyczyści się za 30 s.")
+        haslo = self.haslo_gen.text()
+        QTimer.singleShot(30_000, lambda: schowek.clear() if schowek.text() == haslo else None)
+
     @staticmethod
     def _tytul(tytul: str, opis: str) -> QWidget:
         w = QWidget()
@@ -2381,6 +2671,7 @@ class StronaNarzedzia(Strona):
         self.notatki.setPlainText(self.okno.baza.ustawienia()["notatki"])
         self.notatki.blockSignals(False)
         self.stan_notatek.setText("Zapisuje się samo.")
+        self._pokaz_przypomnienia()
 
     def _zapisz_notatki(self):
         self.okno.baza.zapisz_ustawienia({"notatki": self.notatki.toPlainText()})
@@ -2431,7 +2722,12 @@ class StronaNarzedzia(Strona):
             self.wynik_numeru.setStyleSheet(f"color: {ZIELONY if ok else CZERWONY};")
             return
         wynik = opis_identyfikatora(tekst)
-        self.wynik_numeru.setText(wynik[0] if wynik else "")
+        opis = wynik[0] if wynik else ""
+        if pesel := narzedzia.dane_z_peselu(tekst):
+            opis += (f" · ur. {pesel.urodzenie:%d.%m.%Y}, {pesel.wiek()} "
+                     f"{'rok' if pesel.wiek() == 1 else 'lata' if pesel.wiek() % 10 in (2, 3, 4) and pesel.wiek() % 100 not in (12, 13, 14) else 'lat'}"
+                     f", {pesel.plec}")
+        self.wynik_numeru.setText(opis)
         self.wynik_numeru.setStyleSheet(f"color: {ZIELONY if wynik and wynik[1] else CZERWONY};")
 
     def _slownie(self, tekst: str):
