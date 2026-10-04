@@ -3422,6 +3422,7 @@ class StronaUstawienia(Strona):
         naglowek.addLayout(naglowek_strony("Ustawienia", "Dane gabinetu, wydruk i bezpieczeństwo."))
         wersja_gora = QLabel(opis_wersji(), objectName="drobny")
         wersja_gora.setToolTip(opis_wersji(pelny=True))
+        wersja_gora.mousePressEvent = lambda _e: self._klik_wersji()
         naglowek.addWidget(wersja_gora, alignment=Qt.AlignmentFlag.AlignBottom)
         naglowek.addStretch()
         self.btn_zablokuj_ust = przycisk("Zablokuj", "klodka", akcja=self.zablokuj_ustawienia)
@@ -3807,7 +3808,7 @@ class StronaUstawienia(Strona):
         k, ku = karta()
         rzad = QHBoxLayout()
         etykieta_wersji = QLabel(opis_wersji(pelny=True))
-        etykieta_wersji.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        etykieta_wersji.mousePressEvent = lambda _e: self._klik_wersji()
         rzad.addWidget(etykieta_wersji)
         rzad.addStretch()
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
@@ -3906,6 +3907,20 @@ class StronaUstawienia(Strona):
             return
         self.okno.dziennik.zapisz("wyświetlenie kodu odzyskiwania")
         OknoKoduOdzyskiwania(urzadzenie.kod_odzyskiwania(szyfr.sekret), self).exec()
+
+    def _klik_wersji(self):
+        """5 kliknięć w numer wersji w ciągu 3 sekund otwiera ustawienia deweloperskie (po haśle)."""
+        teraz = time.monotonic()
+        self._klikniecia_wersji = [t for t in getattr(self, "_klikniecia_wersji", []) if teraz - t < 3] + [teraz]
+        if len(self._klikniecia_wersji) < 5:
+            return
+        self._klikniecia_wersji = []
+        if not self.okno.potwierdz_haslem("ustawienia deweloperskie",
+                                          "Ustawienia deweloperskie wymagają hasła właściciela."):
+            return
+        self.okno.dziennik.zapisz("otwarto ustawienia deweloperskie")
+        OknoDeweloperskie(self.okno).exec()
+        self.odswiez()
 
     def migracja(self):
         odp = QMessageBox.question(
@@ -5799,8 +5814,10 @@ class OknoGlowne(QMainWindow):
 
     def sprawdz_program(self):
         """Czy działający Fakturnik.exe jest tym samym plikiem, który opublikowano w wydaniu."""
-        if self.uruchom_po_zamknieciu:
+        if self.uruchom_po_zamknieciu or aktualizacje.plik_programu_zmieniony():
             return  # plik już podmieniono na nową wersję
+        if self.baza.ustawienia().get("sprawdzaj_plik_programu", "1") != "1":
+            return  # wyłączone w ustawieniach deweloperskich
         w = Watek(aktualizacje.sprawdz_wlasny_plik)
         w.gotowe.connect(self._wynik_sprawdzenia_programu)
         w.blad.connect(lambda _: None)
@@ -6339,6 +6356,99 @@ def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polece
     return wynik.get("polecenie")
 
 
+class OknoDeweloperskie(QDialog):
+    """Ustawienia deweloperskie (5 kliknięć w numer wersji + hasło): wyłączanie zabezpieczeń i diagnostyka."""
+
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno)
+        self.okno = okno
+        self.setWindowTitle("Ustawienia deweloperskie")
+        self.setMinimumWidth(600)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(24, 22, 24, 18)
+        u.setSpacing(10)
+        t = QLabel("Ustawienia deweloperskie")
+        t.setStyleSheet("font-size: 19px; font-weight: 700;")
+        u.addWidget(t)
+        ust = okno.baza.ustawienia()
+        self.bez_zabezpieczen = QCheckBox("Tryb bez dodatkowych zabezpieczeń")
+        self.bez_zabezpieczen.setChecked(ust["tryb_bez_zabezpieczen"] == "1")
+        u.addWidget(self.bez_zabezpieczen)
+        u.addWidget(QLabel("Wyłącza weryfikację urządzenia, ukrywanie okien przed nagrywaniem ekranu, wygaszacz "
+                           "i skaner folderu Pobrane. Hasło i szyfrowanie danych zostają.", objectName="drobny",
+                           wordWrap=True))
+        self.sprawdzanie = QCheckBox("Sprawdzaj plik programu (SHA-256)")
+        self.sprawdzanie.setChecked(ust["sprawdzaj_plik_programu"] == "1")
+        u.addWidget(self.sprawdzanie)
+        u.addWidget(QLabel("Porównuje Fakturnik.exe z sumą opublikowaną w wydaniu na GitHubie przy starcie i co godzinę.",
+                           objectName="drobny", wordWrap=True))
+        u.addWidget(QLabel("Pobierane aktualizacje są zawsze sprawdzane sumą SHA-256 (chroni przed uszkodzonym "
+                           "lub podmienionym plikiem) — tego nie da się wyłączyć.", objectName="drobny", wordWrap=True))
+        u.addWidget(separator())
+        from . import wersja as w_
+        info = QLabel(
+            f"{html_escape(opis_wersji(pelny=True))}<br>"
+            f"Program: {html_escape(sys.executable)}<br>"
+            f"Dane: {html_escape(str(okno.baza.sciezka.parent))}<br>"
+            f"Instalacja w Program Files: {'tak' if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany() else 'nie'}"
+            f" · build {html_escape(getattr(w_, 'BUILD', '') or '—')}",
+            objectName="drobny", wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        u.addWidget(info)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Folder danych", "archiwum",
+                                akcja=lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(okno.baza.sciezka.parent)))))
+        rzad.addWidget(przycisk("Plik błędów", "lista", akcja=self._bledy))
+        rzad.addWidget(przycisk("Sprawdź plik programu teraz", "tarcza", akcja=self._sprawdz_teraz))
+        rzad.addStretch()
+        u.addLayout(rzad)
+        self.wynik = QLabel(objectName="drobny", wordWrap=True)
+        u.addWidget(self.wynik)
+        przyciski = QHBoxLayout()
+        przyciski.addStretch()
+        przyciski.addWidget(przycisk("Anuluj", akcja=self.reject))
+        przyciski.addWidget(przycisk("Zapisz", styl="glowny", akcja=self.zapisz))
+        u.addLayout(przyciski)
+
+    def _bledy(self):
+        plik = self.okno.baza.sciezka.parent / "bledy.log"
+        if plik.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(plik)))
+        else:
+            self.wynik.setText("Brak pliku błędów — program nie zgłosił żadnego błędu.")
+
+    def _sprawdz_teraz(self):
+        self.wynik.setText("Sprawdzanie…")
+        w = Watek(aktualizacje.sprawdz_wlasny_plik)
+        w.gotowe.connect(lambda r: self.wynik.setText(
+            {True: "Plik programu zgodny z wydaniem (SHA-256).", False: "Plik programu RÓŻNI SIĘ od wydań na GitHubie.",
+             None: "Nie da się sprawdzić (wersja ze źródeł, brak internetu albo plik właśnie podmieniony przez "
+                   "aktualizację)."}[r]))
+        w.blad.connect(lambda t: self.wynik.setText(t))
+        self.okno._w_tle(w)
+
+    def zapisz(self):
+        o = self.okno
+        stary = o.baza.ustawienia()["tryb_bez_zabezpieczen"] == "1"
+        nowy = self.bez_zabezpieczen.isChecked()
+        wartosci = {"sprawdzaj_plik_programu": "1" if self.sprawdzanie.isChecked() else "0",
+                    "tryb_bez_zabezpieczen": "1" if nowy else "0"}
+        if nowy and not stary:
+            if o.baza.weryfikacja_urzadzenia:
+                o.baza.powiaz_z_urzadzeniem(None)
+            wartosci.update({"ochrona_ekranu": "0", "zaslona": "0", "skaner_pobrane": "0"})
+        elif stary and not nowy:
+            wartosci.update({"ochrona_ekranu": "1", "zaslona": "1", "skaner_pobrane": "1"})
+        o.baza.zapisz_ustawienia(wartosci)
+        OCHRONA_EKRANU.ustaw(wartosci.get("ochrona_ekranu", o.baza.ustawienia()["ochrona_ekranu"]) == "1")
+        o.dziennik.zapisz("ustawienia deweloperskie: " + ", ".join(f"{k}={v}" for k, v in sorted(wartosci.items())))
+        if stary and not nowy:
+            o.komunikat("Zabezpieczenia włączone (weryfikację urządzenia włączysz w Ustawieniach)")
+        else:
+            o.komunikat("Zapisano ustawienia deweloperskie")
+        self.accept()
+
+
 class OknoAwaryjne(QDialog):
     """Tryb awaryjny: gdy główne okno się nie otworzy, dane można przenieść albo wyłączyć dodatkowe
     zabezpieczenia (hasło i szyfrowanie zostają) i uruchomić program ponownie."""
@@ -6355,8 +6465,7 @@ class OknoAwaryjne(QDialog):
         t.setStyleSheet("font-size: 20px; font-weight: 700;")
         u.addWidget(t)
         u.addWidget(QLabel("Fakturnik nie mógł otworzyć głównego okna. Twoje dane są bezpieczne i zapisane.\n"
-                           "Możesz przenieść je na inny komputer albo wyłączyć dodatkowe zabezpieczenia "
-                           "i spróbować ponownie.", wordWrap=True))
+                           "Możesz przenieść je na inny komputer albo uruchomić program ponownie.", wordWrap=True))
         szczegoly = QLabel(blad.strip().splitlines()[-1][:300] if blad.strip() else "", objectName="drobny",
                            wordWrap=True)
         szczegoly.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -6364,7 +6473,6 @@ class OknoAwaryjne(QDialog):
         u.addSpacing(6)
         for tekst, ik, akcja, styl in (
                 ("Przenieś dane na inny komputer (pakiet .fkopia)", "pobierz", self.migracja, "glowny"),
-                ("Wyłącz dodatkowe zabezpieczenia i uruchom ponownie", "tarcza", self.wylacz_zabezpieczenia, None),
                 ("Otwórz folder z kopiami", "archiwum",
                  lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(katalog_kopii()))), None),
                 ("Zamknij", None, self.reject, None)):
@@ -6391,24 +6499,6 @@ class OknoAwaryjne(QDialog):
         self.dziennik.zapisz("tryb awaryjny: utworzono pakiet migracji")
         QMessageBox.information(self, "Pakiet migracji", "Zapisano pakiet migracji.\n\nNa nowym komputerze zainstaluj "
                                 "Fakturnik i na pierwszym ekranie wybierz „Przenieś dane z innego komputera”.")
-
-    def wylacz_zabezpieczenia(self):
-        if QMessageBox.question(self, "Dodatkowe zabezpieczenia",
-                                "Zostaną wyłączone: weryfikacja urządzenia, ukrywanie okien przed nagrywaniem ekranu, "
-                                "wygaszacz ekranu i skaner folderu Pobrane.\n\nHasło i szyfrowanie danych zostają. "
-                                "Każdą z tych funkcji można potem włączyć w Ustawieniach.\n\nKontynuować?") \
-                != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            if self.baza.weryfikacja_urzadzenia:
-                self.baza.powiaz_z_urzadzeniem(None)
-            self.baza.zapisz_ustawienia({"ochrona_ekranu": "0", "zaslona": "0", "skaner_pobrane": "0"})
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Dodatkowe zabezpieczenia", f"Nie udało się zmienić ustawień:\n{e}")
-            return
-        self.dziennik.zapisz("tryb awaryjny: wyłączono dodatkowe zabezpieczenia")
-        self.restart = True
-        self.accept()
 
 
 def uruchom_jako_administrator(sciezka: Path) -> bool:

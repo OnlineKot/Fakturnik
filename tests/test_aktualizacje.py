@@ -171,3 +171,22 @@ def test_zainstalowany_w_program_files(tmp_path, monkeypatch):
     assert aktualizacje.zainstalowany(pf / "Fakturnik" / "Fakturnik.exe")  # nawet gdy folder jest zapisywalny
     (tmp_path / "Pobrane").mkdir()
     assert not aktualizacje.zainstalowany(tmp_path / "Pobrane" / "Fakturnik.exe")
+
+
+def test_plik_nowszej_wersji_nie_jest_falszywym_alarmem(tmp_path, monkeypatch):
+    """Usługa podmieniła plik na nowszą wersję, a działa jeszcze stara: zgodność z najnowszym wydaniem = oryginał."""
+    exe = tmp_path / "Fakturnik.exe"
+    exe.write_bytes(b"MZ nowa wersja")
+    nowy = hashlib.sha256(exe.read_bytes()).hexdigest()
+
+    def falszywe_pobieranie(adres, timeout=10):
+        if adres.endswith("/releases/tags/v1.0.40"):
+            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
+                              b'"browser_download_url": "https://github.com/x/stara.sha256"}]}')
+        if adres == aktualizacje.ADRES_API:
+            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
+                              b'"browser_download_url": "https://github.com/x/nowa.sha256"}]}')
+        return io.BytesIO((nowy if adres.endswith("nowa.sha256") else "0" * 64).encode())
+
+    monkeypatch.setattr(aktualizacje, "_pobierz", falszywe_pobieranie)
+    assert aktualizacje.sprawdz_wlasny_plik(exe, "1.0.40") is True

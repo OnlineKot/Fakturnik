@@ -75,6 +75,8 @@ DOMYSLNE_USTAWIENIA = {
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
     "qr_strony": "",                    # strony do pokazania jako kod QR (JSON: nazwa, adres)
+    "sprawdzaj_plik_programu": "1",     # "1" = porównuj Fakturnik.exe z sumą SHA-256 wydania (ustawienia deweloperskie)
+    "tryb_bez_zabezpieczen": "0",       # "1" = dodatkowe zabezpieczenia wyłączone (ustawienia deweloperskie)
     "przypomnienia": "",                # przypomnienia z godziną (JSON, w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)

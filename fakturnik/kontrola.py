@@ -33,12 +33,16 @@ def kontrola(baza, dziennik_ok: bool, program_ok: bool | None) -> list[Wynik]:
     wyniki.append(Wynik("haslo", "Hasło i szyfrowanie", baza.ma_haslo,
                         "Dane zaszyfrowane AES-256" if baza.ma_haslo else "Dane nie są chronione hasłem",
                         "Ustaw hasło w Ustawieniach → Bezpieczeństwo."))
-    if program_ok is None and aktualizacje.czy_spakowany():
+    sprawdzanie = baza.ustawienia().get("sprawdzaj_plik_programu", "1") == "1"
+    if not sprawdzanie:
+        program_ok = None
+    elif program_ok is None and aktualizacje.czy_spakowany():
         program_ok = usluga.stan_programu()  # wynik usługi z ostatniego startu komputera lub godziny
     wyniki.append(Wynik("program", "Oryginalny plik programu", program_ok,
                         {True: "Zgodny z opublikowanym wydaniem (SHA-256)",
                          False: "Różni się od opublikowanego wydania",
-                         None: "Sprawdzane przez internet (w wersji .exe)"}[program_ok],
+                         None: "Sprawdzane przez internet (w wersji .exe)" if sprawdzanie
+                         else "Sprawdzanie wyłączone w ustawieniach deweloperskich"}[program_ok],
                         "Pobierz instalator ponownie ze strony wydań i nie wpisuj hasła w tej kopii."))
     sb = urzadzenie.secure_boot()
     wyniki.append(Wynik("secure_boot", "Secure Boot", sb,

@@ -118,29 +118,45 @@ def skrot_pliku(sciezka: Path) -> str:
     return skrot.hexdigest()
 
 
+def _skrot_z_wydania(adres_api: str) -> str | None:
+    with _pobierz(adres_api) as o:
+        dane = json.load(o)
+    pliki = {a["name"]: a for a in dane.get("assets", [])}
+    if NAZWA_PLIKU + ".sha256" not in pliki:
+        return None
+    with _pobierz(pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"]) as o:
+        oczekiwany = o.read().decode("ascii", "replace").split()[0].strip().lower()
+    return oczekiwany if re.fullmatch(r"[0-9a-f]{64}", oczekiwany) else None
+
+
 def sprawdz_wlasny_plik(obecny: Path | None = None, wersja: str = WERSJA) -> bool | None:
-    """Porównuje działający Fakturnik.exe z sumą SHA-256 opublikowaną przy jego wydaniu.
+    """Porównuje plik Fakturnik.exe z sumami SHA-256 opublikowanymi w wydaniach.
 
     True = plik jest oryginalny, False = ktoś go zmienił, None = nie da się sprawdzić
-    (wersja ze źródeł, brak internetu albo wydania).
+    (wersja ze źródeł, brak internetu albo wydania, plik właśnie podmieniony przez aktualizację).
+    Plik może już być nowszą wersją zainstalowaną przez usługę, gdy program jeszcze działa,
+    dlatego zgodność z najnowszym wydaniem też oznacza oryginał.
     """
     if obecny is None:
-        if not czy_spakowany():
+        if not czy_spakowany() or plik_programu_zmieniony():
             return None
         obecny = Path(sys.executable)
     try:
-        with _pobierz(f"https://api.github.com/repos/{REPOZYTORIUM}/releases/tags/v{wersja}") as o:
-            dane = json.load(o)
-        pliki = {a["name"]: a for a in dane.get("assets", [])}
-        if NAZWA_PLIKU + ".sha256" not in pliki:
-            return None
-        with _pobierz(pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"]) as o:
-            oczekiwany = o.read().decode("ascii", "replace").split()[0].strip().lower()
-    except Exception:
+        skrot = skrot_pliku(obecny)
+        znane = set()
+        for adres in (f"https://api.github.com/repos/{REPOZYTORIUM}/releases/tags/v{wersja}", ADRES_API):
+            try:
+                if (oczekiwany := _skrot_z_wydania(adres)):
+                    znane.add(oczekiwany)
+            except BladAktualizacji:
+                raise
+            except Exception:  # noqa: BLE001 - np. brak wydania o tym numerze
+                continue
+    except Exception:  # noqa: BLE001
         return None
-    if not re.fullmatch(r"[0-9a-f]{64}", oczekiwany):
+    if not znane:
         return None
-    return skrot_pliku(obecny) == oczekiwany
+    return skrot in znane
 
 
 # ---------------------------------------------------------------- instalacja w Program Files
