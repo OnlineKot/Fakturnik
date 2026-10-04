@@ -18,6 +18,10 @@ NAZWA_SERWERA = f"Fakturnik-{getpass.getuser()}"
 ROZSZERZENIA_MENU = ("pdf", "jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp")
 KLUCZ_AUTOSTARTU = r"Software\Microsoft\Windows\CurrentVersion\Run"
 NAZWA_WPISU = "Fakturnik"
+# Wybór użytkownika „nie uruchamiaj z Windows” (HKCU, odporny na aktualizację): wpis instalatora w HKLM
+# jest wspólny dla wszystkich kont i instalator odtwarza go przy każdej aktualizacji, więc program sam
+# kończy się po starcie z Windows, gdy użytkownik wyłączył autostart.
+KLUCZ_PREFERENCJI = r"Software\Fakturnik\Preferencje"
 
 
 def na_windows() -> bool:
@@ -118,8 +122,30 @@ def _rejestr():
     return winreg
 
 
-def autostart_wlaczony() -> bool:
+def autostart_wylaczony_przez_uzytkownika() -> bool:
     if not integracja_dostepna():
+        return False
+    winreg = _rejestr()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KLUCZ_PREFERENCJI) as k:
+            return int(winreg.QueryValueEx(k, "autostart_wylaczony")[0]) == 1
+    except (OSError, ValueError):
+        return False
+
+
+def _zapamietaj_wybor_autostartu(wylaczony: bool) -> None:
+    winreg = _rejestr()
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, KLUCZ_PREFERENCJI) as k:
+        winreg.SetValueEx(k, "autostart_wylaczony", 0, winreg.REG_DWORD, int(wylaczony))
+
+
+def start_z_windows(argumenty: list[str]) -> bool:
+    """Uruchomienie przez wpis autostartu (a nie restart po aktualizacji lub po awarii)."""
+    return "--w-tle" in argumenty and "--po-aktualizacji" not in argumenty and "--restart" not in argumenty
+
+
+def autostart_wlaczony() -> bool:
+    if not integracja_dostepna() or autostart_wylaczony_przez_uzytkownika():
         return False
     winreg = _rejestr()
     for galaz in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):  # HKLM: wpis z instalatora (wszystkie konta)
@@ -137,6 +163,7 @@ def ustaw_autostart(wlacz: bool) -> bool:
     if not integracja_dostepna():
         return False
     winreg = _rejestr()
+    _zapamietaj_wybor_autostartu(not wlacz)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, KLUCZ_AUTOSTARTU) as k:
         if wlacz:
             winreg.SetValueEx(k, NAZWA_WPISU, 0, winreg.REG_SZ, f'"{sciezka_programu()}" --w-tle')

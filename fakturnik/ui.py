@@ -34,8 +34,9 @@ from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
 from .system import (
-    JednaKopia, autostart_wlaczony, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
-    ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
+    JednaKopia, autostart_wlaczony, autostart_wylaczony_przez_uzytkownika, integracja_dostepna,
+    menu_kontekstowe_wlaczone, polecenie_z_argumentow, start_z_windows, ustaw_autostart, ustaw_menu_kontekstowe,
+    utworz_skrot_na_pulpicie,
 )
 from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
@@ -6437,6 +6438,9 @@ def uruchom() -> int:
     windows.przygotuj_proces()
     app.installEventFilter(OCHRONA_EKRANU)
 
+    # użytkownik wyłączył uruchamianie z Windows: wpis instalatora (wspólny dla kont) zostaje, więc kończymy
+    if start_z_windows(sys.argv[1:]) and autostart_wylaczony_przez_uzytkownika():
+        return 0
     # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
     argumenty = aktualizacje.czekaj_na_poprzednia(sys.argv[1:])  # po aktualizacji: stara wersja musi się zamknąć
     aktualizacje.posprzataj()  # dopiero teraz stary plik programu jest wolny

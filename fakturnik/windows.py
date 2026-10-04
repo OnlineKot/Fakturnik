@@ -38,7 +38,7 @@ def przygotuj_proces() -> None:
         pass
     try:
         # po ponownym uruchomieniu komputera przez aktualizację Windows program wraca sam (w tle)
-        ctypes.windll.kernel32.RegisterApplicationRestart("--w-tle", 0)
+        ctypes.windll.kernel32.RegisterApplicationRestart("--w-tle --restart", 0)
     except (AttributeError, OSError):
         pass
 

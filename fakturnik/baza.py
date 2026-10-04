@@ -352,6 +352,7 @@ class Baza:
             if spojnosc != "ok":
                 raise ValueError("Plik danych jest uszkodzony.")
         self._migruj(kopia_przed=istnial)
+        self._zachowaj_ustawienia()
         self._utrwal()
         if haslo and self.szyfr and self.szyfr.wersja < 3:
             self.ustaw_haslo(haslo)  # starszy format: przejście na Argon2id i podwójne szyfrowanie
@@ -375,6 +376,14 @@ class Baza:
             with self.db:
                 self.db.executescript(MIGRACJE[numer])
                 self.db.execute(f"PRAGMA user_version = {numer}")
+
+    def _zachowaj_ustawienia(self) -> None:
+        """Ustawienia przechodzą przez aktualizacje bez zmian: wartości, które ktoś miał (także domyślne,
+        nigdy nie zapisane), trafiają do danych, więc nowsza wersja ze zmienionymi wartościami domyślnymi
+        ich nie przestawi. Nowe ustawienia dostają wartość domyślną tylko raz, przy pierwszym uruchomieniu."""
+        self.db.executemany("INSERT OR IGNORE INTO ustawienia (klucz, wartosc) VALUES (?, ?)",
+                            DOMYSLNE_USTAWIENIA.items())
+        self.db.commit()
 
     def _wczytaj(self, sciezka: Path, haslo: str | None, ustaw_szyfr: bool = False) -> bytes:
         dane = Path(sciezka).read_bytes()
