@@ -140,3 +140,22 @@ def ustaw_tapete(sciezka: str) -> bool:
     import ctypes
     return bool(ctypes.windll.user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, str(sciezka),
                                                            SPIF_UPDATEINIFILE_SENDCHANGE))
+
+
+def bezczynnosc_sekund() -> float | None:
+    """Ile sekund minęło od ostatniego ruchu myszy lub klawisza w całym systemie (nie tylko w programie)."""
+    if not na_windows():
+        return None
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return None
+        return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000
+    except Exception:  # noqa: BLE001
+        return None

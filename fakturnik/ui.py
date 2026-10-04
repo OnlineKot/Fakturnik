@@ -3304,6 +3304,19 @@ class StronaUstawienia(Strona):
         rzad_blokady.addWidget(self.blokada_minut)
         rzad_blokady.addStretch()
         ku.addLayout(rzad_blokady)
+        rzad_zaslony = QHBoxLayout()
+        self.zaslona_wl = QCheckBox("Zasłona ekranu z żabką po")
+        rzad_zaslony.addWidget(self.zaslona_wl)
+        self.zaslona_sekund = QSpinBox(minimum=5, maximum=3600, singleStep=15, suffix=" s bezczynności")
+        self.zaslona_sekund.setFixedWidth(190)
+        self.zaslona_wl.toggled.connect(self.zaslona_sekund.setEnabled)
+        rzad_zaslony.addWidget(self.zaslona_sekund)
+        for sek in (30, 60, 120, 300):
+            rzad_zaslony.addWidget(przycisk(f"{sek} s" if sek < 60 else f"{sek // 60} min", styl="plaski",
+                                            akcja=lambda _=False, v=sek: self.zaslona_sekund.setValue(v)))
+        rzad_zaslony.addWidget(przycisk("Pokaż", "pulpit", akcja=lambda: self.okno.pokaz_zaslone()))
+        rzad_zaslony.addStretch()
+        ku.addLayout(rzad_zaslony)
         self.ochrona_ekranu = QCheckBox("Ukrywaj okna programu przed zrzutami i nagrywaniem ekranu "
                                         "(np. narzędzia AI, programy zdalnego dostępu)")
         ku.addWidget(self.ochrona_ekranu)
@@ -3850,6 +3863,9 @@ class StronaUstawienia(Strona):
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
         self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
+        self.zaslona_wl.setChecked(u["zaslona"] == "1")
+        self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 120))
+        self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
         self.w_tle.setChecked(u["w_tle"] == "1")
         self.autostart.setChecked(autostart_wlaczony())
         self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
@@ -3937,6 +3953,8 @@ class StronaUstawienia(Strona):
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
         wartosci["tryb"] = self.tryb.currentData()
         wartosci["blokada_minut"] = str(self.blokada_minut.value())
+        wartosci["zaslona"] = "1" if self.zaslona_wl.isChecked() else "0"
+        wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
         if integracja_dostepna():
             ustaw_autostart(self.autostart.isChecked())
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
@@ -5060,6 +5078,10 @@ class OknoGlowne(QMainWindow):
         self._uruchomiono = datetime.now()
         self._przypomniano = ""
         self._koniec_zgloszony = ""
+        self.zaslona = None
+        self.zegar_zaslony = QTimer(self, interval=2000)
+        self.zegar_zaslony.timeout.connect(self._sprawdz_zaslone)
+        self.zegar_zaslony.start()
         self.zegar_godzin = QTimer(self, interval=30 * 1000)
         self.zegar_godzin.timeout.connect(self.sprawdz_godziny)
         self.zegar_godzin.start()
@@ -5094,6 +5116,33 @@ class OknoGlowne(QMainWindow):
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
         self.grupa.button(STRONA_INTERNET).setVisible(self.baza.ustawienia()["przegladarka"] == "1")
         self._ustaw_nazwe_gabinetu()
+
+    def _bezczynnosc(self) -> float:
+        """Sekundy bez ruchu myszy i klawiatury: w całym Windows, a gdzie indziej w samym programie."""
+        systemowa = windows.bezczynnosc_sekund()
+        if systemowa is not None:
+            return systemowa
+        if self.timer.isActive():
+            return max(0, self.timer.interval() - self.timer.remainingTime()) / 1000
+        return 0.0
+
+    def _sprawdz_zaslone(self):
+        try:
+            u = self.baza.ustawienia()
+        except Exception:  # noqa: BLE001
+            return
+        if self.zaslona or u.get("zaslona") != "1":
+            return
+        if self._bezczynnosc() >= max(5, int(liczba(u.get("zaslona_sekund")) or 120)):
+            self.pokaz_zaslone()
+
+    def pokaz_zaslone(self):
+        if self.zaslona:
+            return
+        from .zaslona import Zaslona
+        self.zaslona = Zaslona()
+        self.zaslona.zamknieta.connect(lambda: setattr(self, "zaslona", None))
+        self.zaslona.pokaz()
 
     def ustaw_czas_blokady(self):
         minuty = int(liczba(self.baza.ustawienia()["blokada_minut"]) or 10)
@@ -5191,6 +5240,7 @@ class OknoGlowne(QMainWindow):
         self.dziennik.zapisz(f"Windows: {opis}" + (f" ({uzytkownik})" if uzytkownik else ""))
         if zdarzenie == windows.BLOKADA:
             self._zablokowano_windows = datetime.now()
+            self.strona_narzedzia.wyczysc_schowek_teraz()  # zawsze, także gdy Fakturnik się nie blokuje
             if self.baza.ma_haslo and self.baza.ustawienia()["blokuj_z_komputerem"] == "1":
                 self.zablokuj()  # komputer zablokowany: Fakturnik też
         elif zdarzenie == windows.ODBLOKOWANIE:
@@ -5490,6 +5540,7 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
+        menu.addAction(ikona("pulpit", TEKST_2), "Zasłoń ekran", self.pokaz_zaslone)
         menu.addAction(ikona("klodka", TEKST_2), "Zablokuj", self.zablokuj)
         menu.addAction(ikona("zamknij", TEKST_2), "Zakończ program…", self.zakoncz)
         self._menu_zasobnika = menu
