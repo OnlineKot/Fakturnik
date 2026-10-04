@@ -228,25 +228,171 @@ def _zapisz_log(tekst: str) -> None:
         pass
 
 
+STAN_AKTUALIZACJI = "aktualizacja.json"
+PRZERWA_PO_BLEDZIE = timedelta(hours=24)  # wersji, która nie przeszła autotestu, nie próbujemy przez dobę
+
+
+def _stan_aktualizacji() -> dict:
+    import json
+    try:
+        dane = json.loads((katalog_uslugi() / STAN_AKTUALIZACJI).read_text(encoding="utf-8"))
+        return dane if isinstance(dane, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _zapisz_stan_aktualizacji(stan: dict) -> None:
+    import json
+    plik = katalog_uslugi() / STAN_AKTUALIZACJI
+    try:
+        plik.parent.mkdir(parents=True, exist_ok=True)
+        tymczasowy = plik.with_suffix(".tmp")
+        tymczasowy.write_text(json.dumps(stan, ensure_ascii=False), encoding="utf-8")
+        os.replace(tymczasowy, plik)
+    except OSError:
+        pass
+
+
+def _oznacz_zla(wersja: str, powod: str) -> None:
+    stan = _stan_aktualizacji()
+    stan.setdefault("zle", {})[wersja] = {"kiedy": datetime.now().isoformat(timespec="seconds"), "powod": powod[:300]}
+    _zapisz_stan_aktualizacji(stan)
+
+
+def _niedawno_zla(wersja: str, teraz: datetime | None = None) -> bool:
+    wpis = _stan_aktualizacji().get("zle", {}).get(wersja)
+    if not wpis:
+        return False
+    try:
+        return (teraz or datetime.now()) - datetime.fromisoformat(wpis["kiedy"]) < PRZERWA_PO_BLEDZIE
+    except (KeyError, ValueError):
+        return False
+
+
+class _Blokada:
+    """Tylko jedna aktualizacja naraz (np. zadanie godzinowe i zadanie po starcie komputera)."""
+
+    def __init__(self, plik: Path, przeterminowana: timedelta = timedelta(hours=1)):
+        self.plik, self.przeterminowana, self.moja = plik, przeterminowana, False
+
+    def __enter__(self):
+        self.plik.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if self.plik.exists() and datetime.now() - datetime.fromtimestamp(self.plik.stat().st_mtime) \
+                    > self.przeterminowana:
+                self.plik.unlink()  # po awarii zasilania blokada mogła zostać
+            fd = os.open(self.plik, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            self.moja = True
+        except OSError:
+            self.moja = False
+        return self.moja
+
+    def __exit__(self, *_):
+        if self.moja:
+            try:
+                self.plik.unlink()
+            except OSError:
+                pass
+
+
+def autotest_programu(exe: Path, wersja: str = "", limit_s: int = 180) -> tuple[bool, str]:
+    """Uruchamia program z --autotest (czyste środowisko, bez okien) i czyta wynik z pliku."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as katalog:
+        wynik = Path(katalog) / "autotest.txt"
+        srodowisko = {k: v for k, v in os.environ.items() if not k.startswith(("_MEI", "_PYI"))}
+        srodowisko.update({"PYINSTALLER_RESET_ENVIRONMENT": "1", "QT_QPA_PLATFORM": "offscreen"})
+        try:
+            kod = subprocess.run([str(exe), "--autotest", str(wynik)], env=srodowisko, capture_output=True,
+                                 timeout=limit_s, creationflags=0x08000000 if sys.platform == "win32" else 0).returncode
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"nie uruchomił się ({e})"
+        try:
+            tresc = wynik.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            tresc = ""
+    ok = kod == 0 and tresc.startswith("AUTOTEST OK") and (not wersja or f"AUTOTEST OK {wersja}" in tresc)
+    return ok, "OK" if ok else (tresc.strip().splitlines()[-1] if tresc.strip() else f"kod wyjścia {kod}")
+
+
+def _wyglada_na_program(plik: Path) -> bool:
+    try:
+        with open(plik, "rb") as f:
+            return f.read(2) == b"MZ" and plik.stat().st_size > 1024 * 1024
+    except OSError:
+        return False
+
+
 def aktualizuj_program() -> str:
-    """Instaluje nowszą wersję z GitHuba (sprawdzoną SHA-256). Działający u użytkownika program
-    zauważy nowy plik i uruchomi się ponownie, gdy okno będzie schowane."""
+    """Pancerna aktualizacja: pobranie (SHA-256) → autotest pobranej wersji → podmiana → autotest
+    zainstalowanej; przy jakimkolwiek błędzie zostaje (albo wraca) poprzednia, działająca wersja,
+    a wadliwa wersja jest pomijana przez dobę. Działający u użytkownika program zauważy nowy plik
+    i uruchomi się ponownie, gdy okno będzie schowane."""
     from . import aktualizacje
     if not aktualizacje.czy_spakowany():
         return "pominięto (wersja ze źródeł)"
     exe = Path(sys.executable)
-    aktualizacje.posprzataj(exe)
-    # przeglądarka nie jest już częścią programu: plik ze starszej wersji jest usuwany
-    try:
-        exe.with_name("FakturnikPrzegladarka.exe").unlink(missing_ok=True)
-    except OSError:
-        pass
-    wydanie = aktualizacje.sprawdz()
-    if not wydanie:
-        return "program aktualny"
-    nowy = aktualizacje.pobierz(wydanie, exe.with_name("Fakturnik.new.exe"))
-    aktualizacje.zainstaluj(nowy, exe)
-    return f"zainstalowano wersję {wydanie.wersja}"
+    with _Blokada(katalog_uslugi() / "aktualizacja.lock") as moja:
+        if not moja:
+            return "pominięto (inna aktualizacja w toku)"
+        aktualizacje.posprzataj(exe)
+        try:  # przeglądarka nie jest już częścią programu: plik ze starszej wersji jest usuwany
+            exe.with_name("FakturnikPrzegladarka.exe").unlink(missing_ok=True)
+        except OSError:
+            pass
+        wydanie = aktualizacje.sprawdz()
+        if not wydanie:
+            return "program aktualny"
+        if _niedawno_zla(wydanie.wersja):
+            return f"pominięto wersję {wydanie.wersja} (nie przeszła autotestu, następna próba za dobę)"
+        try:
+            wolne = shutil.disk_usage(exe.parent).free
+        except OSError:
+            wolne = 0
+        if wydanie.rozmiar and wolne and wolne < 3 * wydanie.rozmiar:
+            return "pominięto (za mało miejsca na dysku)"
+        katalog = katalog_uslugi() / "aktualizacja"
+        katalog.mkdir(parents=True, exist_ok=True)
+        pobrany = katalog / f"Fakturnik-{wydanie.wersja}.exe"
+        try:
+            aktualizacje.pobierz(wydanie, pobrany)  # SHA-256 z wydania; przy niezgodności plik jest usuwany
+            if not _wyglada_na_program(pobrany):
+                _oznacz_zla(wydanie.wersja, "pobrany plik nie jest programem")
+                return f"odrzucono wersję {wydanie.wersja} (pobrany plik nie jest programem)"
+            ok, opis = autotest_programu(pobrany, wydanie.wersja)
+            if not ok:
+                _oznacz_zla(wydanie.wersja, f"autotest przed instalacją: {opis}")
+                return f"odrzucono wersję {wydanie.wersja}: autotest nie przeszedł ({opis}); zostaje obecna"
+            nowy = exe.with_name("Fakturnik.new.exe")
+            shutil.copyfile(pobrany, nowy)
+            if _skrot(nowy) != _skrot(pobrany):
+                nowy.unlink(missing_ok=True)
+                return "przerwano (kopia pliku uszkodzona przy zapisie)"
+            aktualizacje.zainstaluj(nowy, exe)
+            ok, opis = autotest_programu(exe, wydanie.wersja)
+            if not ok:
+                stary = exe.with_name("Fakturnik.old.exe")
+                if stary.exists():
+                    zly = exe.with_name("Fakturnik.zly.exe")
+                    try:
+                        zly.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    os.replace(exe, zly)
+                    os.replace(stary, exe)
+                _oznacz_zla(wydanie.wersja, f"autotest po instalacji: {opis}")
+                return f"wycofano wersję {wydanie.wersja} ({opis}); przywrócono poprzednią"
+        finally:
+            try:
+                pobrany.unlink(missing_ok=True)
+            except OSError:
+                pass
+        stan = _stan_aktualizacji()
+        stan["ostatnia"] = {"wersja": wydanie.wersja, "kiedy": datetime.now().isoformat(timespec="seconds")}
+        _zapisz_stan_aktualizacji(stan)
+        return f"zainstalowano wersję {wydanie.wersja} (autotest OK)"
 
 
 def kopia_programu() -> str:

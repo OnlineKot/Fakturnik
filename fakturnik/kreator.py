@@ -73,9 +73,8 @@ class Kreator(QDialog):
         nazwa = QLabel("Fakturnik")
         nazwa.setStyleSheet("color: white; font-size: 16px; font-weight: 600; padding: 8px 0 0;")
         b.addWidget(nazwa)
-        autor = QLabel("by TeodorTeo.com")
-        autor.setStyleSheet("font-size: 11px; padding: 0 0 18px;")
-        b.addWidget(autor)
+        nazwa.setToolTip("by TeodorTeo.com")
+        b.addSpacing(18)
         self.etykiety = []
         for i, k in enumerate(KROKI):
             e = QLabel(f"{i + 1}.  {k}", objectName="kreator_krok")

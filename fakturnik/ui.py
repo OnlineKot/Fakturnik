@@ -459,8 +459,6 @@ class OknoHasla(QDialog):
         naglowek = QLabel(tytul, alignment=Qt.AlignmentFlag.AlignHCenter)
         naglowek.setStyleSheet("font-size: 18px; font-weight: 650; letter-spacing: -0.3px;")
         u.addWidget(naglowek)
-        if tytul == "Fakturnik":
-            u.addWidget(QLabel("by TeodorTeo.com", objectName="drobny", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addWidget(QLabel(opis, objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addSpacing(6)
         self.pole = QLineEdit(echoMode=QLineEdit.EchoMode.Password, placeholderText="Hasło")
@@ -3421,7 +3419,7 @@ class StronaUstawienia(Strona):
         naglowek.setContentsMargins(0, 0, 0, 0)
         naglowek.addLayout(naglowek_strony("Ustawienia", "Dane gabinetu, wydruk i bezpieczeństwo."))
         wersja_gora = QLabel(opis_wersji(), objectName="drobny")
-        wersja_gora.setToolTip(opis_wersji(pelny=True))
+        wersja_gora.setToolTip(opis_wersji(pelny=True) + "\nby TeodorTeo.com")
         wersja_gora.mousePressEvent = lambda _e: self._klik_wersji()
         naglowek.addWidget(wersja_gora, alignment=Qt.AlignmentFlag.AlignBottom)
         naglowek.addStretch()
@@ -3819,11 +3817,7 @@ class StronaUstawienia(Strona):
         prawa.addWidget(k)
         prawa.addSpacing(14)
 
-        autor = QLabel('<a href="https://teodorteo.com" style="color: #8e8e93; text-decoration: none;">'
-                       'TeodorTeo.com</a>', objectName="drobny")
-        autor.setOpenExternalLinks(True)
-        autor.setCursor(Qt.CursorShape.PointingHandCursor)
-        prawa.addWidget(autor, alignment=Qt.AlignmentFlag.AlignHCenter)
+
         u.addStretch()
 
     @staticmethod
@@ -5301,7 +5295,8 @@ class OknoGlowne(QMainWindow):
         self.btn_blokuj.setIcon(ikona("klodka", MENU_TEKST))
         self.btn_blokuj.clicked.connect(self.zablokuj)
         m.addWidget(self.btn_blokuj)
-        podpis = QLabel(f"Wersja {WERSJA}<br>by TeodorTeo.com", textFormat=Qt.TextFormat.RichText)
+        podpis = QLabel(f"Wersja {WERSJA}")
+        podpis.setToolTip("by TeodorTeo.com")
         podpis.setStyleSheet("color: #5f8189; font-size: 10px; padding: 6px 24px 0;")
         m.addWidget(podpis, alignment=Qt.AlignmentFlag.AlignLeft)
         uklad.addWidget(menu)
@@ -6430,7 +6425,7 @@ class OknoDeweloperskie(QDialog):
         u.addWidget(separator())
         from . import wersja as w_
         info = QLabel(
-            f"{html_escape(opis_wersji(pelny=True))}<br>"
+            f"{html_escape(opis_wersji(pelny=True))} · by TeodorTeo.com<br>"
             f"Program: {html_escape(sys.executable)}<br>"
             f"Dane: {html_escape(str(okno.baza.sciezka.parent))}<br>"
             f"Instalacja w Program Files: {'tak' if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany() else 'nie'}"

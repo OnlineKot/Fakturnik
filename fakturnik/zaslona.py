@@ -183,12 +183,6 @@ class _Ekran(QWidget):
         p.setFont(czcionka_daty)
         p.setPen(QColor("#7f9499"))
         p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
-        # mały podpis w prawym dolnym rogu; przesuwa się o kilka pikseli, żeby nie wypalał ekranu
-        przes = (teraz_m - z.start) / 60.0
-        p.setFont(self._czcionka(self.font(), 12 * jednostka + 4, QFont.Weight.Normal))
-        p.setPen(QColor("#4f5f63"))
-        p.drawText(QRectF(0, 0, w - 18 * jednostka - 6 - 6 * odbicie(przes, 1.0), h - 14 * jednostka - 6 - 6 * odbicie(przes * 0.7, 1.0)),
-                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "TeodorTeo.com")
         p.end()
 
     def keyPressEvent(self, e):

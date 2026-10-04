@@ -2,7 +2,6 @@
 
 Spokojne, płaskie kolory marki (bez poświat i efektów), ostre logo gabinetu (ząb z narzędziem)
 i nazwa gabinetu. Ikony pulpitu są zwykle po lewej stronie, więc ważne elementy stoją z dala od nich.
-Mały podpis TeodorTeo.com jest w prawym dolnym rogu, nad paskiem zadań.
 """
 
 from pathlib import Path
@@ -85,9 +84,6 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
               QRectF(0, y + wys + 18 * skala, szerokosc - 90 * skala, 36 * skala),
               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-    tekst("TeodorTeo.com", 13 * skala, QFont.Weight.Normal, w["opis"],
-          QRectF(0, wysokosc - 80 * skala, szerokosc - 24 * skala, 20 * skala),
-          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     p.end()
     return obraz
 

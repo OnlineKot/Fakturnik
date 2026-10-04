@@ -29,6 +29,10 @@ if __name__ == "__main__":
     if "--usluga" in sys.argv:  # kopie i aktualizacje z Harmonogramu zadań (konto SYSTEM), bez okien
         from fakturnik.usluga import uruchom_usluge
         sys.exit(uruchom_usluge())
+    if "--autotest" in sys.argv:  # sprawdzenie nowej wersji przez usługę aktualizacji, przed instalacją
+        from fakturnik.autotest import uruchom as autotest
+        i = sys.argv.index("--autotest")
+        sys.exit(autotest(sys.argv[i + 1] if len(sys.argv) > i + 1 else "autotest.txt"))
     if "--odinstaluj" in sys.argv:  # pytanie o hasło z deinstalatora
         from fakturnik.ui import potwierdz_odinstalowanie
         sys.exit(potwierdz_odinstalowanie())
