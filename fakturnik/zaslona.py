@@ -1,60 +1,88 @@
-"""Zasłona ekranu: pełny ekran z ząbkiem i zegarem na wszystkich monitorach, bez żadnych napisów.
+"""Zasłona ekranu: pełny ekran z ząbkiem (jak w logo gabinetu) i zegarem na wszystkich monitorach, bez napisów.
 
-Znika po trzech naciśnięciach spacji (w ciągu 2 sekund). Nie czyści schowka i nie wylogowuje:
+Znika tylko po DOKŁADNIE trzech naciśnięciach spacji i krótkiej pauzie. Cztery i więcej spacji,
+przytrzymana spacja albo inny klawisz w serii nic nie dają. Nie czyści schowka i nie wylogowuje:
 to szybka zasłona przed wzrokiem pacjentów. Blokada hasłem działa niezależnie od niej.
 
-Wygląd: płynne pojawienie się i zniknięcie, unoszący się i mrugający ząbek, pulsująca poświata
-i migoczące iskierki. Wszystkie rozmiary liczone są od wielkości ekranu, więc nic nie wychodzi
-poza krawędzie (mały laptop, duży monitor, ekran pionowy).
+Animacja: zasłona płynnie się pojawia, kontur ząbka i lusterka rysuje się sam, potem ząbek
+spokojnie się unosi, po szkliwie co kilka sekund przesuwa się odblask, w tle wolno płyną
+rozmyte światła. Rozmiary liczone są od wielkości ekranu, więc nic nie wychodzi poza krawędzie.
 """
 
 import math
+import random
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QByteArray, QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient, QPainter, QPainterPath, \
-    QRadialGradient
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen,
+    QRadialGradient, QTransform,
+)
 from PySide6.QtWidgets import QWidget
 
 SPACJE = 3
-OKNO_SPACJI = 2.0  # sekundy na trzy spacje
-POJAWIANIE_MS = 700
-ZNIKANIE_MS = 350
+OKNO_SPACJI = 2.0    # trzy spacje w ciągu tylu sekund
+PAUZA = 0.6          # po trzeciej spacji: tyle ciszy, żeby zasłona zniknęła (czwarta spacja psuje serię)
+KARA = 1.2           # po nieudanej serii: tyle ciszy, zanim można zacząć od nowa
+POJAWIANIE_MS = 800
+ZNIKANIE_MS = 400
+RYSOWANIE = 1.6      # sekundy rysowania konturu
 
-_ZAB = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 215">
-<path d="M100 22 C72 6 30 14 28 62 C26 98 40 122 48 152 C55 182 60 206 73 206 C88 206 85 162 100 162
-         C115 162 112 206 127 206 C140 206 145 182 152 152 C160 122 174 98 172 62 C170 14 128 6 100 22 Z"
-      fill="#ffffff" stroke="#d3e6ea" stroke-width="3"/>
-<path d="M48 70 Q49 42 76 36" stroke="#dcedf1" stroke-width="9" fill="none" stroke-linecap="round"/>
-{oczy}
-<ellipse cx="64" cy="114" rx="10" ry="6" fill="#f6b3bb" opacity="0.8"/>
-<ellipse cx="136" cy="114" rx="10" ry="6" fill="#f6b3bb" opacity="0.8"/>
-<path d="M86 113 Q100 128 114 113" stroke="#1d2b2f" stroke-width="4.5" fill="none" stroke-linecap="round"/>
-</svg>"""
-_OCZY_OTWARTE = ('<circle cx="78" cy="96" r="8" fill="#1d2b2f"/><circle cx="122" cy="96" r="8" fill="#1d2b2f"/>'
-                 '<circle cx="81" cy="93" r="2.6" fill="white"/><circle cx="125" cy="93" r="2.6" fill="white"/>')
-_OCZY_ZAMKNIETE = ('<path d="M69 97 Q78 104 87 97" stroke="#1d2b2f" stroke-width="4" fill="none" stroke-linecap="round"/>'
-                   '<path d="M113 97 Q122 104 131 97" stroke="#1d2b2f" stroke-width="4" fill="none" '
-                   'stroke-linecap="round"/>')
-_ISKIERKI = [(-0.95, -0.55, 1.0, 0.0), (0.98, -0.35, 0.8, 1.3), (-0.78, 0.55, 0.65, 2.1), (0.85, 0.6, 0.9, 0.7),
-             (0.1, -1.05, 0.55, 2.8), (-0.35, -0.95, 0.45, 1.9)]  # (x, y względem ząbka, wielkość, faza)
+KOLOR_LINII = QColor("#e8f3f5")
+AKCENT = QColor("#5fb3c2")
 
 DNI = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
 MIESIACE = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
             "października", "listopada", "grudnia"]
 
 
-def _gwiazdka(srodek: QPointF, r: float) -> QPainterPath:
-    """Czteroramienna iskierka."""
+class LicznikSpacji:
+    """Odblokowanie dokładnie trzema spacjami (bez Qt, do testów)."""
+
+    def __init__(self):
+        self.serie: list[float] = []
+        self.kara_do = 0.0
+
+    def nacisniecie(self, spacja: bool, teraz: float, powtorzenie: bool = False) -> None:
+        if not spacja or powtorzenie or teraz < self.kara_do:
+            self.serie = []
+            self.kara_do = teraz + KARA
+            return
+        self.serie = [t for t in self.serie if teraz - t <= OKNO_SPACJI] + [teraz]
+        if len(self.serie) > SPACJE:
+            self.serie = []
+            self.kara_do = teraz + KARA
+
+    def odblokowac(self, teraz: float) -> bool:
+        """Prawda, gdy były dokładnie trzy spacje, a od ostatniej minęła pauza bez kolejnych klawiszy."""
+        return len(self.serie) == SPACJE and teraz - self.serie[-1] >= PAUZA
+
+
+def kontur_zeba() -> QPainterPath:
+    """Ząbek z logo gabinetu (układ 200 × 215)."""
     s = QPainterPath()
-    s.moveTo(srodek.x(), srodek.y() - r)
-    for kat in range(1, 8):
-        promien = r if kat % 2 == 0 else r * 0.28
-        a = math.pi / 2 - kat * math.pi / 4
-        s.lineTo(srodek.x() + promien * math.cos(a), srodek.y() - promien * math.sin(a))
+    s.moveTo(100, 30)
+    s.cubicTo(74, 12, 30, 18, 30, 66)
+    s.cubicTo(30, 100, 44, 124, 50, 152)
+    s.cubicTo(57, 184, 62, 206, 75, 206)
+    s.cubicTo(90, 206, 86, 160, 100, 160)
+    s.cubicTo(114, 160, 110, 206, 125, 206)
+    s.cubicTo(138, 206, 143, 184, 150, 152)
+    s.cubicTo(156, 124, 170, 100, 170, 66)
+    s.cubicTo(170, 18, 126, 12, 100, 30)
     s.closeSubpath()
+    return s
+
+
+def lusterko() -> QPainterPath:
+    """Lusterko dentystyczne: trzonek wychodzący z ząbka i owalna główka (jak w logo)."""
+    s = QPainterPath()
+    s.moveTo(118, 64)
+    s.lineTo(156, 8)
+    glowka = QPainterPath()
+    glowka.addEllipse(QPointF(0, 0), 8, 14)
+    s.addPath(QTransform().translate(161, -2).rotate(34).map(glowka))
     return s
 
 
@@ -90,70 +118,105 @@ class _Ekran(QWidget):
         tlo.setColorAt(1, QColor("#061519"))
         p.fillRect(self.rect(), tlo)
 
-        # układ: ząbek, zegar i data razem zajmują najwyżej ~78% wysokości i ~80% szerokości ekranu
+        # rozmyte światła płynące powoli w górę
+        p.setPen(Qt.PenStyle.NoPen)
+        for x0, predkosc, r, faza in z.swiatla:
+            y = (1.15 - ((t * predkosc + faza) % 1.3)) * h
+            x = (x0 + 0.02 * math.sin(t * 0.3 + faza * 6)) * w
+            promien = r * min(w, h)
+            g = QRadialGradient(QPointF(x, y), promien)
+            g.setColorAt(0, QColor(95, 179, 194, 38))
+            g.setColorAt(1, QColor(95, 179, 194, 0))
+            p.setBrush(g)
+            p.drawEllipse(QPointF(x, y), promien, promien)
+
+        # układ: ząbek, zegar i data mieszczą się w ~80% wysokości i szerokości ekranu
         jednostka = min(w / 1.15, h) / 1000
-        wys_zeba = 260 * jednostka
-        szer_zeba = wys_zeba * 200 / 215
-        czcionka_zegara = self._czcionka(self.font(), 150 * jednostka, QFont.Weight.Light)
-        czcionka_daty = self._czcionka(self.font(), 34 * jednostka, QFont.Weight.Normal)
+        wys_zeba = 270 * jednostka
+        skala = wys_zeba / 215
         teraz = datetime.now()
         zegar = f"{teraz:%H:%M}"
         data = f"{DNI[teraz.weekday()]}, {teraz.day} {MIESIACE[teraz.month - 1]}"
-        for f, tekst in ((czcionka_zegara, zegar), (czcionka_daty, data)):  # dopasuj do szerokości
+        czcionka_zegara = self._czcionka(self.font(), 150 * jednostka, QFont.Weight.Light)
+        czcionka_daty = self._czcionka(self.font(), 34 * jednostka, QFont.Weight.Normal)
+        for f, tekst in ((czcionka_zegara, zegar), (czcionka_daty, data)):
             szer = QFontMetricsF(f).horizontalAdvance(tekst)
             if szer > w * 0.8:
                 f.setPixelSize(max(10, int(f.pixelSize() * w * 0.8 / szer)))
         wys_zegara = QFontMetricsF(czcionka_zegara).height()
         wys_daty = QFontMetricsF(czcionka_daty).height()
-        odstep = 40 * jednostka
-        calosc = wys_zeba + odstep + wys_zegara + wys_daty
-        gora = (h - calosc) / 2
+        odstep = 46 * jednostka
+        gora = (h - (wys_zeba + odstep + wys_zegara + wys_daty)) / 2
 
-        # ząbek: unosi się, podskakuje po spacji, mruga
-        unoszenie = math.sin(t * 1.5) * 9 * jednostka
-        od_spacji = time.monotonic() - z.ostatnia_spacja
-        podskok = math.exp(-od_spacji * 7) * math.sin(od_spacji * 22) * 0.06 if od_spacji < 1 else 0
-        skala = 1 + podskok
+        # ząbek: rysuje się, potem spokojnie się unosi
+        postep = min(1.0, t / RYSOWANIE)
+        postep = 1 - (1 - postep) ** 3
+        unoszenie = math.sin(t * 1.1) * 7 * jednostka
         srodek = QPointF(w / 2, gora + wys_zeba / 2 + unoszenie)
-        # poświata
-        puls = 0.5 + 0.5 * math.sin(t * 1.2)
-        poswiata = QRadialGradient(srodek, wys_zeba * (0.85 + 0.08 * puls))
-        poswiata.setColorAt(0, QColor(94, 180, 196, int(70 + 30 * puls)))
-        poswiata.setColorAt(1, QColor(94, 180, 196, 0))
-        p.setPen(Qt.PenStyle.NoPen)
+        oddech = 0.5 + 0.5 * math.sin(t * 0.9)
+        poswiata = QRadialGradient(srodek, wys_zeba * (0.95 + 0.06 * oddech))
+        poswiata.setColorAt(0, QColor(95, 179, 194, int((55 + 25 * oddech) * postep)))
+        poswiata.setColorAt(1, QColor(95, 179, 194, 0))
         p.setBrush(poswiata)
-        p.drawEllipse(srodek, wys_zeba * 1.1, wys_zeba * 1.1)
-        # cień (mniejszy, gdy ząbek jest wyżej)
-        cien_sz = szer_zeba * (0.62 + unoszenie / (300 * jednostka or 1))
-        p.setBrush(QColor(0, 0, 0, 80))
-        p.drawEllipse(QPointF(w / 2, gora + wys_zeba + 14 * jednostka), cien_sz / 2, 7 * jednostka)
-        # iskierki
-        for dx, dy, wielkosc, faza in _ISKIERKI:
-            jasnosc = max(0.0, math.sin(t * 1.7 + faza * 2.3))
-            if jasnosc <= 0.02:
-                continue
-            punkt = QPointF(srodek.x() + dx * szer_zeba * 0.78, srodek.y() + dy * wys_zeba * 0.62)
-            p.setBrush(QColor(220, 245, 250, int(220 * jasnosc)))
-            p.drawPath(_gwiazdka(punkt, 13 * jednostka * wielkosc * (0.6 + 0.4 * jasnosc)))
-        mruga = (t % 4.5) > 4.33
+        p.drawEllipse(srodek, wys_zeba * 1.05, wys_zeba * 1.05)
+        # fala po każdej spacji (bez zdradzania, ile ich było)
+        od_spacji = time.monotonic() - z.ostatnia_spacja
+        if od_spacji < 0.9:
+            k = od_spacji / 0.9
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(232, 243, 245, int(90 * (1 - k))), 2 * jednostka + 0.5))
+            p.drawEllipse(srodek, wys_zeba * (0.55 + 0.45 * k), wys_zeba * (0.55 + 0.45 * k))
+
         p.save()
-        p.translate(srodek)
+        p.translate(srodek.x() - 100 * skala, srodek.y() - 107 * skala)
         p.scale(skala, skala)
-        (z.zab_zamkniety if mruga else z.zab).render(p, QRectF(-szer_zeba / 2, -wys_zeba / 2, szer_zeba, wys_zeba))
+        zab = z.zab
+        # wypełnienie szkliwa pojawia się po narysowaniu konturu
+        wypelnienie = max(0.0, min(1.0, (t - RYSOWANIE * 0.7) / 0.8))
+        if wypelnienie > 0:
+            szkliwo = QLinearGradient(0, 20, 0, 206)
+            szkliwo.setColorAt(0, QColor(255, 255, 255, int(46 * wypelnienie)))
+            szkliwo.setColorAt(1, QColor(255, 255, 255, int(10 * wypelnienie)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(szkliwo)
+            p.drawPath(zab)
+            # odblask przesuwający się po szkliwie co 7 s
+            faza = (t - RYSOWANIE) % 7.0
+            if 0 <= faza < 1.6:
+                x = -60 + faza / 1.6 * 320
+                blask = QLinearGradient(x - 40, 0, x + 40, 60)
+                blask.setColorAt(0, QColor(255, 255, 255, 0))
+                blask.setColorAt(0.5, QColor(255, 255, 255, int(70 * wypelnienie)))
+                blask.setColorAt(1, QColor(255, 255, 255, 0))
+                p.save()
+                p.setClipPath(zab)
+                p.fillRect(QRectF(0, 0, 200, 215), QBrush(blask))
+                p.restore()
+        grubosc = 7.0
+        for sciezka, dlugosc, kolor in ((zab, z.dl_zeba, KOLOR_LINII), (z.lusterko, z.dl_lusterka, AKCENT)):
+            pioro = QPen(kolor, grubosc, Qt.PenStyle.CustomDashLine, Qt.PenCapStyle.RoundCap,
+                         Qt.PenJoinStyle.RoundJoin)
+            jednostki = dlugosc / grubosc + 1
+            pioro.setDashPattern([jednostki, jednostki])
+            pioro.setDashOffset(jednostki * (1 - postep))
+            p.setPen(pioro)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(sciezka)
         p.restore()
 
-        # zegar i data
-        y = gora + wys_zeba + odstep
+        # zegar i data pojawiają się po ząbku
+        widocznosc = max(0.0, min(1.0, (t - 0.5) / 0.9))
+        y = gora + wys_zeba + odstep + (1 - widocznosc) * 12 * jednostka
         p.setFont(czcionka_zegara)
-        p.setPen(QColor("#e8f3f5"))
+        p.setPen(QColor(232, 243, 245, int(255 * widocznosc)))
         p.drawText(QRectF(0, y, w, wys_zegara), Qt.AlignmentFlag.AlignCenter, zegar)
         p.setFont(czcionka_daty)
-        p.setPen(QColor("#8fb3ba"))
+        p.setPen(QColor(143, 179, 186, int(255 * widocznosc)))
         p.drawText(QRectF(0, y + wys_zegara, w, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
         p.end()
 
     def keyPressEvent(self, e):
-        self.zaslona.klawisz(e.key())
+        self.zaslona.klawisz(e.key(), e.isAutoRepeat())
 
     def closeEvent(self, e):
         if not self.zaslona.zamykanie:
@@ -168,16 +231,21 @@ class Zaslona(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.zab = QSvgRenderer(QByteArray(_ZAB.format(oczy=_OCZY_OTWARTE).encode()))
-        self.zab_zamkniety = QSvgRenderer(QByteArray(_ZAB.format(oczy=_OCZY_ZAMKNIETE).encode()))
+        self.zab = kontur_zeba()
+        self.lusterko = lusterko()
+        self.dl_zeba = self.zab.length()
+        self.dl_lusterka = self.lusterko.length()
+        los = random.Random(7)
+        self.swiatla = [(los.random(), 0.012 + los.random() * 0.02, 0.06 + los.random() * 0.1, los.random())
+                        for _ in range(9)]
         self.start = time.monotonic()
         self.ostatnia_spacja = 0.0
         self.zamykanie = False
-        self._spacje: list[float] = []
+        self.licznik = LicznikSpacji()
         self._animacje: list[QPropertyAnimation] = []
         self.ekrany = [_Ekran(self, e) for e in QGuiApplication.screens()]
         self._animacja = QTimer(self, interval=33)  # ~30 klatek na sekundę
-        self._animacja.timeout.connect(self._odswiez)
+        self._animacja.timeout.connect(self._klatka)
         self._pilnuj = QTimer(self, interval=1000)
         self._pilnuj.timeout.connect(self._na_wierzch)
 
@@ -204,7 +272,10 @@ class Zaslona(QWidget):
         self._animacja.start()
         self._pilnuj.start()
 
-    def _odswiez(self):
+    def _klatka(self):
+        if not self.zamykanie and self.licznik.odblokowac(time.monotonic()):
+            self.zamknij()
+            return
         for e in self.ekrany:
             e.update()
 
@@ -218,14 +289,13 @@ class Zaslona(QWidget):
             self.ekrany[0].activateWindow()
             self.ekrany[0].grabKeyboard()
 
-    def klawisz(self, klawisz: int):
-        if klawisz != Qt.Key.Key_Space or self.zamykanie:
+    def klawisz(self, klawisz: int, powtorzenie: bool = False):
+        if self.zamykanie:
             return
-        teraz = time.monotonic()
-        self.ostatnia_spacja = teraz
-        self._spacje = [t for t in self._spacje if teraz - t <= OKNO_SPACJI] + [teraz]
-        if len(self._spacje) >= SPACJE:
-            self.zamknij()
+        spacja = klawisz == Qt.Key.Key_Space
+        if spacja and not powtorzenie:
+            self.ostatnia_spacja = time.monotonic()
+        self.licznik.nacisniecie(spacja, time.monotonic(), powtorzenie)
 
     def zamknij(self, natychmiast: bool = False):
         if self.zamykanie:
