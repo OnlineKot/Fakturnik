@@ -68,7 +68,7 @@ DOMYSLNE_USTAWIENIA = {
     "asystentki_zamkniecie_dnia": "1",  # "1" = asystentka może zrobić zamknięcie dnia bez hasła właściciela
     "druk_wystawil": "1",               # "1" = „Wystawił(a): …” na dokumencie
     "notatki": "",
-    "zaslona": "1",                     # zasłona ekranu z ząbkiem po bezczynności komputera (3 spacje = powrót)
+    "zaslona": "1",                     # zasłona ekranu z ząbkiem po bezczynności komputera (5 spacji = powrót)
     "zaslona_gaszenie_min": "10",       # po ilu minutach zasłony zgasić ekran i monitor (0 = nigdy)
     "zaslona_sekund": "30",             # po ilu sekundach bezczynności pokazać zasłonę
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
