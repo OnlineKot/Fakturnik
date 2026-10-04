@@ -5989,6 +5989,7 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
+        menu.addAction(ikona("zamknij", TEKST_2), "Zamknij wszystkie powiadomienia", OknoPowiadomienia.zamknij_wszystkie)
         menu.addAction(ikona("pulpit", TEKST_2), "Zasłoń ekran", self.pokaz_zaslone)
         self.akcja_wygaszacza = menu.addAction("Wygaszacz ekranu (ząbek) włączony")
         self.akcja_wygaszacza.setCheckable(True)

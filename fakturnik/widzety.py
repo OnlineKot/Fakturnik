@@ -3,10 +3,10 @@
 import math
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRectF, QSizeF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QTextDocument
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QTextDocument
 from PySide6.QtWidgets import (
     QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QVBoxLayout,
-    QToolTip, QWidget,
+    QToolButton, QToolTip, QWidget,
 )
 
 from .ikony import pixmapa
@@ -403,6 +403,14 @@ class OknoPowiadomienia(QWidget):
         zrodlo = QLabel("Fakturnik")
         zrodlo.setStyleSheet(f"font-size: 11px; color: {self.KOLORY.get(typ, '#5fc4b4')};")
         naglowek.addWidget(zrodlo, alignment=Qt.AlignmentFlag.AlignTop)
+        zamknij = QToolButton()
+        zamknij.setIcon(QIcon(pixmapa("zamknij", "#a9c3c8", 14)))
+        zamknij.setToolTip("Zamknij (prawy przycisk myszy: zamknij wszystkie)")
+        zamknij.setCursor(Qt.CursorShape.PointingHandCursor)
+        zamknij.setStyleSheet("QToolButton { background: transparent; border: none; border-radius: 6px; padding: 2px; }"
+                              "QToolButton:hover { background: #23505a; }")
+        zamknij.clicked.connect(self.zamknij_bez_akcji)
+        naglowek.addWidget(zamknij, alignment=Qt.AlignmentFlag.AlignTop)
         kolumna.addLayout(naglowek)
         if tekst:
             opis = QLabel(tekst, textFormat=Qt.TextFormat.PlainText, wordWrap=True)
@@ -449,7 +457,19 @@ class OknoPowiadomienia(QWidget):
         self.zegar.start(2500)
         super().leaveEvent(e)
 
+    def zamknij_bez_akcji(self):
+        self.akcja = None
+        self.zgas()
+
+    @classmethod
+    def zamknij_wszystkie(cls):
+        for o in list(cls.otwarte):
+            o.zamknij_bez_akcji()
+
     def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            OknoPowiadomienia.zamknij_wszystkie()
+            return
         akcja, self.akcja = self.akcja, None
         self.zgas()
         if akcja:
@@ -467,3 +487,20 @@ class OknoPowiadomienia(QWidget):
         if self in OknoPowiadomienia.otwarte:
             OknoPowiadomienia.otwarte.remove(self)
         self.close()
+        OknoPowiadomienia.uloz()
+
+    @classmethod
+    def uloz(cls):
+        """Po zamknięciu jednego powiadomienia pozostałe zsuwają się w dół, bez dziur."""
+        from PySide6.QtGui import QGuiApplication
+        ekran = QGuiApplication.primaryScreen().availableGeometry()
+        wysokosc = 0
+        for o in cls.otwarte:
+            if not o.isVisible():
+                continue
+            cel = QPoint(ekran.right() - o.width() - 8, ekran.bottom() - o.height() - 8 - wysokosc)
+            if o.pos() != cel and o._ruch.state() != QPropertyAnimation.State.Running:
+                o._ruch.setStartValue(o.pos())
+                o._ruch.setEndValue(cel)
+                o._ruch.start()
+            wysokosc += o.height()
