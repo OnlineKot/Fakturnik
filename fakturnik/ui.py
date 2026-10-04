@@ -25,10 +25,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QStackedWidget, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QSpinBox, QStackedWidget, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import aktualizacje, druk, godziny, konta, kontrola, mf, narzedzia, urzadzenie, windows
+from . import aktualizacje, druk, godziny, gtd, konta, kontrola, mf, narzedzia, urzadzenie, windows
 from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
@@ -161,6 +161,23 @@ QFrame#toast {{ background: #141a1f; border-radius: 10px; }}
 QFrame#toast QLabel {{ color: white; background: transparent; font-weight: 500; }}
 QStatusBar {{ background: {TLO}; color: {TEKST_2}; border: none; }}
 QToolTip {{ background: #141a1f; color: white; border: none; padding: 6px 8px; border-radius: 6px; }}
+
+QToolButton#kafelek {{ background: white; border: 1px solid {LINIA}; border-radius: 16px; padding: 22px 10px 16px;
+    font-size: 14px; font-weight: 600; color: {TEKST}; }}
+QToolButton#kafelek:hover {{ border-color: {AKCENT}; background: #fbfdfd; }}
+QToolButton#kafelek:pressed {{ background: {AKCENT_TLO}; }}
+QToolButton#wstecz {{ background: white; border: 1px solid {LINIA}; border-radius: 10px; padding: 6px; }}
+QToolButton#wstecz:hover {{ border-color: {AKCENT}; background: {AKCENT_TLO}; }}
+QToolButton#gwiazdka {{ background: transparent; border: none; border-radius: 6px; padding: 3px; }}
+QToolButton#gwiazdka:hover {{ background: {AKCENT_TLO}; }}
+QToolButton#gwiazdka::menu-indicator {{ image: none; width: 0; }}
+QPushButton#lista_gtd {{ background: transparent; border: none; border-radius: 8px; padding: 8px 10px;
+    text-align: left; font-weight: 500; color: {TEKST}; }}
+QPushButton#lista_gtd:hover {{ background: #f3f6f7; }}
+QPushButton#lista_gtd:checked {{ background: {AKCENT_TLO}; color: {AKCENT}; font-weight: 650; }}
+QFrame#zadanie {{ background: white; border: 1px solid {LINIA}; border-radius: 10px; }}
+QFrame#zadanie:hover {{ border-color: #c9d6d9; }}
+QFrame#zadanie QLabel {{ background: transparent; }}
 """
 
 
@@ -2147,19 +2164,126 @@ class StronaHistoria(Strona):
 
 
 class StronaNarzedzia(Strona):
-    """Przydatne w pracy: dane firmy po NIP, sprawdzanie numerów, kwota słownie, wspólny notatnik."""
+    """Narzędzia gabinetu: ekran z kafelkami, każde narzędzie na osobnym widoku (powrót strzałką lub Esc)."""
+
+    NARZEDZIA = [  # (klucz, nazwa, ikona)
+        ("gtd", "Notatki GTD", "zadania"),
+        ("przypomnienia", "Przypomnienia", "dzwonek"),
+        ("kasa", "Liczenie kasy", "banknot"),
+        ("kalkulator", "Kalkulator", "kalkulator"),
+        ("stoper", "Stoper", "stoper"),
+        ("minutnik", "Minutnik", "klepsydra"),
+        ("daty", "Kalkulator dat", "kalendarz"),
+        ("rabat", "Rabat i raty", "procent"),
+        ("firma", "Firma po NIP", "budynek"),
+        ("numer", "Sprawdź numer", "hash"),
+        ("slownie", "Kwota słownie", "tekst"),
+        ("hasla", "Generator haseł", "klucz"),
+    ]
 
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
         u = self.uklad
-        u.addLayout(naglowek_strony("Narzędzia", "Szybkie sprawdzenia i notatki gabinetu"))
-        u.addSpacing(8)
-        siatka = QGridLayout()
-        siatka.setSpacing(14)
+        naglowek = QHBoxLayout()
+        naglowek.setSpacing(10)
+        self.btn_wstecz = QToolButton(objectName="wstecz")
+        self.btn_wstecz.setIcon(ikona("wstecz", AKCENT, rozmiar=20))
+        self.btn_wstecz.setIconSize(QSize(20, 20))
+        self.btn_wstecz.setToolTip("Wszystkie narzędzia (Esc)")
+        self.btn_wstecz.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_wstecz.clicked.connect(lambda: self.pokaz(None))
+        self.btn_wstecz.hide()
+        naglowek.addWidget(self.btn_wstecz)
+        self.tytul_strony = QLabel("Narzędzia", objectName="tytul")
+        naglowek.addWidget(self.tytul_strony)
+        naglowek.addStretch()
+        u.addLayout(naglowek)
+        u.addSpacing(10)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, lambda: self.pokaz(None))
 
-        # dane firmy po NIP
+        self.stos = QStackedWidget()
+        u.addWidget(self.stos, 1)
+        # ekran główny: kafelki
+        ekran = QWidget()
+        siatka = QGridLayout(ekran)
+        siatka.setContentsMargins(0, 0, 0, 0)
+        siatka.setSpacing(16)
+        self.kafelki: dict[str, QToolButton] = {}
+        for i, (klucz, nazwa, nazwa_ikony) in enumerate(self.NARZEDZIA):
+            k = QToolButton(objectName="kafelek")
+            k.setText(nazwa)
+            k.setIcon(ikona(nazwa_ikony, AKCENT, rozmiar=34))
+            k.setIconSize(QSize(34, 34))
+            k.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            k.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            k.setMinimumSize(150, 128)
+            k.setCursor(Qt.CursorShape.PointingHandCursor)
+            k.clicked.connect(lambda _=False, kl=klucz: self.pokaz(kl))
+            cien(k)
+            self.kafelki[klucz] = k
+            siatka.addWidget(k, i // 4, i % 4)
+        siatka.setRowStretch(len(self.NARZEDZIA) // 4 + 1, 1)
+        self.stos.addWidget(ekran)
+        # widoki narzędzi
+        budowa = {"gtd": self._widok_gtd, "przypomnienia": self._karta_przypomnien, "kasa": self._karta_kasy,
+                  "kalkulator": self._karta_kalkulatora, "stoper": self._karta_stopera,
+                  "minutnik": self._karta_minutnika, "daty": self._karta_dat, "rabat": self._karta_rabatu,
+                  "firma": self._karta_firmy, "numer": self._karta_numeru, "slownie": self._karta_slownie,
+                  "hasla": self._karta_hasel}
+        self.widoki: dict[str, int] = {}
+        for klucz, _, _ in self.NARZEDZIA:
+            w = budowa[klucz]()
+            if klucz != "gtd":  # małe narzędzia: wyśrodkowana karta, nie na całą szerokość
+                opak = QWidget()
+                ou = QHBoxLayout(opak)
+                ou.setContentsMargins(0, 0, 0, 0)
+                ou.addStretch(1)
+                w.setMinimumWidth(460)
+                w.setMaximumWidth(680)
+                ou.addWidget(w, 3)
+                ou.addStretch(1)
+                kol = QVBoxLayout()
+                kol.addWidget(opak)
+                kol.addStretch()
+                kontener = QWidget()
+                kontener.setLayout(kol)
+                kol.setContentsMargins(0, 0, 0, 0)
+                w = kontener
+            self.widoki[klucz] = self.stos.addWidget(w)
+        self._aktywne: str | None = None
+
+    def pokaz(self, klucz: str | None):
+        """None = ekran z kafelkami; inaczej widok jednego narzędzia."""
+        self._aktywne = klucz
+        nazwy = {k: n for k, n, _ in self.NARZEDZIA}
+        self.stos.setCurrentIndex(self.widoki[klucz] if klucz else 0)
+        self.btn_wstecz.setVisible(klucz is not None)
+        self.tytul_strony.setText(nazwy[klucz] if klucz else "Narzędzia")
+        if klucz == "gtd":
+            self.wpis_gtd.setFocus()
+        elif klucz == "kalkulator":
+            self.dzialanie.setFocus()
+        elif klucz == "firma":
+            self.nip.setFocus()
+        elif klucz == "numer":
+            self.numer.setFocus()
+        elif klucz == "slownie":
+            self.kwota.setFocus()
+        elif klucz == "przypomnienia":
+            self.tekst_przyp.setFocus()
+
+    def _odswiez_kafelki(self):
+        try:
+            zadania = gtd.liczniki(self._gtd)["dzis"]
+            przyp = len(self._przypomnienia())
+        except Exception:  # noqa: BLE001
+            return
+        self.kafelki["gtd"].setText("Notatki GTD" + (f"\n{zadania} na dziś" if zadania else ""))
+        self.kafelki["przypomnienia"].setText("Przypomnienia" + (f"\n{przyp} zaplanowane" if przyp else ""))
+
+    # ---- firma po NIP, numery, kwota słownie
+    def _karta_firmy(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Firma po NIP", "Oficjalny wykaz podatników VAT (Ministerstwo Finansów)"))
         rzad = QHBoxLayout()
         self.nip = QLineEdit(placeholderText="NIP, np. 123-456-32-18")
         self.nip.returnPressed.connect(self.szukaj_firmy)
@@ -2173,80 +2297,259 @@ class StronaNarzedzia(Strona):
         self.btn_faktura = przycisk("Wystaw fakturę dla tej firmy", "faktura", akcja=self.faktura_dla_firmy)
         self.btn_faktura.hide()
         ku.addWidget(self.btn_faktura, alignment=Qt.AlignmentFlag.AlignLeft)
-        ku.addStretch()
-        siatka.addWidget(k, 0, 0)
         self.firma = None
+        return k
 
-        # sprawdzanie numerów
+    def _karta_numeru(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Sprawdź numer", "PESEL, NIP albo numer konta (cyfra kontrolna)"))
-        self.numer = QLineEdit(placeholderText="Wklej lub wpisz numer")
+        self.numer = QLineEdit(placeholderText="PESEL, NIP albo numer konta")
+        self.numer.setStyleSheet("font-size: 16px; padding: 8px 10px;")
         self.numer.textChanged.connect(self._sprawdz_numer)
         ku.addWidget(self.numer)
-        self.wynik_numeru = QLabel(objectName="podtytul", wordWrap=True)
+        self.wynik_numeru = QLabel(wordWrap=True)
+        self.wynik_numeru.setStyleSheet("font-size: 15px;")
         ku.addWidget(self.wynik_numeru)
-        ku.addSpacing(6)
-        ku.addWidget(self._tytul("Kwota słownie", "Do wpisania ręcznie na dokumencie lub przelewie"))
+        return k
+
+    def _karta_slownie(self) -> QFrame:
+        k, ku = karta()
         self.kwota = QLineEdit(placeholderText="np. 1 250,50")
+        self.kwota.setStyleSheet("font-size: 16px; padding: 8px 10px;")
         self.kwota.textChanged.connect(self._slownie)
         ku.addWidget(self.kwota)
-        self.slownie = QLabel(objectName="podtytul", wordWrap=True)
+        self.slownie = QLabel(wordWrap=True)
+        self.slownie.setStyleSheet(f"font-size: 16px; color: {AKCENT};")
         self.slownie.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         ku.addWidget(self.slownie)
-        ku.addStretch()
-        siatka.addWidget(k, 0, 1)
+        ku.addWidget(przycisk("Kopiuj", "kopiuj", akcja=lambda: QApplication.clipboard().setText(self.slownie.text())),
+                     alignment=Qt.AlignmentFlag.AlignLeft)
+        return k
 
-        # stoper, minutnik, kalkulator
-        rzad_narzedzi = QHBoxLayout()
-        rzad_narzedzi.setSpacing(14)
-        rzad_narzedzi.addWidget(self._karta_stopera(), 1)
-        rzad_narzedzi.addWidget(self._karta_minutnika(), 1)
-        rzad_narzedzi.addWidget(self._karta_kalkulatora(), 1)
-        siatka.addLayout(rzad_narzedzi, 1, 0, 1, 2)
-
-        # przypomnienia, liczenie kasy, daty
-        rzad2 = QHBoxLayout()
-        rzad2.setSpacing(14)
-        rzad2.addWidget(self._karta_przypomnien(), 1)
-        rzad2.addWidget(self._karta_kasy(), 1)
-        rzad2.addWidget(self._karta_dat(), 1)
-        siatka.addLayout(rzad2, 2, 0, 1, 2)
-
-        # rabat i raty, generator haseł
-        rzad3 = QHBoxLayout()
-        rzad3.setSpacing(14)
-        rzad3.addWidget(self._karta_rabatu(), 1)
-        rzad3.addWidget(self._karta_hasel(), 1)
-        siatka.addLayout(rzad3, 3, 0, 1, 2)
-
-        # notatnik
-        k, ku = karta()
-        ku.addWidget(self._tytul("Notatnik gabinetu", "Wspólny dla wszystkich kont, zaszyfrowany razem z danymi"))
-        self.notatki = QPlainTextEdit(placeholderText="Np. zamówić rękawiczki, oddzwonić do laboratorium…")
-        self.notatki.setMinimumHeight(220)
+    # ---- notatki GTD
+    def _widok_gtd(self) -> QWidget:
+        self._gtd: list = []
+        self._widok_listy = "dzis"
+        w = QWidget()
+        uk = QHBoxLayout(w)
+        uk.setContentsMargins(0, 0, 0, 0)
+        uk.setSpacing(16)
+        # lewa kolumna: listy
+        lewa, lu = karta()
+        lewa.setFixedWidth(230)
+        lu.setSpacing(2)
+        self.grupa_list = QButtonGroup(self, exclusive=True)
+        self.przyciski_list: dict[str, QPushButton] = {}
+        ikony_list = {"dzis": "slonce", "skrzynka": "skrzynka", "nastepne": "dalej", "czekam": "zegar",
+                      "kiedys": "chmura", "zrobione": "ok", "notatnik": "notatnik"}
+        for klucz, nazwa in gtd.LISTY + [("notatnik", "Notatnik")]:
+            if klucz == "zrobione":
+                lu.addSpacing(6)
+            b = QPushButton(nazwa, objectName="lista_gtd", checkable=True)
+            b.setIcon(ikona(ikony_list[klucz], TEKST_2, aktywny=AKCENT))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, kl=klucz: self._wybierz_liste(kl))
+            self.grupa_list.addButton(b)
+            self.przyciski_list[klucz] = b
+            lu.addWidget(b)
+        lu.addStretch()
+        uk.addWidget(lewa, alignment=Qt.AlignmentFlag.AlignTop)
+        # prawa: dodawanie, filtr, zadania albo notatnik
+        prawa = QVBoxLayout()
+        prawa.setSpacing(10)
+        rzad = QHBoxLayout()
+        self.wpis_gtd = QLineEdit(placeholderText="Dodaj… np. Zadzwonić do laboratorium @telefon jutro !")
+        self.wpis_gtd.setStyleSheet("font-size: 15px; padding: 9px 12px;")
+        self.wpis_gtd.returnPressed.connect(self._dodaj_gtd)
+        rzad.addWidget(self.wpis_gtd, 1)
+        rzad.addWidget(przycisk("Dodaj", "plus", "glowny", self._dodaj_gtd))
+        self.rzad_wpisu = QWidget()
+        self.rzad_wpisu.setLayout(rzad)
+        rzad.setContentsMargins(0, 0, 0, 0)
+        prawa.addWidget(self.rzad_wpisu)
+        filtr = QHBoxLayout()
+        self.naglowek_listy = QLabel()
+        self.naglowek_listy.setStyleSheet("font-size: 17px; font-weight: 650;")
+        filtr.addWidget(self.naglowek_listy)
+        filtr.addStretch()
+        self.kontekst_gtd = QComboBox()
+        self.kontekst_gtd.setMinimumWidth(170)
+        self.kontekst_gtd.currentIndexChanged.connect(lambda _: self._pokaz_gtd())
+        filtr.addWidget(self.kontekst_gtd)
+        self.btn_wyczysc_gtd = przycisk("Usuń zrobione starsze niż 30 dni", "kosz", akcja=self._wyczysc_gtd)
+        filtr.addWidget(self.btn_wyczysc_gtd)
+        prawa.addLayout(filtr)
+        self.lista_gtd = QVBoxLayout()
+        self.lista_gtd.setSpacing(6)
+        prawa.addLayout(self.lista_gtd)
+        self.pusto_gtd = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.pusto_gtd.setStyleSheet(f"color: {TEKST_3}; font-size: 14px; padding: 40px;")
+        prawa.addWidget(self.pusto_gtd)
+        # notatnik (dawny notatnik gabinetu, tekst bez zmian)
+        self.notatki = QPlainTextEdit(placeholderText="Swobodne notatki gabinetu…")
+        self.notatki.setMinimumHeight(420)
         self._zapis_notatek = QTimer(self, singleShot=True, interval=1500)
         self._zapis_notatek.timeout.connect(self._zapisz_notatki)
         self.notatki.textChanged.connect(self._zapis_notatek.start)
-        ku.addWidget(self.notatki)
+        prawa.addWidget(self.notatki)
         self.stan_notatek = QLabel(objectName="drobny")
-        ku.addWidget(self.stan_notatek)
-        siatka.addWidget(k, 4, 0, 1, 2)
-        siatka.setColumnStretch(0, 1)
-        siatka.setColumnStretch(1, 1)
-        u.addLayout(siatka)
-        u.addStretch()
+        prawa.addWidget(self.stan_notatek)
+        prawa.addStretch()
+        uk.addLayout(prawa, 1)
+        self.przyciski_list["dzis"].setChecked(True)
+        return w
+
+    def _wczytaj_gtd(self):
+        self._gtd = gtd.wczytaj(self.okno.baza.ustawienia().get("gtd", ""))
+
+    def _zapisz_gtd(self):
+        self.okno.baza.zapisz_ustawienia({"gtd": gtd.zapisz(self._gtd)})
+        self._pokaz_gtd()
+        self._odswiez_kafelki()
+
+    def _wybierz_liste(self, klucz: str):
+        self._widok_listy = klucz
+        self.przyciski_list[klucz].setChecked(True)
+        self._pokaz_gtd()
+
+    def _dodaj_gtd(self):
+        lista = self._widok_listy if self._widok_listy in gtd.PRZENOSZENIE else "skrzynka"
+        zad = gtd.z_linii(self.wpis_gtd.text(), lista=lista)
+        if not zad:
+            return
+        if self._widok_listy == "dzis" and not zad.termin:
+            zad.termin = date.today().isoformat()  # dodane w widoku „Dziś” jest na dziś
+        self._gtd.append(zad)
+        self.wpis_gtd.clear()
+        self._zapisz_gtd()
+
+    def _wyczysc_gtd(self):
+        self._gtd = gtd.wyczysc_zrobione(self._gtd)
+        self._zapisz_gtd()
+
+    def _pokaz_gtd(self):
+        notatnik = self._widok_listy == "notatnik"
+        for w in (self.notatki, self.stan_notatek):
+            w.setVisible(notatnik)
+        for w in (self.rzad_wpisu, self.kontekst_gtd):
+            w.setVisible(not notatnik)
+        self.btn_wyczysc_gtd.setVisible(self._widok_listy == "zrobione")
+        licz = gtd.liczniki(self._gtd)
+        for klucz, nazwa in gtd.LISTY:
+            n = licz[klucz]
+            self.przyciski_list[klucz].setText(f"{nazwa}   {n}" if n and klucz != "zrobione" else nazwa)
+        # konteksty do filtra (bez gubienia wyboru)
+        wybrany = self.kontekst_gtd.currentData() or ""
+        self.kontekst_gtd.blockSignals(True)
+        self.kontekst_gtd.clear()
+        self.kontekst_gtd.addItem("Wszystkie konteksty", "")
+        for kon in gtd.konteksty(self._gtd):
+            self.kontekst_gtd.addItem(f"@{kon}", kon)
+        self.kontekst_gtd.setCurrentIndex(max(0, self.kontekst_gtd.findData(wybrany)))
+        self.kontekst_gtd.blockSignals(False)
+        self.naglowek_listy.setText(dict(gtd.LISTY + [("notatnik", "Notatnik")])[self._widok_listy])
+        while self.lista_gtd.count():
+            w = self.lista_gtd.takeAt(0).widget()
+            if w:
+                w.hide()
+                w.deleteLater()
+        if notatnik:
+            self.pusto_gtd.hide()
+            return
+        zadania = gtd.w_widoku(self._gtd, self._widok_listy, self.kontekst_gtd.currentData() or "")
+        for z in zadania[:200]:
+            self.lista_gtd.addWidget(self._wiersz_gtd(z))
+        puste = {"dzis": "Nic na dziś. Zadania z terminem na dziś i ważne (!) pojawią się tutaj.",
+                 "skrzynka": "Skrzynka pusta. Wpisz wszystko, co przyjdzie do głowy, a potem rozdziel.",
+                 "zrobione": "Brak zrobionych zadań."}
+        self.pusto_gtd.setText(puste.get(self._widok_listy, "Pusto."))
+        self.pusto_gtd.setVisible(not zadania)
+
+    def _wiersz_gtd(self, z) -> QFrame:
+        wiersz = QFrame(objectName="zadanie")
+        wu = QHBoxLayout(wiersz)
+        wu.setContentsMargins(12, 8, 8, 8)
+        wu.setSpacing(10)
+        pole = QCheckBox()
+        pole.setChecked(z.zrobione)
+        pole.setToolTip("Zrobione")
+        pole.toggled.connect(lambda stan, x=z: (gtd.odhacz(x, stan), self._zapisz_gtd()))
+        wu.addWidget(pole)
+        gw = QToolButton(objectName="gwiazdka")
+        gw.setIcon(ikona("gwiazdka", "#d99a00" if z.wazne else "#c3c9ce", rozmiar=18))
+        gw.setToolTip("Ważne")
+        gw.setCursor(Qt.CursorShape.PointingHandCursor)
+        gw.clicked.connect(lambda _=False, x=z: (setattr(x, "wazne", not x.wazne), self._zapisz_gtd()))
+        wu.addWidget(gw)
+        tekst = QLabel(html_escape(z.tekst), wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        tekst.setStyleSheet(f"font-size: 14px; {'color: ' + TEKST_3 + '; text-decoration: line-through;' if z.zrobione else ''}")
+        tekst.setCursor(Qt.CursorShape.IBeamCursor)
+        tekst.mouseDoubleClickEvent = lambda _e, x=z: self._edytuj_gtd(x)
+        wu.addWidget(tekst, 1)
+        if self._widok_listy == "dzis" and z.lista != "nastepne":
+            lst = QLabel(gtd.NAZWY_LIST[z.lista])
+            lst.setStyleSheet(f"color: {TEKST_3}; font-size: 12px;")
+            wu.addWidget(lst)
+        if z.kontekst:
+            kon = QLabel(f"@{z.kontekst}")
+            kon.setStyleSheet(f"background: {AKCENT_TLO}; color: {AKCENT}; border-radius: 9px; padding: 2px 8px; "
+                              "font-size: 12px; font-weight: 600;")
+            wu.addWidget(kon)
+        if z.termin:
+            ter = QLabel(gtd.opis_terminu(z.termin))
+            kolor = CZERWONY if z.po_terminie() else (AKCENT if z.termin == date.today().isoformat() else TEKST_2)
+            ter.setStyleSheet(f"color: {kolor}; font-size: 12px; font-weight: 600;")
+            wu.addWidget(ter)
+        wiecej = QToolButton(objectName="gwiazdka")
+        wiecej.setIcon(ikona("wiecej", TEKST_2, rozmiar=18))
+        wiecej.setToolTip("Przenieś, termin, kontekst, edycja")
+        wiecej.setCursor(Qt.CursorShape.PointingHandCursor)
+        wiecej.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(wiecej)
+        for klucz in gtd.PRZENOSZENIE:
+            if klucz != z.lista:
+                menu.addAction(f"Przenieś: {gtd.NAZWY_LIST[klucz]}",
+                               lambda x=z, kl=klucz: (setattr(x, "lista", kl), setattr(x, "zrobiono", ""),
+                                                      self._zapisz_gtd()))
+        menu.addSeparator()
+        menu.addAction("Termin: dziś", lambda x=z: self._termin_gtd(x, date.today()))
+        menu.addAction("Termin: jutro", lambda x=z: self._termin_gtd(x, date.today() + timedelta(days=1)))
+        menu.addAction("Termin: za tydzień", lambda x=z: self._termin_gtd(x, date.today() + timedelta(days=7)))
+        if z.termin:
+            menu.addAction("Bez terminu", lambda x=z: self._termin_gtd(x, None))
+        konteksty = menu.addMenu("Kontekst")
+        for kon in gtd.konteksty(self._gtd):
+            konteksty.addAction(f"@{kon}", lambda x=z, k=kon: (setattr(x, "kontekst", k), self._zapisz_gtd()))
+        konteksty.addAction("Bez kontekstu", lambda x=z: (setattr(x, "kontekst", ""), self._zapisz_gtd()))
+        menu.addSeparator()
+        menu.addAction("Edytuj…", lambda x=z: self._edytuj_gtd(x))
+        menu.addAction("Przypomnij o tym…", lambda x=z: (self.pokaz("przypomnienia"),
+                                                          self.tekst_przyp.setText(x.tekst),
+                                                          self.godzina_przyp.setFocus()))
+        menu.addAction("Usuń", lambda x=z: (self._gtd.remove(x), self._zapisz_gtd()))
+        wiecej.setMenu(menu)
+        wu.addWidget(wiecej)
+        return wiersz
+
+    def _termin_gtd(self, z, dzien):
+        z.termin = dzien.isoformat() if dzien else ""
+        self._zapisz_gtd()
+
+    def _edytuj_gtd(self, z):
+        tekst, ok = QInputDialog.getText(self, "Edytuj", "Zadanie:", text=z.tekst)
+        if ok and tekst.strip():
+            z.tekst = tekst.strip()[:500]
+            self._zapisz_gtd()
 
     @staticmethod
     def _duzy_czas() -> QLabel:
         etykieta = QLabel("00:00", alignment=Qt.AlignmentFlag.AlignCenter)
-        etykieta.setStyleSheet(f"color: {AKCENT}; font-size: 38px; font-weight: 300; letter-spacing: -0.5px;")
-        etykieta.setMinimumHeight(54)
+        etykieta.setStyleSheet(f"color: {AKCENT}; font-size: 72px; font-weight: 300; letter-spacing: -1px;")
+        etykieta.setMinimumHeight(100)
         return etykieta
 
     # ---- stoper
     def _karta_stopera(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Stoper", ""))
         self.czas_stopera = self._duzy_czas()
         ku.addWidget(self.czas_stopera)
         self._stoper_start: float | None = None
@@ -2289,7 +2592,6 @@ class StronaNarzedzia(Strona):
     # ---- minutnik
     def _karta_minutnika(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Minutnik", ""))
         self.czas_minutnika = self._duzy_czas()
         ku.addWidget(self.czas_minutnika)
         szybkie = QHBoxLayout()
@@ -2355,7 +2657,6 @@ class StronaNarzedzia(Strona):
     # ---- kalkulator
     def _karta_kalkulatora(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Kalkulator", ""))
         self.wynik_kalkulatora = self._duzy_czas()
         self.wynik_kalkulatora.setText("0")
         self.wynik_kalkulatora.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -2383,7 +2684,6 @@ class StronaNarzedzia(Strona):
     # ---- przypomnienia
     def _karta_przypomnien(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Przypomnienia", ""))
         self.tekst_przyp = QLineEdit(placeholderText="Np. oddzwonić do laboratorium")
         self.tekst_przyp.returnPressed.connect(self._dodaj_przypomnienie)
         ku.addWidget(self.tekst_przyp)
@@ -2474,7 +2774,6 @@ class StronaNarzedzia(Strona):
     # ---- liczenie kasy
     def _karta_kasy(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Liczenie kasy", ""))
         siatka = QGridLayout()
         siatka.setHorizontalSpacing(8)
         siatka.setVerticalSpacing(4)
@@ -2490,7 +2789,7 @@ class StronaNarzedzia(Strona):
             siatka.addWidget(pole, wiersz, kol + 1)
         ku.addLayout(siatka)
         self.suma_kasy = QLabel("0,00 zł")
-        self.suma_kasy.setStyleSheet(f"color: {AKCENT}; font-size: 24px; font-weight: 600;")
+        self.suma_kasy.setStyleSheet(f"color: {AKCENT}; font-size: 40px; font-weight: 600;")
         ku.addWidget(self.suma_kasy)
         self.porownanie_kasy = QLabel(wordWrap=True, objectName="podtytul")
         ku.addWidget(self.porownanie_kasy)
@@ -2532,7 +2831,6 @@ class StronaNarzedzia(Strona):
     # ---- daty
     def _karta_dat(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Kalkulator dat", ""))
         rzad = QHBoxLayout()
         self.data_od = QDateEdit(QDate.currentDate(), calendarPopup=True, displayFormat="dd.MM.yyyy")
         rzad.addWidget(self.data_od)
@@ -2582,7 +2880,6 @@ class StronaNarzedzia(Strona):
     # ---- rabat i raty
     def _karta_rabatu(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Rabat i raty", ""))
         forma = QFormLayout()
         self.kwota_rabatu = QLineEdit(placeholderText="np. 2 400")
         self.proc_rabatu = QSpinBox(minimum=0, maximum=100, suffix=" %")
@@ -2620,7 +2917,6 @@ class StronaNarzedzia(Strona):
     # ---- generator haseł
     def _karta_hasel(self) -> QFrame:
         k, ku = karta()
-        ku.addWidget(self._tytul("Generator haseł", ""))
         self.haslo_gen = QLineEdit(readOnly=True)
         self.haslo_gen.setStyleSheet("font-family: Consolas, 'Cascadia Mono', monospace; font-size: 16px;")
         ku.addWidget(self.haslo_gen)
@@ -2672,6 +2968,9 @@ class StronaNarzedzia(Strona):
         self.notatki.blockSignals(False)
         self.stan_notatek.setText("Zapisuje się samo.")
         self._pokaz_przypomnienia()
+        self._wczytaj_gtd()
+        self._pokaz_gtd()
+        self._odswiez_kafelki()
 
     def _zapisz_notatki(self):
         self.okno.baza.zapisz_ustawienia({"notatki": self.notatki.toPlainText()})
