@@ -4884,11 +4884,12 @@ class StronaPliki(Strona):
 
         akcje = QHBoxLayout()
         akcje.setSpacing(6)
+        self.btn_edytuj = przycisk("Edytuj opis", "lista", akcja=self.edytuj)
+        self.btn_usun = przycisk("Usuń", "kosz", "niebezpieczny", self.usun)
         self.akcje = [przycisk("Podgląd", "podglad", akcja=self.podglad),
                       przycisk("Drukuj", "drukarka", akcja=self.drukuj),
                       przycisk("Zapisz kopię…", "pobierz", akcja=self.zapisz_kopie),
-                      przycisk("Edytuj opis", "lista", akcja=self.edytuj),
-                      przycisk("Usuń", "kosz", "niebezpieczny", self.usun)]
+                      self.btn_edytuj, self.btn_usun]
         for b in self.akcje:
             akcje.addWidget(b)
         akcje.addStretch()
@@ -4991,6 +4992,9 @@ class StronaPliki(Strona):
     def _stan_akcji(self):
         for b in self.akcje:
             b.setEnabled(self.wybrany() is not None)
+        zmienialne = self.okno.baza.pliki_zmienialne
+        for b in (self.btn_edytuj, self.btn_usun):  # pliki są archiwum tylko do odczytu
+            b.setVisible(zmienialne)
 
     def wybrany(self) -> Plik | None:
         wiersze = self.tabela.selectionModel().selectedRows() if self.tabela.selectionModel() else []
@@ -5109,17 +5113,18 @@ class StronaPliki(Strona):
 
     def edytuj(self):
         p = self.wybrany()
-        if not p:
+        if not p or not self.okno.baza.pliki_zmienialne:
             return
         okno = OknoOpisuPliku(self.okno.baza, [p.nazwa], self, plik=p)
         if okno.exec() == QDialog.DialogCode.Accepted:
             w = okno.wartosci()
             self.okno.baza.zmien_plik(p.id, w["data"], w["kategoria"], w["osoba"], w["opis"])
+            self.okno.dziennik.zapisz(f"zmiana opisu pliku nr {p.id}")
             self.odswiez()
 
     def usun(self):
         p = self.wybrany()
-        if not p:
+        if not p or not self.okno.baza.pliki_zmienialne:
             return
         if not self.okno.potwierdz_haslem("usunięcie pliku", f"Usunięcie pliku „{p.nazwa}” wymaga hasła."):
             return
@@ -6410,6 +6415,11 @@ class OknoDeweloperskie(QDialog):
         u.addWidget(QLabel("Wyłącza weryfikację urządzenia, ukrywanie okien przed nagrywaniem ekranu, wygaszacz "
                            "i skaner folderu Pobrane. Hasło i szyfrowanie danych zostają.", objectName="drobny",
                            wordWrap=True))
+        self.pliki_edycja = QCheckBox("Pozwól opisywać i usuwać pliki w Plikach")
+        self.pliki_edycja.setChecked(ust["pliki_edycja"] == "1")
+        u.addWidget(self.pliki_edycja)
+        u.addWidget(QLabel("Domyślnie wyłączone: dodane pliki są archiwum tylko do odczytu. Zawartości pliku nie da się "
+                           "zmienić nigdy (szyfrowanie i suma SHA-256).", objectName="drobny", wordWrap=True))
         self.sprawdzanie = QCheckBox("Sprawdzaj plik programu (SHA-256)")
         self.sprawdzanie.setChecked(ust["sprawdzaj_plik_programu"] == "1")
         u.addWidget(self.sprawdzanie)
@@ -6465,6 +6475,7 @@ class OknoDeweloperskie(QDialog):
         stary = o.baza.ustawienia()["tryb_bez_zabezpieczen"] == "1"
         nowy = self.bez_zabezpieczen.isChecked()
         wartosci = {"sprawdzaj_plik_programu": "1" if self.sprawdzanie.isChecked() else "0",
+                    "pliki_edycja": "1" if self.pliki_edycja.isChecked() else "0",
                     "tryb_bez_zabezpieczen": "1" if nowy else "0"}
         if nowy and not stary:
             if o.baza.weryfikacja_urzadzenia:

@@ -74,6 +74,7 @@ DOMYSLNE_USTAWIENIA = {
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
+    "pliki_edycja": "0",                # "1" = pliki można opisywać i usuwać (ustawienia deweloperskie)
     "qr_strony": "",                    # strony do pokazania jako kod QR (JSON: nazwa, adres)
     "sprawdzaj_plik_programu": "1",     # "1" = porównuj Fakturnik.exe z sumą SHA-256 wydania (ustawienia deweloperskie)
     "tryb_bez_zabezpieczen": "0",       # "1" = dodatkowe zabezpieczenia wyłączone (ustawienia deweloperskie)
@@ -301,6 +302,9 @@ MIGRACJE: dict[int, str] = {
             zmieniono TEXT DEFAULT CURRENT_TIMESTAMP,
             powod TEXT NOT NULL DEFAULT ''
         );
+    """,
+    4: """
+        ALTER TABLE pliki ADD COLUMN sha256_dysk TEXT NOT NULL DEFAULT '';
     """,
 }
 WERSJA_DANYCH = max(MIGRACJE)
@@ -918,13 +922,39 @@ class Baza:
             self._utrwal()
             problemy.append("Plik danych został " + ("usunięty" if not na_dysku else "zmieniony")
                             + " poza programem. Odtworzono go z aktualnych danych programu.")
-        for nazwa, plik in self.db.execute("SELECT plik, nazwa FROM pliki"):
+        for id_, nazwa, plik, skrot_dysk, skrot_tresci in self.db.execute(
+                "SELECT id, plik, nazwa, sha256_dysk, sha256 FROM pliki").fetchall():
             if not NAZWA_PLIKU_NA_DYSKU.fullmatch(nazwa):
                 continue
             sciezka = self.katalog_plikow / nazwa
-            if sciezka.exists():
-                continue
             kopia = katalog_kopii_plikow / nazwa if katalog_kopii_plikow else None
+            if sciezka.exists():
+                # zawartość pliku na dysku: porównanie ze skrótem zapisanym przy dodaniu
+                try:
+                    dane = sciezka.read_bytes()
+                except OSError:
+                    continue
+                skrot = hashlib.sha256(dane).hexdigest()
+                if not skrot_dysk:  # plik dodany przed tą wersją: zapamiętaj skrót, jeśli treść się zgadza
+                    try:
+                        if hashlib.sha256(odszyfruj_plik(dane, self._klucz_plikow())).hexdigest() == skrot_tresci:
+                            self.db.execute("UPDATE pliki SET sha256_dysk = ? WHERE id = ?", (skrot, id_))
+                            self._utrwal()
+                            continue
+                    except ValueError:
+                        pass
+                elif skrot == skrot_dysk:
+                    continue
+                if kopia and kopia.exists() and (not skrot_dysk or
+                                                 hashlib.sha256(kopia.read_bytes()).hexdigest() == skrot_dysk):
+                    tylko_do_odczytu(sciezka, False)
+                    shutil.copyfile(kopia, sciezka)
+                    tylko_do_odczytu(sciezka, True)
+                    problemy.append(f"Plik nr {id_} został zmieniony poza programem. Przywrócono oryginał z kopii.")
+                else:
+                    problemy.append(f"Plik nr {id_} został zmieniony poza programem i nie ma go w kopiach. "
+                                    "Przywróć pełną kopię zapasową.")
+                continue
             if kopia and kopia.exists():
                 self.katalog_plikow.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(kopia, sciezka)
@@ -1006,17 +1036,19 @@ class Baza:
         nazwa_na_dysku = f"{uuid.uuid4().hex}.bin"
         cel = self.katalog_plikow / nazwa_na_dysku
         tymczasowy = cel.with_suffix(".tmp")
+        zaszyfrowane = zaszyfruj_plik(tresc, self._klucz_plikow())
         with open(tymczasowy, "wb") as f:
-            f.write(zaszyfruj_plik(tresc, self._klucz_plikow()))
+            f.write(zaszyfrowane)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tymczasowy, cel)
         tylko_do_odczytu(cel, True)
         kursor = self.db.execute(
-            "INSERT INTO pliki (nazwa, typ, rozmiar, plik, sha256, data, kategoria, osoba, opis) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pliki (nazwa, typ, rozmiar, plik, sha256, data, kategoria, osoba, opis, sha256_dysk) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (zrodlo.name, typ, len(tresc), nazwa_na_dysku, hashlib.sha256(tresc).hexdigest(),
-             data or date.today().isoformat(), kategoria, osoba.strip(), opis.strip()))
+             data or date.today().isoformat(), kategoria, osoba.strip(), opis.strip(),
+             hashlib.sha256(zaszyfrowane).hexdigest()))
         self._utrwal()
         return self.plik(kursor.lastrowid)
 
@@ -1055,12 +1087,21 @@ class Baza:
             wynik.append(p)
         return wynik
 
+    @property
+    def pliki_zmienialne(self) -> bool:
+        """Pliki są niezmienialne (archiwum): opis i usuwanie tylko po włączeniu w ustawieniach deweloperskich."""
+        return self.ustawienia().get("pliki_edycja") == "1"
+
     def zmien_plik(self, id_: int, data: str, kategoria: str, osoba: str, opis: str) -> None:
+        if not self.pliki_zmienialne:
+            raise PermissionError("Pliki są tylko do odczytu.")
         self.db.execute("UPDATE pliki SET data = ?, kategoria = ?, osoba = ?, opis = ? WHERE id = ?",
                         (data, kategoria, osoba.strip(), opis.strip(), id_))
         self._utrwal()
 
     def usun_plik(self, id_: int) -> None:
+        if not self.pliki_zmienialne:
+            raise PermissionError("Pliki są tylko do odczytu.")
         w = self.db.execute("SELECT plik FROM pliki WHERE id = ?", (id_,)).fetchone()
         if not w:
             return

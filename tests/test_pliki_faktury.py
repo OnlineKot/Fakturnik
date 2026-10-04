@@ -1,3 +1,4 @@
+import os
 from datetime import date
 
 import pytest
@@ -55,6 +56,9 @@ def test_pliki_sa_zaszyfrowane_i_wyszukiwalne(tmp_path, skan):
     assert b.pliki(rok=2026, miesiac=9) and not b.pliki(rok=2026, miesiac=10)
     assert not b.pliki(kategoria="Umowa")
 
+    with pytest.raises(PermissionError):  # domyślnie pliki są tylko do odczytu
+        b.zmien_plik(p.id, "2026-10-01", "Inne", "Tauron Sprzedaż", "")
+    b.zapisz_ustawienia({"pliki_edycja": "1"})
     b.zmien_plik(p.id, "2026-10-01", "Inne", "Tauron Sprzedaż", "")
     assert b.plik(p.id).kategoria == "Inne" and b.pliki(rok=2026, miesiac=10)
 
@@ -93,8 +97,27 @@ def test_nieobslugiwany_plik(tmp_path):
 def test_usuwanie_pliku(tmp_path, skan):
     b = Baza(tmp_path / "d.db")
     p = b.dodaj_plik(skan)
+    with pytest.raises(PermissionError):
+        b.usun_plik(p.id)
+    b.zapisz_ustawienia({"pliki_edycja": "1"})
     b.usun_plik(p.id)
     assert not b.pliki() and not list(b.katalog_plikow.glob("*.bin"))
+
+
+def test_zmieniony_plik_na_dysku_przywracany_z_kopii(tmp_path, skan):
+    import shutil
+    b = Baza(tmp_path / "d.db")
+    p = b.dodaj_plik(skan)
+    kopie = tmp_path / "kopie"
+    b.kopia_plikow(kopie)
+    na_dysku = next(b.katalog_plikow.glob("*.bin"))
+    oryginal = na_dysku.read_bytes()
+    os.chmod(na_dysku, 0o600)
+    na_dysku.write_bytes(oryginal[:-5] + b"XXXXX")  # podmiana zawartości poza programem
+    problemy = b.sprawdz_integralnosc(kopie)
+    assert any("zmieniony" in x for x in problemy)
+    assert na_dysku.read_bytes() == oryginal and b.tresc_pliku(p.id) == skan.read_bytes()
+    assert b.sprawdz_integralnosc(kopie) == []
 
 
 def test_pelna_kopia_zip_z_plikami(tmp_path, skan):
