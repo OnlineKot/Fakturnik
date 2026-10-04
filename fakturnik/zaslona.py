@@ -1,24 +1,22 @@
-"""Zasłona ekranu: logo gabinetu, nazwa gabinetu i zegar na wszystkich monitorach, bez napisów-instrukcji.
+"""Zasłona ekranu w stylu klasycznego wygaszacza: czarne tło, a na nim logo gabinetu, nazwa gabinetu,
+zegar i data, które wolno jeżdżą po ekranie i odbijają się od krawędzi. Bez napisów-instrukcji.
 
 Znika tylko po DOKŁADNIE trzech naciśnięciach spacji i krótkiej pauzie. Cztery i więcej spacji,
 przytrzymana spacja albo inny klawisz w serii nic nie dają. Nie czyści schowka i nie wylogowuje:
 to szybka zasłona przed wzrokiem pacjentów. Blokada hasłem działa niezależnie od niej.
 
-Ochrona ekranu przed wypaleniem: cały obraz bardzo powoli wędruje po ekranie (żaden piksel nie świeci
-długo w jednym miejscu), a po ustawionym czasie zasłona gaśnie do czerni i wyłącza monitor.
+Ochrona ekranu przed wypaleniem: blok cały czas się przesuwa (żaden piksel nie świeci długo w jednym
+miejscu), a po ustawionym czasie zasłona gaśnie do czerni i wyłącza monitor.
 Naciśnięcie dowolnego klawisza budzi ekran. W czerni animacja stoi, więc program nie zużywa procesora.
 """
 
-import math
 import random
 import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (
-    QColor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient, QPainter, QRadialGradient,
-)
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
@@ -28,9 +26,9 @@ PAUZA = 0.6          # po trzeciej spacji: tyle ciszy, żeby zasłona zniknęła
 KARA = 1.2           # po nieudanej serii: tyle ciszy, zanim można zacząć od nowa
 POJAWIANIE_MS = 800
 ZNIKANIE_MS = 400
-ODSLANIANIE = 1.4    # sekundy odsłaniania logo
 GASNIECIE = 3.0      # sekundy przejścia do czerni
 KLATKI_MS = 50       # 20 klatek na sekundę wystarcza do płynnego, powolnego ruchu
+PREDKOSC = 0.03      # ułamek wysokości ekranu na sekundę (wolno, bez rozpraszania)
 
 LOGO = Path(__file__).parent / "zasoby" / "logo.svg"
 DNI = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
@@ -60,9 +58,12 @@ class LicznikSpacji:
         return len(self.serie) == SPACJE and teraz - self.serie[-1] >= PAUZA
 
 
-def przesuniecie(t: float, zapas_x: float, zapas_y: float) -> tuple[float, float]:
-    """Powolna wędrówka obrazu po ekranie (krzywa Lissajous, pełny obieg w kilka minut)."""
-    return zapas_x * math.sin(t / 47.0), zapas_y * math.sin(t / 71.0 + 1.3)
+def odbicie(droga: float, zakres: float) -> float:
+    """Pozycja punktu, który jedzie ze stałą prędkością i odbija się od krawędzi (jak logo DVD)."""
+    if zakres <= 0:
+        return 0.0
+    u = (droga / zakres) % 2.0
+    return zakres * (u if u <= 1 else 2 - u)
 
 
 def jasnosc_po_czasie(t: float, gaszenie_s: float) -> float:
@@ -109,97 +110,58 @@ class _Ekran(QWidget):
     def paintEvent(self, _):
         z = self.zaslona
         p = QPainter(self)
+        p.fillRect(self.rect(), Qt.GlobalColor.black)
         w, h = float(self.width()), float(self.height())
         teraz_m = time.monotonic()
-        t = teraz_m - z.start
         jasnosc = jasnosc_po_czasie(teraz_m - z.aktywnosc, z.gaszenie_s)
         if jasnosc <= 0:
-            p.fillRect(self.rect(), Qt.GlobalColor.black)
             p.end()
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        tlo = QLinearGradient(0, 0, 0, h)
-        tlo.setColorAt(0, QColor("#12343c"))
-        tlo.setColorAt(1, QColor("#061519"))
-        p.fillRect(self.rect(), tlo)
-
-        # rozmyte światła płynące powoli w górę
-        p.setPen(Qt.PenStyle.NoPen)
-        for x0, predkosc, r, faza in z.swiatla:
-            y = (1.15 - ((t * predkosc + faza) % 1.3)) * h
-            x = (x0 + 0.02 * math.sin(t * 0.3 + faza * 6)) * w
-            promien = r * min(w, h)
-            g = QRadialGradient(QPointF(x, y), promien)
-            g.setColorAt(0, QColor(95, 179, 194, 34))
-            g.setColorAt(1, QColor(95, 179, 194, 0))
-            p.setBrush(g)
-            p.drawEllipse(QPointF(x, y), promien, promien)
-
-        # układ: logo, zegar, data i nazwa gabinetu; całość wędruje po ekranie, ale nigdy poza krawędzie
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        # klasyczny wygaszacz: czarne tło, jeden blok (nazwa, logo, zegar, data) wolno odbija się od krawędzi
         jednostka = min(w / 1.15, h) / 1000
-        wys_logo = 250 * jednostka
+        wys_logo = 150 * jednostka
         szer_logo = wys_logo * 80 / 120
         teraz = datetime.now()
         zegar = f"{teraz:%H:%M}"
         data = f"{DNI[teraz.weekday()]}, {teraz.day} {MIESIACE[teraz.month - 1]}"
-        czcionka_zegara = self._czcionka(self.font(), 140 * jednostka, QFont.Weight.Light)
-        czcionka_daty = self._czcionka(self.font(), 32 * jednostka, QFont.Weight.Normal)
-        czcionka_nazwy = self._czcionka(self.font(), 30 * jednostka, QFont.Weight.DemiBold)
+        czcionka_zegara = self._czcionka(self.font(), 96 * jednostka, QFont.Weight.Light)
+        czcionka_daty = self._czcionka(self.font(), 24 * jednostka, QFont.Weight.Normal)
+        czcionka_nazwy = self._czcionka(self.font(), 24 * jednostka, QFont.Weight.DemiBold)
         teksty = [(czcionka_zegara, zegar), (czcionka_daty, data)] + ([(czcionka_nazwy, z.nazwa)] if z.nazwa else [])
-        szer_tresci = szer_logo
+        szer_bloku = szer_logo
         for f, tekst in teksty:
             szer = QFontMetricsF(f).horizontalAdvance(tekst)
-            if szer > w * 0.7:
-                f.setPixelSize(max(10, int(f.pixelSize() * w * 0.7 / szer)))
+            if szer > w * 0.6:
+                f.setPixelSize(max(10, int(f.pixelSize() * w * 0.6 / szer)))
                 szer = QFontMetricsF(f).horizontalAdvance(tekst)
-            szer_tresci = max(szer_tresci, szer)
+            szer_bloku = max(szer_bloku, szer)
         wys_nazwy = QFontMetricsF(czcionka_nazwy).height() if z.nazwa else 0
         wys_zegara = QFontMetricsF(czcionka_zegara).height()
         wys_daty = QFontMetricsF(czcionka_daty).height()
-        odstep = 36 * jednostka
-        calosc = wys_nazwy + (odstep * 0.6 if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
-        dx, dy = przesuniecie(t, max(0.0, (w - szer_tresci) / 2 - 40 * jednostka),
-                              max(0.0, (h - calosc) / 2 - 30 * jednostka))
-        srodek_x = w / 2 + dx
-        gora = (h - calosc) / 2 + dy
-
+        odstep = 18 * jednostka
+        wys_bloku = wys_nazwy + (odstep if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
+        lewo = odbicie((teraz_m - z.start) * PREDKOSC * jednostka * 1000 + z.faza[0] * w, max(0.0, w - szer_bloku))
+        gora = odbicie((teraz_m - z.start) * PREDKOSC * 0.77 * jednostka * 1000 + z.faza[1] * h,
+                       max(0.0, h - wys_bloku))
+        srodek_x = lewo + szer_bloku / 2
+        p.setOpacity(jasnosc * min(1.0, (teraz_m - z.start) / 0.8))  # łagodne pojawienie i gaśnięcie
+        y = gora
         if z.nazwa:
             p.setFont(czcionka_nazwy)
-            p.setPen(QColor(143, 179, 186, 230))
-            p.drawText(QRectF(srodek_x - w / 2, gora, w, wys_nazwy), Qt.AlignmentFlag.AlignCenter, z.nazwa)
-            gora += wys_nazwy + odstep * 0.6
-
-        # logo: odsłania się od dołu, potem lekko się unosi; za nim oddychająca poświata
-        postep = min(1.0, t / ODSLANIANIE)
-        postep = 1 - (1 - postep) ** 3
-        unoszenie = math.sin(t * 1.1) * 6 * jednostka
-        srodek_logo = QPointF(srodek_x, gora + wys_logo / 2 + unoszenie)
-        oddech = 0.5 + 0.5 * math.sin(t * 0.9)
-        poswiata = QRadialGradient(srodek_logo, wys_logo * (0.9 + 0.06 * oddech))
-        poswiata.setColorAt(0, QColor(95, 179, 194, int((50 + 25 * oddech) * postep)))
-        poswiata.setColorAt(1, QColor(95, 179, 194, 0))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(poswiata)
-        p.drawEllipse(srodek_logo, wys_logo, wys_logo)
-        prost = QRectF(srodek_logo.x() - szer_logo / 2, srodek_logo.y() - wys_logo / 2, szer_logo, wys_logo)
+            p.setPen(QColor("#7f9499"))
+            p.drawText(QRectF(lewo, y, szer_bloku, wys_nazwy), Qt.AlignmentFlag.AlignCenter, z.nazwa)
+            y += wys_nazwy + odstep
         if z.logo.isValid():
-            p.save()
-            p.setClipRect(QRectF(prost.left() - 10, prost.bottom() - prost.height() * postep - 2,
-                                 prost.width() + 20, prost.height() * postep + 4))
-            z.logo.render(p, prost)
-            p.restore()
-
-        # zegar i data
-        widocznosc = max(0.0, min(1.0, (t - 0.4) / 0.9))
-        y = gora + wys_logo + odstep + (1 - widocznosc) * 12 * jednostka
+            z.logo.render(p, QRectF(srodek_x - szer_logo / 2, y, szer_logo, wys_logo))
+        y += wys_logo + odstep
         p.setFont(czcionka_zegara)
-        p.setPen(QColor(232, 243, 245, int(255 * widocznosc)))
-        p.drawText(QRectF(srodek_x - w / 2, y, w, wys_zegara), Qt.AlignmentFlag.AlignCenter, zegar)
+        p.setPen(QColor("#d9e1e3"))
+        p.drawText(QRectF(lewo, y, szer_bloku, wys_zegara), Qt.AlignmentFlag.AlignCenter, zegar)
         p.setFont(czcionka_daty)
-        p.setPen(QColor(143, 179, 186, int(255 * widocznosc)))
-        p.drawText(QRectF(srodek_x - w / 2, y + wys_zegara, w, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
-        if jasnosc < 1:  # łagodne gaśnięcie do czerni
-            p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * (1 - jasnosc))))
+        p.setPen(QColor("#7f9499"))
+        p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
         p.end()
 
     def keyPressEvent(self, e):
@@ -224,9 +186,7 @@ class Zaslona(QWidget):
         self.logo = QSvgRenderer(str(LOGO))
         self.nazwa = nazwa.strip()
         self.gaszenie_s = max(0.0, gaszenie_min) * 60
-        los = random.Random(7)
-        self.swiatla = [(los.random(), 0.012 + los.random() * 0.02, 0.06 + los.random() * 0.1, los.random())
-                        for _ in range(7)]
+        self.faza = (random.random(), random.random())  # każda zasłona zaczyna w innym miejscu
         self.start = time.monotonic()
         self.aktywnosc = self.start  # od tej chwili liczy się czas do zgaszenia
         self._monitor_wylaczony = False
@@ -268,7 +228,7 @@ class Zaslona(QWidget):
         """Klawisz albo ruch myszy po zgaszeniu: obraz wraca (licznik spacji działa dalej)."""
         teraz = time.monotonic()
         if jasnosc_po_czasie(teraz - self.aktywnosc, self.gaszenie_s) < 1:
-            self.start = teraz - ODSLANIANIE  # bez ponownego odsłaniania logo
+            pass
         self.aktywnosc = teraz
         self._monitor_wylaczony = False
         if not self._animacja.isActive() and not self.zamykanie:

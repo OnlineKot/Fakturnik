@@ -44,7 +44,7 @@ a = Analysis(
 przed = len(a.binaries) + len(a.datas)
 a.binaries = [x for x in a.binaries if potrzebny(x[0])]
 a.datas = [x for x in a.datas if potrzebny(x[0])]
-print(f"Fakturnik.spec: pominięto {przed - len(a.binaries) - len(a.datas)} zbędnych plików Qt")
+print(f"Fakturnik.spec: skipped {przed - len(a.binaries) - len(a.datas)} unused Qt files")  # bez polskich liter: konsola Windows (cp1252)
 
 pyz = PYZ(a.pure)
 exe = EXE(

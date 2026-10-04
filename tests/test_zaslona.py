@@ -43,13 +43,12 @@ def test_spacje_zbyt_rozciagniete_w_czasie():
     assert not l.odblokowac(14.0)
 
 
-def test_wedrowka_obrazu_nie_wychodzi_poza_zapas():
-    from fakturnik.zaslona import przesuniecie
-    for t in range(0, 3600, 7):
-        dx, dy = przesuniecie(t, 300, 120)
-        assert abs(dx) <= 300 and abs(dy) <= 120
-    pozycje = {tuple(round(v) for v in przesuniecie(t, 300, 120)) for t in range(0, 600, 30)}
-    assert len(pozycje) > 10  # obraz faktycznie się przesuwa
+def test_odbijanie_od_krawedzi():
+    from fakturnik.zaslona import odbicie
+    pozycje = [odbicie(d, 500) for d in range(0, 5000, 13)]
+    assert all(0 <= x <= 500 for x in pozycje)
+    assert odbicie(250, 500) == 250 and odbicie(750, 500) == 250  # odbija się i wraca
+    assert odbicie(123, 0) == 0
 
 
 def test_gaszenie_ekranu():
