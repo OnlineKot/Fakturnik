@@ -2,6 +2,7 @@
 
 import calendar
 import json
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -206,3 +207,34 @@ def ocena(tekst: str, zapytanie: str) -> int:
         else:
             return 0
     return wynik + max(0, 10 - len(t) // 10)
+
+
+# ---------- kod QR do strony ----------
+def adres_strony(tekst: str) -> str:
+    """„gabinet.pl/opinie” → „https://gabinet.pl/opinie”. Tylko strony internetowe (http/https)."""
+    from urllib.parse import urlparse
+    tekst = tekst.strip()
+    if not tekst:
+        raise ValueError("Wpisz adres strony.")
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", tekst):
+        tekst = "https://" + tekst
+    adres = urlparse(tekst)
+    if adres.scheme not in ("http", "https") or "." not in (adres.hostname or "") or " " in tekst:
+        raise ValueError("To nie wygląda na adres strony (np. www.gabinet.pl).")
+    return tekst
+
+
+def wczytaj_strony(tekst: str) -> list[dict]:
+    try:
+        lista = json.loads(tekst or "[]")
+    except ValueError:
+        return []
+    return [{"nazwa": str(p.get("nazwa", ""))[:80], "adres": str(p["adres"])[:500]}
+            for p in (lista if isinstance(lista, list) else []) if isinstance(p, dict) and p.get("adres")]
+
+
+def macierz_qr(tekst: str) -> list[list[bool]]:
+    """Moduły kodu QR (True = ciemny), z korekcją błędów M."""
+    import segno
+    kod = segno.make(tekst, error="m", micro=False)
+    return [[bool(x) for x in wiersz] for wiersz in kod.matrix]

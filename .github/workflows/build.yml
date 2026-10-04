@@ -30,7 +30,8 @@ jobs:
         run: |
           WERSJA="1.0.${{ github.run_number }}"
           echo "WERSJA=$WERSJA" >> "$GITHUB_ENV"
-          printf '# Wpisywane automatycznie przy budowaniu.\nWERSJA = "%s"\n' "$WERSJA" > fakturnik/wersja.py
+          printf '# Wpisywane automatycznie przy budowaniu.\nWERSJA = "%s"\nBUILD = "%s"\nZBUDOWANO = "%s"\nCOMMIT = "%s"\n' \
+            "$WERSJA" "${{ github.run_number }}" "$(date -u +'%Y-%m-%d %H:%M UTC')" "${GITHUB_SHA::7}" > fakturnik/wersja.py
 
       - name: Metadane .exe (wydawca, wersja) dla antywirusów
         shell: bash

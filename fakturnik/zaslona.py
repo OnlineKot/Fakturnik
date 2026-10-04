@@ -73,6 +73,27 @@ def jasnosc_po_czasie(t: float, gaszenie_s: float) -> float:
     return max(0.0, 1.0 - (t - gaszenie_s) / GASNIECIE)
 
 
+def na_pierwszy_plan(okno: QWidget) -> None:
+    """Windows nie pozwala programowi w tle zabrać klawiatury innemu oknu (wtedy spacje trafiałyby do
+    tamtego programu). Zasłona jest uruchamiana przez sam program po bezczynności, więc korzysta ze
+    standardowego sposobu: na chwilę „naciska” Alt, co Windows traktuje jak działanie użytkownika,
+    a potem przenosi okno zasłony na pierwszy plan."""
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = int(okno.winId())
+        VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetFocus(hwnd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def wylacz_monitor() -> None:
     """Windows: monitor przechodzi w stan wyłączenia (budzi go ruch myszy lub klawisz)."""
     import sys
@@ -170,6 +191,11 @@ class _Ekran(QWidget):
     def mouseMoveEvent(self, _):
         self.zaslona.obudz()
 
+    def mousePressEvent(self, _):
+        """Kliknięcie zawsze oddaje klawiaturę zasłonie (Windows na to pozwala), potem działają spacje."""
+        self.zaslona.obudz()
+        self.zaslona._przejmij_klawiature()
+
     def closeEvent(self, e):
         if not self.zaslona.zamykanie:
             e.ignore()  # zasłonę zamykają tylko trzy spacje (Alt+F4 nie działa)
@@ -218,9 +244,8 @@ class Zaslona(QWidget):
             e.raise_()
             self._przenikanie(e, 1.0, POJAWIANIE_MS)
         if self.ekrany:
-            self.ekrany[0].activateWindow()
-            self.ekrany[0].setFocus()
-            self.ekrany[0].grabKeyboard()
+            self._przejmij_klawiature()
+            QTimer.singleShot(300, self, lambda: self._przejmij_klawiature(alt=False))  # okno dopiero się pojawia
         self._animacja.start()
         self._pilnuj.start()
 
@@ -250,6 +275,17 @@ class Zaslona(QWidget):
         for e in self.ekrany:
             e.update()
 
+    def _przejmij_klawiature(self, alt: bool = True):
+        """alt=False przy cyklicznym pilnowaniu: bez sztucznych naciśnięć (nie budziłyby systemu co sekundę)."""
+        if not self.ekrany or self.zamykanie:
+            return
+        e = self.ekrany[0]
+        if alt:
+            na_pierwszy_plan(e)
+        e.activateWindow()
+        e.setFocus()
+        e.grabKeyboard()
+
     def _na_wierzch(self):
         """Inne okno (np. okno hasła) nie przykryje zasłony ani nie przejmie klawiatury."""
         if self.zamykanie:
@@ -260,13 +296,14 @@ class Zaslona(QWidget):
         for e in self.ekrany:
             e.raise_()
         if self.ekrany and not self.ekrany[0].isActiveWindow():
-            self.ekrany[0].activateWindow()
-            self.ekrany[0].grabKeyboard()
+            self._przejmij_klawiature(alt=False)
 
     def klawisz(self, klawisz: int, powtorzenie: bool = False):
         if self.zamykanie:
             return
         self.obudz()
+        if klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
+            return  # same klawisze modyfikujące (także sztuczny Alt przy przejmowaniu klawiatury) nie psują serii
         spacja = klawisz == Qt.Key.Key_Space
         if spacja and not powtorzenie:
             self.ostatnia_spacja = time.monotonic()

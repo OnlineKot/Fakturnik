@@ -71,3 +71,18 @@ def test_przypomnienia():
     teraz_, reszta = n.do_przypomnienia(lista, teraz)
     assert [p["tekst"] for p in teraz_] == ["A"] and [p["tekst"] for p in reszta] == ["B"]
     assert n.wczytaj_przypomnienia("zepsute") == []
+
+
+def test_kod_qr_strony():
+    assert n.adres_strony("gabinet.pl/opinie") == "https://gabinet.pl/opinie"
+    assert n.adres_strony("http://www.gabinet.pl") == "http://www.gabinet.pl"
+    for zly in ("", "javascript:alert(1)", "file:///C:/x", "nie ma kropki", "ftp://a.pl"):
+        try:
+            n.adres_strony(zly)
+            assert False, zly
+        except ValueError:
+            pass
+    m = n.macierz_qr("https://gabinet.pl")
+    assert len(m) == len(m[0]) >= 21 and any(any(w) for w in m)
+    assert n.wczytaj_strony('[{"nazwa": "Strona", "adres": "https://a.pl"}, {"x": 1}]') == [
+        {"nazwa": "Strona", "adres": "https://a.pl"}]

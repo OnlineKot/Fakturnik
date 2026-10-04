@@ -1,6 +1,7 @@
 """Okno główne programu Fakturnik."""
 
 import base64
+import json
 import hmac
 import math
 import re
@@ -18,7 +19,7 @@ from PySide6.QtCore import (
     QTime, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut,
+    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -2187,6 +2188,7 @@ class StronaNarzedzia(Strona):
         ("slownie", "Kwota słownie", "tekst"),
         ("hasla", "Generator haseł", "klucz"),
         ("skaner", "Skaner plików", "tarcza"),
+        ("qr", "Kod QR do strony", "qr"),
     ]
 
     def __init__(self, okno: "OknoGlowne"):
@@ -2237,7 +2239,8 @@ class StronaNarzedzia(Strona):
                   "kalkulator": self._karta_kalkulatora, "stoper": self._karta_stopera,
                   "minutnik": self._karta_minutnika, "daty": self._karta_dat, "rabat": self._karta_rabatu,
                   "firma": self._karta_firmy, "numer": self._karta_numeru, "slownie": self._karta_slownie,
-                  "hasla": self._karta_hasel, "skaner": self._karta_skanera}
+                  "hasla": self._karta_hasel, "skaner": self._karta_skanera,
+                  "qr": self._karta_qr}
         self.widoki: dict[str, int] = {}
         for klucz, _, _ in self.NARZEDZIA:
             w = budowa[klucz]()
@@ -2964,6 +2967,96 @@ class StronaNarzedzia(Strona):
         ku.addStretch()
         return k
 
+    # ---- kod QR do strony
+    def _karta_qr(self) -> QFrame:
+        k, ku = karta()
+        rzad = QHBoxLayout()
+        self.lista_stron = QComboBox()
+        self.lista_stron.setMinimumWidth(220)
+        self.lista_stron.currentIndexChanged.connect(self._wybierz_strone)
+        rzad.addWidget(self.lista_stron, 1)
+        rzad.addWidget(przycisk("Usuń", "kosz", akcja=self._usun_strone))
+        ku.addLayout(rzad)
+        forma = QFormLayout()
+        self.nazwa_strony = QLineEdit(placeholderText="np. Opinie Google, Strona gabinetu, Umów wizytę")
+        self.adres_strony = QLineEdit(placeholderText="np. www.gabinet.pl")
+        self.adres_strony.textChanged.connect(self._podglad_qr)
+        forma.addRow("Nazwa", self.nazwa_strony)
+        forma.addRow("Adres strony", self.adres_strony)
+        ku.addLayout(forma)
+        self.podglad_qr = KodQR()
+        self.podglad_qr.setFixedSize(220, 220)
+        ku.addWidget(self.podglad_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.blad_qr = QLabel(objectName="drobny", alignment=Qt.AlignmentFlag.AlignCenter)
+        ku.addWidget(self.blad_qr)
+        rzad2 = QHBoxLayout()
+        rzad2.addWidget(przycisk("Zapisz stronę", "plus", akcja=self._zapisz_strone))
+        rzad2.addStretch()
+        rzad2.addWidget(przycisk("Pokaż na ekranie", "pulpit", "glowny", self._pokaz_qr))
+        ku.addLayout(rzad2)
+        return k
+
+    def _strony(self) -> list[dict]:
+        return narzedzia.wczytaj_strony(self.okno.baza.ustawienia().get("qr_strony", ""))
+
+    def _odswiez_strony(self, wybierz: str = ""):
+        self.lista_stron.blockSignals(True)
+        self.lista_stron.clear()
+        self.lista_stron.addItem("Nowa strona…", None)
+        for st in self._strony():
+            self.lista_stron.addItem(st["nazwa"] or st["adres"], st)
+        indeks = next((i for i in range(1, self.lista_stron.count())
+                       if self.lista_stron.itemData(i)["adres"] == wybierz), 1 if self.lista_stron.count() > 1 else 0)
+        self.lista_stron.setCurrentIndex(indeks)
+        self.lista_stron.blockSignals(False)
+        self._wybierz_strone()
+
+    def _wybierz_strone(self, *_):
+        st = self.lista_stron.currentData()
+        self.nazwa_strony.setText(st["nazwa"] if st else "")
+        self.adres_strony.setText(st["adres"] if st else "")
+
+    def _podglad_qr(self, *_):
+        try:
+            adres = narzedzia.adres_strony(self.adres_strony.text())
+        except ValueError as e:
+            self.podglad_qr.ustaw("")
+            self.blad_qr.setText(str(e) if self.adres_strony.text().strip() else "")
+            return
+        self.podglad_qr.ustaw(adres)
+        self.blad_qr.setText(adres)
+
+    def _zapisz_strone(self):
+        try:
+            adres = narzedzia.adres_strony(self.adres_strony.text())
+        except ValueError as e:
+            self.blad_qr.setText(str(e))
+            return
+        strony = [st for st in self._strony() if st["adres"] != adres]
+        strony.append({"nazwa": self.nazwa_strony.text().strip(), "adres": adres})
+        self.okno.baza.zapisz_ustawienia({"qr_strony": json.dumps(strony, ensure_ascii=False)})
+        self._odswiez_strony(adres)
+        self.okno.komunikat("Zapisano stronę")
+
+    def _usun_strone(self):
+        st = self.lista_stron.currentData()
+        if not st:
+            return
+        strony = [x for x in self._strony() if x["adres"] != st["adres"]]
+        self.okno.baza.zapisz_ustawienia({"qr_strony": json.dumps(strony, ensure_ascii=False)})
+        self._odswiez_strony()
+
+    def _pokaz_qr(self):
+        try:
+            adres = narzedzia.adres_strony(self.adres_strony.text())
+        except ValueError as e:
+            self.blad_qr.setText(str(e))
+            return
+        nazwa_gabinetu = self.okno.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        self._ekran_qr = EkranQR(adres, self.nazwa_strony.text().strip(), nazwa_gabinetu)
+        self._ekran_qr.showFullScreen()
+        self._ekran_qr.activateWindow()
+
     # ---- skaner plików
     def _karta_skanera(self) -> QFrame:
         k, ku = karta()
@@ -3073,6 +3166,7 @@ class StronaNarzedzia(Strona):
         self._wczytaj_gtd()
         self._pokaz_gtd()
         self._odswiez_kafelki()
+        self._odswiez_strony(self.adres_strony.text())
         self.czas_schowka.blockSignals(True)
         try:
             self.czas_schowka.setValue(int(self.okno.baza.ustawienia().get("schowek_sekund") or 30))
@@ -3141,6 +3235,73 @@ class StronaNarzedzia(Strona):
         from .slownie import kwota_slownie
         kwota = liczba_lub_none(tekst)
         self.slownie.setText(kwota_slownie(kwota) if kwota is not None and kwota >= 0 else "")
+
+
+class KodQR(QWidget):
+    """Ostry kod QR rysowany z modułów (bez rozmycia przy dowolnym powiększeniu)."""
+
+    def __init__(self, tekst: str = "", parent=None):
+        super().__init__(parent)
+        self.macierz: list[list[bool]] = []
+        self.ustaw(tekst)
+
+    def ustaw(self, tekst: str):
+        self.macierz = narzedzia.macierz_qr(tekst) if tekst else []
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), Qt.GlobalColor.white)
+        if not self.macierz:
+            p.end()
+            return
+        n = len(self.macierz) + 4  # 2 moduły marginesu z każdej strony
+        bok = min(self.width(), self.height())
+        modul = bok // n
+        x0 = (self.width() - modul * n) // 2 + 2 * modul
+        y0 = (self.height() - modul * n) // 2 + 2 * modul
+        for r, wiersz in enumerate(self.macierz):
+            for c, ciemny in enumerate(wiersz):
+                if ciemny:
+                    p.fillRect(x0 + c * modul, y0 + r * modul, modul, modul, QColor("#111111"))
+        p.end()
+
+
+class EkranQR(QWidget):
+    """Kod QR na cały ekran dla pacjenta (np. strona gabinetu, opinie). Esc, spacja albo kliknięcie zamyka."""
+
+    def __init__(self, adres: str, nazwa: str, gabinet: str):
+        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setStyleSheet("background: white;")
+        u = QVBoxLayout(self)
+        u.setContentsMargins(40, 40, 40, 40)
+        u.addStretch(1)
+        if gabinet:
+            g = QLabel(gabinet, alignment=Qt.AlignmentFlag.AlignCenter)
+            g.setStyleSheet(f"color: {AKCENT}; font-size: 28px; font-weight: 650; background: transparent;")
+            u.addWidget(g)
+        if nazwa:
+            n = QLabel(nazwa, alignment=Qt.AlignmentFlag.AlignCenter)
+            n.setStyleSheet(f"color: {TEKST}; font-size: 40px; font-weight: 700; background: transparent;")
+            u.addWidget(n)
+        u.addSpacing(20)
+        self.kod = KodQR(adres)
+        self.kod.setMinimumSize(320, 320)
+        u.addWidget(self.kod, 6)
+        u.addSpacing(16)
+        a = QLabel(adres.split("://", 1)[-1], alignment=Qt.AlignmentFlag.AlignCenter)
+        a.setStyleSheet(f"color: {TEKST_2}; font-size: 22px; background: transparent;")
+        u.addWidget(a)
+        u.addStretch(1)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.close()
+
+    def mousePressEvent(self, _):
+        self.close()
 
 
 class OknoSzukania(QDialog):
@@ -3218,6 +3379,9 @@ class StronaUstawienia(Strona):
         naglowek = QHBoxLayout(gora)
         naglowek.setContentsMargins(0, 0, 0, 0)
         naglowek.addLayout(naglowek_strony("Ustawienia", "Dane gabinetu, wydruk i bezpieczeństwo."))
+        wersja_gora = QLabel(opis_wersji(), objectName="drobny")
+        wersja_gora.setToolTip(opis_wersji(pelny=True))
+        naglowek.addWidget(wersja_gora, alignment=Qt.AlignmentFlag.AlignBottom)
         naglowek.addStretch()
         self.btn_zablokuj_ust = przycisk("Zablokuj", "klodka", akcja=self.zablokuj_ustawienia)
         naglowek.addWidget(self.btn_zablokuj_ust, alignment=Qt.AlignmentFlag.AlignBottom)
@@ -3598,7 +3762,9 @@ class StronaUstawienia(Strona):
         prawa.addWidget(sekcja("Aktualizacje"))
         k, ku = karta()
         rzad = QHBoxLayout()
-        rzad.addWidget(QLabel(f"Wersja {WERSJA}"))
+        etykieta_wersji = QLabel(opis_wersji(pelny=True))
+        etykieta_wersji.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rzad.addWidget(etykieta_wersji)
         rzad.addStretch()
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
         ku.addLayout(rzad)
@@ -6241,6 +6407,21 @@ def _nowe_urzadzenie(plik: Path, haslo: str, dziennik: Dziennik, wynik: dict) ->
         pass  # bez zapamiętania: przy następnym uruchomieniu znów zapyta o kod
     dziennik.zapisz(f"weryfikacja urządzenia: nowe urządzenie {urzadzenie.nazwa_urzadzenia()} (kod odzyskiwania)")
     return True
+
+
+def opis_wersji(pelny: bool = False) -> str:
+    """„Wersja 1.0.39 · build 39 · 2026-10-04 10:12 UTC · a1b2c3d” (pola są wpisywane przy budowaniu)."""
+    from . import wersja
+    czesci = [f"Wersja {wersja.WERSJA}"]
+    if getattr(wersja, "BUILD", ""):
+        czesci.append(f"build {wersja.BUILD}")
+    if pelny and getattr(wersja, "ZBUDOWANO", ""):
+        czesci.append(f"zbudowano {wersja.ZBUDOWANO}")
+    if pelny and getattr(wersja, "COMMIT", ""):
+        czesci.append(wersja.COMMIT)
+    if len(czesci) == 1:
+        czesci.append("wersja deweloperska")
+    return " · ".join(czesci)
 
 
 def katalog_pobranych() -> Path:
