@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QFileSystemWatcher, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt,
+    QBuffer, QFileSystemWatcher, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt,
     QThread,
     QTime, QTimer, QUrl, Signal,
 )
@@ -67,7 +67,7 @@ QFrame#menu QPushButton {{
 }}
 QFrame#menu QPushButton:hover {{ background: #163a42; color: white; }}
 QFrame#menu QPushButton:checked {{ background: {MENU_AKTYWNY}; color: white; font-weight: 600; }}
-QLabel#nazwa_programu {{ font-size: 15px; font-weight: 600; color: white; }}
+QLabel#nazwa_programu {{ font-size: 14px; font-weight: 650; color: white; line-height: 120%; }}
 QLabel#gabinet {{ font-size: 11px; color: {MENU_TEKST}; }}
 QFrame#menu_linia {{ background: #1f454d; max-height: 1px; border: none; margin: 0 20px; }}
 
@@ -5256,14 +5256,13 @@ class OknoGlowne(QMainWindow):
         marka = QHBoxLayout()
         marka.setContentsMargins(22, 0, 16, 22)
         marka.setSpacing(11)
-        znak = QLabel()
-        znak.setPixmap(QPixmap(str(ZASOBY / "ikona.png")).scaled(
-            34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        marka.addWidget(znak)
-        opis = QVBoxLayout()
-        opis.setSpacing(1)
-        opis.addWidget(QLabel("Fakturnik", objectName="nazwa_programu"))
-        marka.addLayout(opis)
+        self.znak_gabinetu = QLabel()
+        self.znak_gabinetu.setFixedSize(40, 46)
+        self.znak_gabinetu.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        marka.addWidget(self.znak_gabinetu, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.nazwa_gabinetu_menu = QLabel(objectName="nazwa_programu", wordWrap=True)
+        self.nazwa_gabinetu_menu.setFixedWidth(150)
+        marka.addWidget(self.nazwa_gabinetu_menu, alignment=Qt.AlignmentFlag.AlignVCenter)
         marka.addStretch()
         m.addLayout(marka)
 
@@ -5296,13 +5295,9 @@ class OknoGlowne(QMainWindow):
         self.btn_blokuj.setIcon(ikona("klodka", MENU_TEKST))
         self.btn_blokuj.clicked.connect(self.zablokuj)
         m.addWidget(self.btn_blokuj)
-        self.etykieta_gabinetu = QLabel(objectName="gabinet")
-        self.etykieta_gabinetu.setFixedWidth(190)
-        self.etykieta_gabinetu.setStyleSheet("padding: 6px 24px 0; color: #a9c3c8;")
-        m.addWidget(self.etykieta_gabinetu)
-        wersja = QLabel(f"Wersja {WERSJA}  ·  TeodorTeo.com")
-        wersja.setStyleSheet("color: #6f8f95; font-size: 11px; padding: 2px 24px 0;")
-        m.addWidget(wersja)
+        podpis = QLabel(f"Wersja {WERSJA}<br>by TeodorTeo.com", textFormat=Qt.TextFormat.RichText)
+        podpis.setStyleSheet("color: #5f8189; font-size: 10px; padding: 6px 24px 0;")
+        m.addWidget(podpis, alignment=Qt.AlignmentFlag.AlignLeft)
         uklad.addWidget(menu)
 
         # --- treść z paskiem aktualizacji
@@ -5576,10 +5571,14 @@ class OknoGlowne(QMainWindow):
         self.timer.start()
 
     def _ustaw_nazwe_gabinetu(self):
-        nazwa = self.baza.ustawienia()["nazwa"].split(",")[0].strip()
-        miara = self.etykieta_gabinetu.fontMetrics()
-        self.etykieta_gabinetu.setText(miara.elidedText(nazwa, Qt.TextElideMode.ElideRight, 150))
-        self.etykieta_gabinetu.setToolTip(nazwa)
+        """Góra menu: logo i nazwa gabinetu (z Ustawień); bez nazwy — Fakturnik."""
+        u = self.baza.ustawienia()
+        nazwa = u["nazwa"].split(",")[0].strip() or "Fakturnik"
+        miara = self.nazwa_gabinetu_menu.fontMetrics()
+        linie = miara.elidedText(nazwa, Qt.TextElideMode.ElideRight, 150 * 2 - 20)
+        self.nazwa_gabinetu_menu.setText(linie)
+        self.nazwa_gabinetu_menu.setToolTip(nazwa)
+        self.znak_gabinetu.setPixmap(logo_menu(u.get("logo", "")))
 
     def komunikat(self, tekst: str, blad: bool = False):
         self.powiadomienie.pokaz(tekst, blad)
@@ -6638,6 +6637,32 @@ def opis_wersji(pelny: bool = False) -> str:
     if len(czesci) == 1:
         czesci.append("wersja deweloperska")
     return " · ".join(czesci)
+
+
+def logo_menu(ustawienie: str) -> QPixmap:
+    """Logo gabinetu do menu bocznego: własne logo (z Ustawień) na jasnym kafelku albo ząb gabinetu."""
+    skala = 3
+    pix = QPixmap(40 * skala, 46 * skala)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    dane = druk.logo_bajty({"logo": ustawienie}) if ustawienie and ustawienie != "domyslne" else None
+    obraz = QImage.fromData(dane) if dane else QImage()
+    if not obraz.isNull():
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#ffffff"))
+        p.drawRoundedRect(0, 3 * skala, 40 * skala, 40 * skala, 10 * skala, 10 * skala)
+        dopasowane = obraz.scaled(32 * skala, 32 * skala, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+        p.drawImage((40 * skala - dopasowane.width()) // 2, (46 * skala - dopasowane.height()) // 2, dopasowane)
+    else:
+        from PySide6.QtSvg import QSvgRenderer
+        svg = (ZASOBY / "logo.svg").read_text(encoding="utf-8")
+        QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(p, QRectF(5 * skala, 0, 30 * skala, 45 * skala))
+    p.end()
+    pix.setDevicePixelRatio(skala)
+    return pix
 
 
 def ikona_kafelka(nazwa: str) -> QIcon:
