@@ -3,6 +3,14 @@ import subprocess
 import sys
 
 
+# Zmienne PyInstallera tego procesu nie mogą przejść do programów, które uruchamiamy (instalator,
+# przeglądarka, nowa wersja): wskazywałyby im nasz folder tymczasowy, który znika po zamknięciu,
+# a wtedy nowy proces kończy się błędem „Failed to load Python DLL”.
+for _zmienna in [k for k in os.environ if k.startswith(("_PYI", "_MEI"))]:
+    del os.environ[_zmienna]
+os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+
+
 def _uruchom_od_nowa() -> None:
     """Start po aktualizacji ze starej wersji (do 1.0.12): stara wersja przekazywała nowej swoje
     zmienne PyInstallera, więc nowa szukała bibliotek w usuniętym już folderze tymczasowym starej.

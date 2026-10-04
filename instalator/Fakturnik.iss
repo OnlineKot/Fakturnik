@@ -84,9 +84,10 @@ Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Fakturnik"" /inheri
 ; usługa kopii i aktualizacji: co godzinę oraz 5 minut po starcie komputera, z konta SYSTEM
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC HOURLY /TN ""Fakturnik\Kopie co godzine"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated; StatusMsg: "Włączanie usługi kopii..."
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0005:00 /TN ""Fakturnik\Kopie po starcie"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated
-; pierwsza chroniona kopia od razu
-Filename: "{app}\Fakturnik.exe"; Parameters: "--usluga"; Flags: runhidden nowait
-Filename: "{app}\Fakturnik.exe"; Description: "Uruchom Fakturnik"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; pierwsza chroniona kopia od razu, przez Harmonogram zadań (konto SYSTEM, czyste środowisko)
+Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""Fakturnik\Kopie co godzine"""; Flags: runhidden nowait
+; start przez Eksploratora: program dostaje środowisko pulpitu, a nie instalatora (ani programu, który go uruchomił)
+Filename: "{win}\explorer.exe"; Parameters: """{app}\Fakturnik.exe"""; Description: "Uruchom Fakturnik"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie co godzine"""; Flags: runhidden; RunOnceId: "UsunZadanie1"
@@ -102,6 +103,30 @@ Type: files; Name: "{app}\FakturnikPrzegladarka.new.exe"
 polski.FinishedLabel=Fakturnik został zainstalowany. Dane są kopiowane co 10 minut i co godzinę do chronionego katalogu, i nie znikają przy aktualizacji ani odinstalowaniu.
 
 [Code]
+function UstawZmienna(lpName: String; lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+function UsunZmienna(lpName: String; lpValue: Cardinal): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+{ Instalator uruchomiony z działającego Fakturnika dziedziczy jego zmienne PyInstallera. Programy
+  uruchamiane stąd szukałyby wtedy bibliotek w usuniętym folderze tymczasowym starej wersji
+  („Failed to load Python DLL”), więc czyścimy je, zanim cokolwiek uruchomimy. }
+procedure WyczyscSrodowisko();
+begin
+  UsunZmienna('_PYI_APPLICATION_HOME_DIR', 0);
+  UsunZmienna('_PYI_ARCHIVE_FILE', 0);
+  UsunZmienna('_PYI_PARENT_PROCESS_LEVEL', 0);
+  UsunZmienna('_PYI_SPLASH_IPC', 0);
+  UsunZmienna('_MEIPASS2', 0);
+  UstawZmienna('PYINSTALLER_RESET_ENVIRONMENT', '1');
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  WyczyscSrodowisko();
+  Result := True;
+end;
+
 const
   StaryKlucz = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{5D0E3C55-6A41-4B7E-9F0B-3C7A1E2B9D41}_is1';
 
@@ -128,6 +153,7 @@ var
   Kod: Integer;
   Exe: String;
 begin
+  WyczyscSrodowisko();
   { bez pliku programu nie da się sprawdzić hasła, więc wtedy odinstalowanie jest zablokowane }
   Exe := ExpandConstant('{app}\Fakturnik.exe');
   if not FileExists(Exe) then
