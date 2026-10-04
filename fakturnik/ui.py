@@ -3305,7 +3305,7 @@ class StronaUstawienia(Strona):
         rzad_blokady.addStretch()
         ku.addLayout(rzad_blokady)
         rzad_zaslony = QHBoxLayout()
-        self.zaslona_wl = QCheckBox("Zasłona ekranu z żabką po")
+        self.zaslona_wl = QCheckBox("Zasłona ekranu z ząbkiem po")
         rzad_zaslony.addWidget(self.zaslona_wl)
         self.zaslona_sekund = QSpinBox(minimum=5, maximum=3600, singleStep=15, suffix=" s bezczynności")
         self.zaslona_sekund.setFixedWidth(190)
@@ -3864,7 +3864,7 @@ class StronaUstawienia(Strona):
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
         self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
         self.zaslona_wl.setChecked(u["zaslona"] == "1")
-        self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 120))
+        self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 30))
         self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
         self.w_tle.setChecked(u["w_tle"] == "1")
         self.autostart.setChecked(autostart_wlaczony())
@@ -5133,7 +5133,7 @@ class OknoGlowne(QMainWindow):
             return
         if self.zaslona or u.get("zaslona") != "1":
             return
-        if self._bezczynnosc() >= max(5, int(liczba(u.get("zaslona_sekund")) or 120)):
+        if self._bezczynnosc() >= max(5, int(liczba(u.get("zaslona_sekund")) or 30)):
             self.pokaz_zaslone()
 
     def pokaz_zaslone(self):
