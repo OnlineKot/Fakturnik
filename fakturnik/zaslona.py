@@ -1,7 +1,7 @@
 """Zasłona ekranu w stylu klasycznego wygaszacza: czarne tło, a na nim logo gabinetu, nazwa gabinetu,
 zegar i data, które wolno jeżdżą po ekranie i odbijają się od krawędzi. Bez napisów-instrukcji.
 
-Znika tylko po DOKŁADNIE trzech naciśnięciach spacji i krótkiej pauzie. Cztery i więcej spacji,
+Znika tylko po DOKŁADNIE pięciu naciśnięciach spacji i krótkiej pauzie. Sześć i więcej spacji,
 przytrzymana spacja albo inny klawisz w serii nic nie dają. Nie czyści schowka i nie wylogowuje:
 to szybka zasłona przed wzrokiem pacjentów. Blokada hasłem działa niezależnie od niej.
 
@@ -20,8 +20,8 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainte
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
-SPACJE = 3
-OKNO_SPACJI = 2.0    # trzy spacje w ciągu tylu sekund
+SPACJE = 5
+OKNO_SPACJI = 3.0    # pięć spacji w ciągu tylu sekund
 PAUZA = 0.6          # po trzeciej spacji: tyle ciszy, żeby zasłona zniknęła (czwarta spacja psuje serię)
 KARA = 1.2           # po nieudanej serii: tyle ciszy, zanim można zacząć od nowa
 POJAWIANIE_MS = 800
@@ -37,7 +37,7 @@ MIESIACE = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca
 
 
 class LicznikSpacji:
-    """Odblokowanie dokładnie trzema spacjami (bez Qt, do testów)."""
+    """Odblokowanie dokładnie pięcioma spacjami (bez Qt, do testów)."""
 
     def __init__(self):
         self.serie: list[float] = []
@@ -54,7 +54,7 @@ class LicznikSpacji:
             self.kara_do = teraz + KARA
 
     def odblokowac(self, teraz: float) -> bool:
-        """Prawda, gdy były dokładnie trzy spacje, a od ostatniej minęła pauza bez kolejnych klawiszy."""
+        """Prawda, gdy było dokładnie pięć spacji, a od ostatniej minęła pauza bez kolejnych klawiszy."""
         return len(self.serie) == SPACJE and teraz - self.serie[-1] >= PAUZA
 
 
@@ -183,6 +183,12 @@ class _Ekran(QWidget):
         p.setFont(czcionka_daty)
         p.setPen(QColor("#7f9499"))
         p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
+        # mały podpis w prawym dolnym rogu; przesuwa się o kilka pikseli, żeby nie wypalał ekranu
+        przes = (teraz_m - z.start) / 60.0
+        p.setFont(self._czcionka(self.font(), 12 * jednostka + 4, QFont.Weight.Normal))
+        p.setPen(QColor("#4f5f63"))
+        p.drawText(QRectF(0, 0, w - 18 * jednostka - 6 - 6 * odbicie(przes, 1.0), h - 14 * jednostka - 6 - 6 * odbicie(przes * 0.7, 1.0)),
+                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "TeodorTeo.com")
         p.end()
 
     def keyPressEvent(self, e):
@@ -198,7 +204,7 @@ class _Ekran(QWidget):
 
     def closeEvent(self, e):
         if not self.zaslona.zamykanie:
-            e.ignore()  # zasłonę zamykają tylko trzy spacje (Alt+F4 nie działa)
+            e.ignore()  # zasłonę zamyka tylko pięć spacji (Alt+F4 nie działa)
             return
         super().closeEvent(e)
 
@@ -291,7 +297,7 @@ class Zaslona(QWidget):
         if self.zamykanie:
             return
         if not self._animacja.isActive() and self.licznik.odblokowac(time.monotonic()):
-            self.zamknij()  # trzy spacje w czerni też działają
+            self.zamknij()  # pięć spacji w czerni też działa
             return
         for e in self.ekrany:
             e.raise_()
