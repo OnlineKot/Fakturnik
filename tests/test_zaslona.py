@@ -41,3 +41,20 @@ def test_spacje_zbyt_rozciagniete_w_czasie():
     l = LicznikSpacji()
     seria(l, [10.0, 11.5, 13.0])             # więcej niż 2 s na trzy spacje
     assert not l.odblokowac(14.0)
+
+
+def test_wedrowka_obrazu_nie_wychodzi_poza_zapas():
+    from fakturnik.zaslona import przesuniecie
+    for t in range(0, 3600, 7):
+        dx, dy = przesuniecie(t, 300, 120)
+        assert abs(dx) <= 300 and abs(dy) <= 120
+    pozycje = {tuple(round(v) for v in przesuniecie(t, 300, 120)) for t in range(0, 600, 30)}
+    assert len(pozycje) > 10  # obraz faktycznie się przesuwa
+
+
+def test_gaszenie_ekranu():
+    from fakturnik.zaslona import GASNIECIE, jasnosc_po_czasie
+    assert jasnosc_po_czasie(10, 600) == 1.0
+    assert 0 < jasnosc_po_czasie(600 + GASNIECIE / 2, 600) < 1
+    assert jasnosc_po_czasie(600 + GASNIECIE, 600) == 0
+    assert jasnosc_po_czasie(99999, 0) == 1.0  # 0 = nigdy nie gaśnie

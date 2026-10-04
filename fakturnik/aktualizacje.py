@@ -145,6 +145,21 @@ def sprawdz_wlasny_plik(obecny: Path | None = None, wersja: str = WERSJA) -> boo
 
 # ---------------------------------------------------------------- instalacja w Program Files
 
+def zainstalowany(exe: Path | None = None) -> bool:
+    """Program działa z instalacji w Program Files (także gdy uruchomiono go jako administrator,
+    a wtedy folder byłby zapisywalny i sam test zapisu by się pomylił)."""
+    exe = (exe or Path(sys.executable)).resolve()
+    for zmienna in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        katalog = os.environ.get(zmienna)
+        if katalog:
+            try:
+                exe.relative_to(Path(katalog).resolve())
+                return True
+            except ValueError:
+                continue
+    return not mozna_zapisac_obok(exe)
+
+
 def mozna_zapisac_obok(exe: Path | None = None) -> bool:
     """Czy program może sam podmienić swój plik. Nie, gdy zainstalowano go w Program Files
     (tam zmiany robi tylko administrator, a aktualizacje instaluje usługa Fakturnika)."""
@@ -192,7 +207,7 @@ def zablokuj_program() -> None:
     Nie dotyczy instalacji w Program Files: tam plik chronią uprawnienia Windows, a blokada
     uniemożliwiłaby usłudze zainstalowanie aktualizacji."""
     global _blokada_programu
-    if not czy_spakowany() or _blokada_programu is not None or not mozna_zapisac_obok():
+    if not czy_spakowany() or _blokada_programu is not None or zainstalowany():
         return
     from .ochrona import BlokadaPliku
     _blokada_programu = BlokadaPliku(Path(sys.executable))

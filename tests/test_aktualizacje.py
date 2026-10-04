@@ -162,3 +162,12 @@ def test_nowa_wersja_czeka_na_zamkniecie_starej():
     assert stara.poll() is not None and time.monotonic() - start < 10
     assert aktualizacje.czekaj_na_poprzednia(["--dodaj", "a.pdf"]) == ["--dodaj", "a.pdf"]
     assert aktualizacje.czekaj_na_poprzednia(["--po-aktualizacji", "x"]) == []
+
+
+def test_zainstalowany_w_program_files(tmp_path, monkeypatch):
+    pf = tmp_path / "Program Files"
+    (pf / "Fakturnik").mkdir(parents=True)
+    monkeypatch.setenv("ProgramFiles", str(pf))
+    assert aktualizacje.zainstalowany(pf / "Fakturnik" / "Fakturnik.exe")  # nawet gdy folder jest zapisywalny
+    (tmp_path / "Pobrane").mkdir()
+    assert not aktualizacje.zainstalowany(tmp_path / "Pobrane" / "Fakturnik.exe")

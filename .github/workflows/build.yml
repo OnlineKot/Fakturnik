@@ -37,17 +37,8 @@ jobs:
         run: |
           python skrypty/wersja_exe.py ${{ env.WERSJA }} > wersja_exe.txt
 
-      - name: Budowanie .exe (Python spakowany do środka)
-        run: >
-          pyinstaller --noconfirm --onefile --windowed --name Fakturnik --noupx
-          --exclude-module tkinter --exclude-module unittest
-          --icon fakturnik/zasoby/ikona.ico
-          --version-file wersja_exe.txt
-          --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineCore
-          --exclude-module PySide6.QtWebChannel --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQml
-          --exclude-module PySide6.QtWebEngineQuick
-          --add-data "fakturnik/zasoby;fakturnik/zasoby"
-          main.py
+      - name: Budowanie .exe (Python spakowany do środka, bez zbędnych części Qt)
+        run: pyinstaller --noconfirm Fakturnik.spec
 
       - name: Instalator (Inno Setup)
         shell: pwsh

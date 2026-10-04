@@ -45,7 +45,7 @@ def kontrola(baza, dziennik_ok: bool, program_ok: bool | None) -> list[Wynik]:
                         {True: "Włączony", False: "Wyłączony", None: "Nie da się sprawdzić na tym komputerze"}[sb],
                         "Włącz Secure Boot w ustawieniach UEFI/BIOS komputera (chroni przed złośliwym "
                         "oprogramowaniem uruchamianym przed Windows).", "zalecenie"))
-    admin = (not aktualizacje.mozna_zapisac_obok()) if aktualizacje.czy_spakowany() else None
+    admin = aktualizacje.zainstalowany() if aktualizacje.czy_spakowany() else None
     wyniki.append(Wynik("instalacja", "Instalacja z uprawnieniami administratora", admin,
                         {True: "Program Files, chroniony przed zmianą", False: "Program może zmienić zwykłe konto",
                          None: "Wersja ze źródeł"}[admin],

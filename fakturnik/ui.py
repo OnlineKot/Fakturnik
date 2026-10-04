@@ -3255,6 +3255,15 @@ class StronaUstawienia(Strona):
         rzad_zaslony.addWidget(przycisk("Pokaż", "pulpit", akcja=lambda: self.okno.pokaz_zaslone()))
         rzad_zaslony.addStretch()
         ku.addLayout(rzad_zaslony)
+        rzad_gaszenia = QHBoxLayout()
+        rzad_gaszenia.addWidget(QLabel("Gaś ekran i monitor po", objectName="etykieta"))
+        self.zaslona_gaszenie = QSpinBox(minimum=0, maximum=240, suffix=" min zasłony")
+        self.zaslona_gaszenie.setSpecialValueText("nigdy")
+        self.zaslona_gaszenie.setFixedWidth(190)
+        self.zaslona_wl.toggled.connect(self.zaslona_gaszenie.setEnabled)
+        rzad_gaszenia.addWidget(self.zaslona_gaszenie)
+        rzad_gaszenia.addStretch()
+        ku.addLayout(rzad_gaszenia)
         self.ochrona_ekranu = QCheckBox("Ukrywaj okna programu przed zrzutami i nagrywaniem ekranu "
                                         "(np. narzędzia AI, programy zdalnego dostępu)")
         ku.addWidget(self.ochrona_ekranu)
@@ -3497,7 +3506,7 @@ class StronaUstawienia(Strona):
             return (f"<span style='color:{ZIELONY}'>✓ {dobrze}</span>" if stan
                     else f"<span style='color:{CZERWONY}'>✗ {zle}</span>")
 
-        admin = (not aktualizacje.mozna_zapisac_obok()) if aktualizacje.czy_spakowany() else None
+        admin = aktualizacje.zainstalowany() if aktualizacje.czy_spakowany() else None
         konto = urzadzenie.konto_administratora()
         wiersze = [
             f"Komputer: <b>{html_escape(urzadzenie.nazwa_urzadzenia())}</b>",
@@ -3784,6 +3793,8 @@ class StronaUstawienia(Strona):
         self.zaslona_wl.setChecked(u["zaslona"] == "1")
         self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 30))
         self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
+        self.zaslona_gaszenie.setValue(int(liczba(u["zaslona_gaszenie_min"]) or 0))
+        self.zaslona_gaszenie.setEnabled(u["zaslona"] == "1")
         self.w_tle.setChecked(u["w_tle"] == "1")
         self.autostart.setChecked(autostart_wlaczony())
         self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
@@ -3868,6 +3879,7 @@ class StronaUstawienia(Strona):
         wartosci["blokada_minut"] = str(self.blokada_minut.value())
         wartosci["zaslona"] = "1" if self.zaslona_wl.isChecked() else "0"
         wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
+        wartosci["zaslona_gaszenie_min"] = str(self.zaslona_gaszenie.value())
         if integracja_dostepna():
             ustaw_autostart(self.autostart.isChecked())
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
@@ -5042,8 +5054,8 @@ class OknoGlowne(QMainWindow):
             u = self.baza.ustawienia()
         except Exception:  # noqa: BLE001
             return
-        if self.zaslona or u.get("zaslona") != "1":
-            return
+        if self.zaslona or u.get("zaslona") != "1" or self._zablokowano_windows:
+            return  # przy zablokowanym Windows zasłona nie jest potrzebna (i czekałaby po odblokowaniu)
         if self._bezczynnosc() >= max(5, int(liczba(u.get("zaslona_sekund")) or 30)):
             self.pokaz_zaslone()
 
@@ -5051,7 +5063,8 @@ class OknoGlowne(QMainWindow):
         if self.zaslona:
             return
         from .zaslona import Zaslona
-        self.zaslona = Zaslona()
+        u = self.baza.ustawienia()
+        self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0))
         self.zaslona.zamknieta.connect(lambda: setattr(self, "zaslona", None))
         self.zaslona.pokaz()
 
@@ -5321,7 +5334,7 @@ class OknoGlowne(QMainWindow):
             if not cicho:
                 QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
-        if aktualizacje.czy_spakowany() and not aktualizacje.mozna_zapisac_obok():
+        if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany():
             if not cicho:  # Program Files: nową wersję zainstaluje usługa (konto SYSTEM)
                 QMessageBox.information(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Zainstaluje ją "
                                         "automatycznie usługa Fakturnika w ciągu godziny, a program uruchomi się "
@@ -5342,7 +5355,7 @@ class OknoGlowne(QMainWindow):
         if not aktualizacje.czy_spakowany():
             QMessageBox.information(self, "Aktualizacje", "Aktualizacje instalują się tylko w wersji .exe.")
             return
-        if not aktualizacje.mozna_zapisac_obok():
+        if aktualizacje.zainstalowany():
             QMessageBox.information(self, "Aktualizacje", "Nową wersję zainstaluje automatycznie usługa Fakturnika "
                                     "w ciągu godziny, a program uruchomi się ponownie, gdy schowasz okno.")
             return
@@ -5356,7 +5369,7 @@ class OknoGlowne(QMainWindow):
     def _wymagaj_instalacji(self):
         """Fakturnik zawsze działa z instalacji z uprawnieniami administratora (Program Files, usługa kopii).
         Uruchomiony bez niej (np. pobrany sam plik .exe) proponuje instalację przy każdym starcie."""
-        if sys.platform != "win32" or not aktualizacje.czy_spakowany() or not aktualizacje.mozna_zapisac_obok():
+        if sys.platform != "win32" or not aktualizacje.czy_spakowany() or aktualizacje.zainstalowany():
             return
         if self._aktualizacja_w_toku or not self.isVisible():
             return
