@@ -26,6 +26,8 @@ VersionInfoCompany=TeodorTeo.com
 VersionInfoDescription=Instalator programu Fakturnik
 VersionInfoProductName=Fakturnik
 PrivilegesRequired=admin
+; bez możliwości instalacji „tylko dla mnie” (/CURRENTUSER): zawsze z uprawnieniami administratora
+PrivilegesRequiredOverridesAllowed=
 UsedUserAreasWarning=no
 DefaultDirName={autopf}\Fakturnik
 DisableDirPage=yes
@@ -129,7 +131,9 @@ end;
 function InitializeSetup(): Boolean;
 begin
   WyczyscSrodowisko();
-  Result := True;
+  Result := IsAdmin();
+  if not Result then
+    MsgBox('Fakturnik instaluje się tylko z uprawnieniami administratora. Uruchom instalator ponownie i zgódź się na zmiany (okno Kontroli konta użytkownika).', mbError, MB_OK);
 end;
 
 const

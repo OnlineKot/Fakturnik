@@ -5005,6 +5005,7 @@ class OknoGlowne(QMainWindow):
         # kontrola komputera przy każdym uruchomieniu (także przy starcie Windows, gdy program startuje w tle)
         self._program_ok: bool | None = None
         QTimer.singleShot(8000, self.kontrola_startowa)
+        QTimer.singleShot(1500, self._wymagaj_instalacji)
         # dziennik blokowania i odblokowania komputera (oraz logowań i połączeń zdalnych)
         self._zablokowano_windows: datetime | None = None
         windows.sledz_sesje(int(self.winId()))
@@ -5352,9 +5353,28 @@ class OknoGlowne(QMainWindow):
             "Program Files z usługą kopii, a kolejne aktualizacje będą instalować się same." +
             (f"\n\nZmiany:\n{opis[:500]}" if opis else ""))
 
-    def uruchom_instalator_admin(self, pytanie: str):
-        if QMessageBox.question(self, "Instalacja", pytanie + "\n\nFakturnik zamknie się na czas instalacji.") \
-                != QMessageBox.StandardButton.Yes:
+    def _wymagaj_instalacji(self):
+        """Fakturnik zawsze działa z instalacji z uprawnieniami administratora (Program Files, usługa kopii).
+        Uruchomiony bez niej (np. pobrany sam plik .exe) proponuje instalację przy każdym starcie."""
+        if sys.platform != "win32" or not aktualizacje.czy_spakowany() or not aktualizacje.mozna_zapisac_obok():
+            return
+        if self._aktualizacja_w_toku or not self.isVisible():
+            return
+        okno = QMessageBox(QMessageBox.Icon.Warning, "Instalacja wymagana",
+                           "Fakturnik nie jest zainstalowany z uprawnieniami administratora.\n\n"
+                           "Bez instalacji nie działa usługa chronionych kopii, ochrona pliku programu "
+                           "ani blokada odinstalowania. Program pobierze instalator (sprawdzi sumę SHA-256), "
+                           "a Windows zapyta o zgodę administratora. Dane zostają bez zmian.", parent=self)
+        teraz = okno.addButton("Zainstaluj teraz", QMessageBox.ButtonRole.AcceptRole)
+        okno.addButton("Później", QMessageBox.ButtonRole.RejectRole)
+        okno.setDefaultButton(teraz)
+        okno.exec()
+        if okno.clickedButton() is teraz:
+            self.uruchom_instalator_admin("", pytaj=False)
+
+    def uruchom_instalator_admin(self, pytanie: str, pytaj: bool = True):
+        if pytaj and QMessageBox.question(self, "Instalacja", pytanie + "\n\nFakturnik zamknie się na czas "
+                                          "instalacji.") != QMessageBox.StandardButton.Yes:
             return
         try:
             kopia_automatyczna(self.baza.sciezka, nazwa=f"przed-instalacja-{datetime.now():%Y-%m-%d-%H%M%S}.db")
@@ -5378,7 +5398,7 @@ class OknoGlowne(QMainWindow):
         """Instalator podmienia program, więc po jego starcie Fakturnik się wyłącza (dane są zapisane)."""
         self._aktualizacja_w_toku = False
         self.dziennik.zapisz("uruchomienie instalatora (zgoda administratora)")
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka))):
+        if not uruchom_jako_administrator(sciezka):
             QMessageBox.warning(self, "Instalacja", f"Nie udało się uruchomić instalatora:\n{sciezka}")
             return
         self._wyjscie = True
@@ -5809,6 +5829,15 @@ def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polece
     jedna.polecenie.disconnect()
     blokada.zwolnij()
     return wynik.get("polecenie")
+
+
+def uruchom_jako_administrator(sciezka: Path) -> bool:
+    """Uruchamia program zawsze z prośbą o zgodę administratora (UAC, polecenie „runas”)."""
+    if sys.platform != "win32":
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka)))
+    import ctypes
+    wynik = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(sciezka), None, str(sciezka.parent), 1)
+    return int(wynik) > 32  # >32 = uruchomiono; 5 = odmowa zgody administratora
 
 
 def potwierdz_odinstalowanie() -> int:
