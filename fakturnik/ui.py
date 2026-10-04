@@ -23,7 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
-    QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit,
+    QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSpinBox, QStackedWidget, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
@@ -162,6 +162,13 @@ QFrame#toast QLabel {{ color: white; background: transparent; font-weight: 500; 
 QStatusBar {{ background: {TLO}; color: {TEKST_2}; border: none; }}
 QToolTip {{ background: #141a1f; color: white; border: none; padding: 6px 8px; border-radius: 6px; }}
 
+QDialog#szukanie {{ background: white; border: 1px solid {LINIA}; border-radius: 14px; }}
+QDialog#szukanie QListWidget {{ border: none; background: white; outline: none; font-size: 14px; }}
+QDialog#szukanie QListWidget::item {{ border-radius: 8px; padding: 4px 8px; color: {TEKST}; }}
+QDialog#szukanie QListWidget::item:selected {{ background: {AKCENT_TLO}; color: {AKCENT}; }}
+QPushButton#szukaj_menu {{ background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 8px; color: {MENU_TEKST}; text-align: left; padding: 8px 10px; }}
+QPushButton#szukaj_menu:hover {{ background: rgba(255,255,255,0.12); color: white; }}
 QToolButton#kafelek {{ background: white; border: 1px solid {LINIA}; border-radius: 16px; padding: 22px 10px 16px;
     font-size: 14px; font-weight: 600; color: {TEKST}; }}
 QToolButton#kafelek:hover {{ border-color: {AKCENT}; background: #fbfdfd; }}
@@ -2871,11 +2878,12 @@ class StronaNarzedzia(Strona):
     def _licz_daty(self, *_):
         od = self.data_od.date().toPython()
         wynik = narzedzia.przesun_date(od, self.ile_dat.value(), self.jednostka_dat.currentText())
-        self.wynik_daty.setText(f"{wynik:%d.%m.%Y} · {godziny.DNI[wynik.weekday()]}")
+        swieto = narzedzia.swieto(wynik)
+        self.wynik_daty.setText(f"{wynik:%d.%m.%Y} · {godziny.DNI[wynik.weekday()]}" + (f" · {swieto}" if swieto else ""))
         do = self.data_do.date().toPython()
         dni = (do - od).days
         self.roznica_dat.setText(f"Od {od:%d.%m} do {do:%d.%m.%Y}: {dni} dni "
-                                 f"({narzedzia.dni_robocze(od, do)} roboczych, bez świąt)")
+                                 f"({narzedzia.dni_robocze(od, do)} roboczych)")
 
     # ---- rabat i raty
     def _karta_rabatu(self) -> QFrame:
@@ -3080,6 +3088,64 @@ class StronaNarzedzia(Strona):
         from .slownie import kwota_slownie
         kwota = liczba_lub_none(tekst)
         self.slownie.setText(kwota_slownie(kwota) if kwota is not None and kwota >= 0 else "")
+
+
+class OknoSzukania(QDialog):
+    """Szybkie wyszukiwanie (Ctrl+K): ekrany, narzędzia, działania i pacjenci w jednym miejscu."""
+
+    def __init__(self, okno: "OknoGlowne"):
+        super().__init__(okno, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.okno = okno
+        self.setObjectName("szukanie")
+        self.setFixedWidth(620)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(14, 14, 14, 14)
+        u.setSpacing(8)
+        self.pole = QLineEdit(placeholderText="Szukaj: ekran, narzędzie, działanie albo pacjent…")
+        self.pole.addAction(ikona("szukaj", AKCENT), QLineEdit.ActionPosition.LeadingPosition)
+        self.pole.setStyleSheet("font-size: 16px; padding: 10px 12px;")
+        u.addWidget(self.pole)
+        self.lista = QListWidget()
+        self.lista.setIconSize(QSize(18, 18))
+        self.lista.setMinimumHeight(360)
+        u.addWidget(self.lista)
+        self.polecenia = okno.polecenia()
+        self.pacjenci = [p.nazwa for p in okno.baza.pacjenci()]
+        self.pole.textChanged.connect(self._filtruj)
+        self.pole.returnPressed.connect(self._wykonaj)
+        self.lista.itemActivated.connect(lambda _: self._wykonaj())
+        self.pole.installEventFilter(self)
+        self._filtruj("")
+
+    def eventFilter(self, obj, event):
+        if obj is self.pole and event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            krok = 1 if event.key() == Qt.Key.Key_Down else -1
+            self.lista.setCurrentRow(max(0, min(self.lista.count() - 1, self.lista.currentRow() + krok)))
+            return True
+        return super().eventFilter(obj, event)
+
+    def _filtruj(self, tekst: str):
+        self.lista.clear()
+        wyniki = [(narzedzia.ocena(nazwa, tekst), nazwa, opis, ik, akcja) for nazwa, opis, ik, akcja in self.polecenia]
+        if len(tekst.strip()) >= 2:
+            wyniki += [(narzedzia.ocena(p, tekst) - 3, p, "Pacjent · historia dokumentów", "uzytkownik",
+                        lambda n=p: self.okno.pokaz_pacjenta(n)) for p in self.pacjenci]
+        wyniki = sorted((w for w in wyniki if w[0] > 0), key=lambda w: -w[0])[:12]
+        for _, nazwa, opis, ik, akcja in wyniki:
+            el = QListWidgetItem(ikona(ik, AKCENT), f"{nazwa}    {opis}" if opis else nazwa)
+            el.setData(Qt.ItemDataRole.UserRole, akcja)
+            el.setSizeHint(QSize(0, 38))
+            self.lista.addItem(el)
+        if self.lista.count():
+            self.lista.setCurrentRow(0)
+
+    def _wykonaj(self):
+        el = self.lista.currentItem()
+        if not el:
+            return
+        akcja = el.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+        QTimer.singleShot(0, akcja)
 
 
 class StronaUstawienia(Strona):
@@ -4885,6 +4951,12 @@ class OknoGlowne(QMainWindow):
         marka.addStretch()
         m.addLayout(marka)
 
+        szukaj = QPushButton("   Szukaj…", objectName="szukaj_menu", cursor=Qt.CursorShape.PointingHandCursor)
+        szukaj.setIcon(ikona("szukaj", MENU_TEKST))
+        szukaj.setToolTip("Szybkie wyszukiwanie (Ctrl+K)")
+        szukaj.clicked.connect(self.szybkie_szukanie)
+        m.addWidget(szukaj)
+        m.addSpacing(6)
         self.grupa = QButtonGroup(self)
         for i, (nazwa, ik) in enumerate([("Nowy dokument", "nowy"), ("Historia", "historia"), ("Przychody", "wzrost"),
                                          ("Pliki", "archiwum"), ("Narzędzia", "narzedzia"),
@@ -4949,6 +5021,7 @@ class OknoGlowne(QMainWindow):
         self.setCentralWidget(tlo)
         self.powiadomienie = Powiadomienie(tlo)
         QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.strona_pulpit._nowy(self.baza.ustawienia()["tytul"]))
+        QShortcut(QKeySequence("Ctrl+K"), self, self.szybkie_szukanie)
 
         self.strona_nowy.ustaw_tryb(self.baza.ustawienia()["tryb"])
         self.strona_nowy.wyczysc()
@@ -5018,6 +5091,7 @@ class OknoGlowne(QMainWindow):
         self._program_ok: bool | None = None
         QTimer.singleShot(8000, self.kontrola_startowa)
         QTimer.singleShot(1500, self._wymagaj_instalacji)
+        QTimer.singleShot(2500, self.powitanie)
         # dziennik blokowania i odblokowania komputera (oraz logowań i połączeń zdalnych)
         self._zablokowano_windows: datetime | None = None
         windows.sledz_sesje(int(self.winId()))
@@ -5039,6 +5113,68 @@ class OknoGlowne(QMainWindow):
             self.strony.currentWidget().odswiez()
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
         self._ustaw_nazwe_gabinetu()
+
+    def polecenia(self) -> list[tuple[str, str, str, object]]:
+        """(nazwa, opis, ikona, akcja) do szybkiego wyszukiwania; tylko to, do czego konto ma dostęp."""
+        n = self.strona_narzedzia
+        wynik = [
+            ("Nowy rachunek", "Dokument", "plus", lambda: self.strona_pulpit._nowy("Rachunek")),
+            ("Nowa faktura", "Dokument", "faktura", lambda: self.strona_pulpit._nowy("Faktura")),
+            ("Historia", "Ekran", "historia", lambda: self.przejdz(STRONA_HISTORIA)),
+            ("Pliki", "Ekran", "archiwum", lambda: self.przejdz(STRONA_PLIKI)),
+            ("Narzędzia", "Ekran", "narzedzia", lambda: (self.przejdz(STRONA_NARZEDZIA), n.pokaz(None))),
+            ("Zasłoń ekran", "Działanie", "pulpit", self.pokaz_zaslone),
+            ("Zamykam gabinet", "Działanie", "klodka", self.zamknij_gabinet),
+            ("Zamknięcie dnia", "Wydruk utargu", "drukarka", self.zamkniecie_dnia),
+        ]
+        if self.baza.ma_haslo:
+            wynik.append(("Zablokuj program", "Działanie", "klodka", self.zablokuj))
+        if self.jest_wlascicielka:
+            wynik += [("Przychody", "Ekran", "wzrost", lambda: self.przejdz(STRONA_PRZYCHODY)),
+                      ("Ustawienia", "Ekran", "ustawienia", lambda: self.przejdz(STRONA_USTAWIENIA))]
+        for klucz, nazwa, ik in n.NARZEDZIA:
+            wynik.append((nazwa, "Narzędzie", ik,
+                          lambda k=klucz: (self.przejdz(STRONA_NARZEDZIA), self.strona_narzedzia.pokaz(k))))
+        return wynik
+
+    def szybkie_szukanie(self):
+        if not self.isVisible() or QApplication.activeModalWidget():
+            return
+        okno = OknoSzukania(self)
+        geo = self.geometry()
+        okno.adjustSize()
+        okno.move(geo.x() + (geo.width() - okno.width()) // 2, geo.y() + 90)
+        okno.exec()
+
+    def pokaz_pacjenta(self, nazwa: str):
+        self.przejdz(STRONA_HISTORIA)
+        self.strona_historia.szukaj.setText(nazwa)
+
+    def powitanie(self):
+        """Raz dziennie, przy pierwszym uruchomieniu: krótkie podsumowanie dnia."""
+        u = self.baza.ustawienia()
+        dzis = date.today().isoformat()
+        if u["skonfigurowano"] != "1" or u.get("ostatnie_powitanie") == dzis:
+            return
+        self.baza.zapisz_ustawienia({"ostatnie_powitanie": dzis})
+        godzina = datetime.now().hour
+        tytul = "Dzień dobry" if 5 <= godzina < 18 else "Dobry wieczór"
+        imie = (self.uzytkownik or {}).get("nazwa", "")
+        if imie and imie not in ("Właściciel", "Właścicielka"):
+            tytul += f", {imie}"
+        linie = []
+        zadania = gtd.liczniki(gtd.wczytaj(u.get("gtd", "")))["dzis"]
+        if zadania:
+            linie.append(f"Zadania na dziś: {zadania}")
+        przyp = narzedzia.wczytaj_przypomnienia(u.get("przypomnienia", ""))
+        dzisiejsze = [p for p in przyp if p["kiedy"].startswith(dzis)]
+        if dzisiejsze:
+            linie.append(f"Przypomnienia: {len(dzisiejsze)}, najbliższe o {dzisiejsze[0]['kiedy'][11:16]}")
+        if swieto := narzedzia.swieto(date.today()):
+            linie.append(f"Dziś {swieto}")
+        linie.append(godziny.opis_stanu(godziny.wczytaj(u["godziny_pracy"]), datetime.now()))
+        linie.append("Ctrl+K: szybkie wyszukiwanie")
+        self.powiadom(tytul, "\n".join(linie), "info", czas_ms=9000)
 
     def _bezczynnosc(self) -> float:
         """Sekundy bez ruchu myszy i klawiatury: w całym Windows, a gdzie indziej w samym programie."""

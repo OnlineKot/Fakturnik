@@ -24,6 +24,22 @@ def test_daty():
     assert n.przesun_date(date(2024, 2, 29), 1, "lata") == date(2025, 2, 28)
     assert n.przesun_date(date(2026, 10, 1), 2, "tygodnie") == date(2026, 10, 15)
     assert n.dni_robocze(date(2026, 10, 2), date(2026, 10, 9)) == 5  # pt → pt
+    assert n.dni_robocze(date(2026, 11, 6), date(2026, 11, 13)) == 4  # 11 listopada wolne
+
+
+def test_swieta():
+    assert n.wielkanoc(2026) == date(2026, 4, 5) and n.wielkanoc(2027) == date(2027, 3, 28)
+    s26 = n.swieta(2026)
+    assert s26[date(2026, 6, 4)] == "Boże Ciało" and s26[date(2026, 5, 24)] == "Zielone Świątki"
+    assert date(2026, 12, 24) in s26 and date(2024, 12, 24) not in n.swieta(2024)
+    assert n.swieto(date(2026, 11, 11)) == "Święto Niepodległości" and n.swieto(date(2026, 11, 12)) == ""
+
+
+def test_szybkie_wyszukiwanie():
+    assert n.ocena("Kalkulator dat", "kalk") > n.ocena("Kalkulator dat", "dat") > 0
+    assert n.ocena("Zamknięcie dnia", "zamkniecie") > 0  # bez ogonków
+    assert n.ocena("Jan Kowalski", "kow jan") > 0
+    assert n.ocena("Jan Kowalski", "nowak") == 0
 
 
 def test_rabat_i_raty():

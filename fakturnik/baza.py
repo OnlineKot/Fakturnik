@@ -72,6 +72,7 @@ DOMYSLNE_USTAWIENIA = {
     "zaslona_gaszenie_min": "10",       # po ilu minutach zasłony zgasić ekran i monitor (0 = nigdy)
     "zaslona_sekund": "30",             # po ilu sekundach bezczynności pokazać zasłonę
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
+    "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "przypomnienia": "",                # przypomnienia z godziną (JSON, w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)

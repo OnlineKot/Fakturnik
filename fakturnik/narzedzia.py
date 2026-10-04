@@ -66,11 +66,48 @@ def przesun_date(dzien: date, ile: int, jednostka: str) -> date:
     raise ValueError(jednostka)
 
 
+def wielkanoc(rok: int) -> date:
+    """Niedziela Wielkanocna (algorytm Meeusa/Jonesa/Butchera, kalendarz gregoriański)."""
+    a, b, c = rok % 19, rok // 100, rok % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l_ = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_) // 451
+    miesiac = (h + l_ - 7 * m + 114) // 31
+    dzien = (h + l_ - 7 * m + 114) % 31 + 1
+    return date(rok, miesiac, dzien)
+
+
+def swieta(rok: int) -> dict[date, str]:
+    """Dni ustawowo wolne od pracy w Polsce (z Wigilią od 2025 r.)."""
+    w = wielkanoc(rok)
+    dni = {
+        date(rok, 1, 1): "Nowy Rok", date(rok, 1, 6): "Trzech Króli", w: "Wielkanoc",
+        w + timedelta(days=1): "Poniedziałek Wielkanocny", date(rok, 5, 1): "Święto Pracy",
+        date(rok, 5, 3): "Święto Konstytucji 3 Maja", w + timedelta(days=49): "Zielone Świątki",
+        w + timedelta(days=60): "Boże Ciało", date(rok, 8, 15): "Wniebowzięcie NMP",
+        date(rok, 11, 1): "Wszystkich Świętych", date(rok, 11, 11): "Święto Niepodległości",
+        date(rok, 12, 25): "Boże Narodzenie", date(rok, 12, 26): "Drugi dzień Bożego Narodzenia",
+    }
+    if rok >= 2025:
+        dni[date(rok, 12, 24)] = "Wigilia"
+    return dni
+
+
+def swieto(dzien: date) -> str:
+    return swieta(dzien.year).get(dzien, "")
+
+
 def dni_robocze(od: date, do: date) -> int:
-    """Dni od poniedziałku do piątku w przedziale (od, do] — bez uwzględniania świąt."""
+    """Dni robocze w przedziale (od, do]: od poniedziałku do piątku, bez świąt ustawowych."""
     if do < od:
         return -dni_robocze(do, od)
-    return sum(1 for i in range(1, (do - od).days + 1) if (od + timedelta(days=i)).weekday() < 5)
+    wolne = {d for rok in range(od.year, do.year + 1) for d in swieta(rok)}
+    return sum(1 for i in range(1, (do - od).days + 1)
+               if (dz := od + timedelta(days=i)).weekday() < 5 and dz not in wolne)
 
 
 # ---------- rabat i raty ----------
@@ -141,3 +178,31 @@ def do_przypomnienia(lista: list[dict], teraz: datetime) -> tuple[list[dict], li
     """(przypomnienia, których czas nadszedł; pozostałe)."""
     teraz_txt = teraz.isoformat(timespec="minutes")
     return [p for p in lista if p["kiedy"] <= teraz_txt], [p for p in lista if p["kiedy"] > teraz_txt]
+
+
+# ---------- szybkie wyszukiwanie (Ctrl+K) ----------
+_BEZ_OGONKOW = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
+
+
+def uproszczony(tekst: str) -> str:
+    return tekst.translate(_BEZ_OGONKOW).lower().strip()
+
+
+def ocena(tekst: str, zapytanie: str) -> int:
+    """Jak dobrze zapytanie pasuje do tekstu (0 = wcale). Bez ogonków i wielkości liter;
+    każde słowo zapytania musi wystąpić; początek tekstu i początki słów liczą się wyżej."""
+    t, z = uproszczony(tekst), uproszczony(zapytanie)
+    if not z:
+        return 1
+    slowa_t = t.split()
+    wynik = 0
+    for slowo in z.split():
+        if t.startswith(slowo):
+            wynik += 30
+        elif any(s_.startswith(slowo) for s_ in slowa_t):
+            wynik += 20
+        elif slowo in t:
+            wynik += 5
+        else:
+            return 0
+    return wynik + max(0, 10 - len(t) // 10)
