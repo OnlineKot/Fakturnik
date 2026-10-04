@@ -2,7 +2,9 @@
 zegar i data, które wolno jeżdżą po ekranie i odbijają się od krawędzi. Bez napisów-instrukcji.
 
 Znika tylko po DOKŁADNIE pięciu naciśnięciach spacji i krótkiej pauzie. Sześć i więcej spacji,
-przytrzymana spacja albo inny klawisz w serii nic nie dają. Nie czyści schowka i nie wylogowuje:
+przytrzymana spacja albo inny klawisz w serii nic nie dają. Spacje są odbierane przez hak klawiatury
+Windows, więc działają zawsze, nawet gdy Windows nie oddał zasłonie fokusu, i nie trafiają do programu
+pod zasłoną. Nie czyści schowka i nie wylogowuje:
 to szybka zasłona przed wzrokiem pacjentów. Blokada hasłem działa niezależnie od niej.
 
 Ochrona ekranu przed wypaleniem: blok cały czas się przesuwa (żaden piksel nie świeci długo w jednym
@@ -21,9 +23,8 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
 SPACJE = 5
-OKNO_SPACJI = 3.0    # pięć spacji w ciągu tylu sekund
-PAUZA = 0.6          # po trzeciej spacji: tyle ciszy, żeby zasłona zniknęła (czwarta spacja psuje serię)
-KARA = 1.2           # po nieudanej serii: tyle ciszy, zanim można zacząć od nowa
+ODSTEP = 1.5         # przerwa między spacjami jednej serii może być aż tak długa (wolne stukanie też działa)
+PAUZA = 0.8          # po piątej spacji: tyle ciszy i zasłona znika (szósta spacja w tym czasie psuje serię)
 POJAWIANIE_MS = 800
 ZNIKANIE_MS = 400
 GASNIECIE = 3.0      # sekundy przejścia do czerni
@@ -37,25 +38,115 @@ MIESIACE = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca
 
 
 class LicznikSpacji:
-    """Odblokowanie dokładnie pięcioma spacjami (bez Qt, do testów)."""
+    """Odblokowanie dokładnie pięcioma spacjami (bez Qt, do testów).
+
+    Seria to spacje z przerwami krótszymi niż ODSTEP. Dłuższa przerwa zaczyna nową serię, więc
+    przypadkowa spacja wcześniej (np. budzenie ekranu) nie przeszkadza. Inny klawisz albo przytrzymana
+    spacja kasują serię; kolejna spacja zaczyna od nowa (bez kar i czekania).
+    """
 
     def __init__(self):
         self.serie: list[float] = []
-        self.kara_do = 0.0
 
     def nacisniecie(self, spacja: bool, teraz: float, powtorzenie: bool = False) -> None:
-        if not spacja or powtorzenie or teraz < self.kara_do:
+        if not spacja or powtorzenie:
             self.serie = []
-            self.kara_do = teraz + KARA
             return
-        self.serie = [t for t in self.serie if teraz - t <= OKNO_SPACJI] + [teraz]
-        if len(self.serie) > SPACJE:
-            self.serie = []
-            self.kara_do = teraz + KARA
+        if self.serie and teraz - self.serie[-1] >= ODSTEP:
+            self.serie = []  # długa przerwa: nowa seria
+        self.serie.append(teraz)
 
     def odblokowac(self, teraz: float) -> bool:
         """Prawda, gdy było dokładnie pięć spacji, a od ostatniej minęła pauza bez kolejnych klawiszy."""
-        return len(self.serie) == SPACJE and teraz - self.serie[-1] >= PAUZA
+        if len(self.serie) != SPACJE or teraz - self.serie[-1] < PAUZA:
+            if self.serie and teraz - self.serie[-1] >= ODSTEP:
+                self.serie = []  # niepełna albo za długa seria wygasa
+            return False
+        return True
+
+
+class HakKlawiatury:
+    """Windows: niskopoziomowy hak klawiatury (WH_KEYBOARD_LL) na czas zasłony.
+
+    Odbiera każdy klawisz niezależnie od tego, które okno ma fokus (Windows często nie pozwala programowi
+    w tle przejąć klawiatury), i zatrzymuje go, żeby spacje nie wpisały się do dokumentu pod zasłoną.
+    Klawisze wysłane programowo (np. sztuczny Alt przy przenoszeniu okna) przechodzą dalej.
+    Ctrl+Alt+Del i Win+L działają zawsze (systemu nie da się zablokować i tak ma być).
+    """
+
+    def __init__(self, obsluga):
+        self.obsluga = obsluga  # obsluga(vk, powtorzenie)
+        self._hak = None
+        self._funkcja = None
+        self._wcisniete: set[int] = set()
+
+    def wlacz(self) -> bool:
+        import sys
+        if sys.platform != "win32" or self._hak:
+            return bool(self._hak)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            LRESULT = ctypes.c_ssize_t
+            PROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+            class KBDLLHOOKSTRUCT(ctypes.Structure):
+                _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD),
+                            ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+            user32.SetWindowsHookExW.argtypes = [ctypes.c_int, PROC, wintypes.HINSTANCE, wintypes.DWORD]
+            user32.SetWindowsHookExW.restype = ctypes.c_void_p
+            user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+            user32.CallNextHookEx.restype = LRESULT
+            user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+            kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+            WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
+            LLKHF_INJECTED = 0x10
+
+            def funkcja(kod, wparam, lparam):
+                try:
+                    if kod == 0:
+                        dane = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                        if not dane.flags & LLKHF_INJECTED:
+                            vk = int(dane.vkCode)
+                            if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                                powtorzenie = vk in self._wcisniete
+                                self._wcisniete.add(vk)
+                                self.obsluga(vk, powtorzenie)
+                            elif wparam in (WM_KEYUP, WM_SYSKEYUP):
+                                self._wcisniete.discard(vk)
+                            return 1  # klawisz nie trafia do innych programów
+                except Exception:  # noqa: BLE001 - hak nie może nigdy zatrzymać klawiatury
+                    pass
+                return user32.CallNextHookEx(None, kod, wparam, lparam)
+
+            self._funkcja = PROC(funkcja)  # referencja musi żyć, dopóki hak jest włączony
+            self._user32 = user32
+            self._hak = user32.SetWindowsHookExW(13, self._funkcja, kernel32.GetModuleHandleW(None), 0)
+        except Exception:  # noqa: BLE001
+            self._hak = None
+        return bool(self._hak)
+
+    @property
+    def wlaczony(self) -> bool:
+        return bool(self._hak)
+
+    def wylacz(self) -> None:
+        if self._hak:
+            try:
+                self._user32.UnhookWindowsHookEx(self._hak)
+            except Exception:  # noqa: BLE001
+                pass
+        self._hak = None
+        self._wcisniete.clear()
+
+
+# kody klawiszy Windows: spacja i same klawisze modyfikujące (nie psują serii)
+VK_SPACJA = 0x20
+VK_MODYFIKATORY = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}
 
 
 def odbicie(droga: float, zakres: float) -> float:
@@ -186,7 +277,8 @@ class _Ekran(QWidget):
         p.end()
 
     def keyPressEvent(self, e):
-        self.zaslona.klawisz(e.key(), e.isAutoRepeat())
+        if not self.zaslona.hak.wlaczony:
+            self.zaslona.klawisz(e.key(), e.isAutoRepeat())
 
     def mouseMoveEvent(self, _):
         self.zaslona.obudz()
@@ -219,6 +311,7 @@ class Zaslona(QWidget):
         self.ostatnia_spacja = 0.0
         self.zamykanie = False
         self.licznik = LicznikSpacji()
+        self.hak = HakKlawiatury(self._klawisz_windows)
         self._animacje: list[QPropertyAnimation] = []
         self.ekrany = [_Ekran(self, e) for e in QGuiApplication.screens()]
         self._animacja = QTimer(self, interval=KLATKI_MS)
@@ -238,6 +331,7 @@ class Zaslona(QWidget):
         self._animacje.append(a)
 
     def pokaz(self):
+        self.hak.wlacz()
         for e in self.ekrany:
             e.setMouseTracking(True)
             e.showFullScreen()
@@ -298,10 +392,19 @@ class Zaslona(QWidget):
         if self.ekrany and not self.ekrany[0].isActiveWindow():
             self._przejmij_klawiature(alt=False)
 
+    def _klawisz_windows(self, vk: int, powtorzenie: bool):
+        if vk in VK_MODYFIKATORY:
+            self.obudz()
+            return
+        self.klawisz(Qt.Key.Key_Space if vk == VK_SPACJA else Qt.Key.Key_unknown, powtorzenie)
+
     def klawisz(self, klawisz: int, powtorzenie: bool = False):
         if self.zamykanie:
             return
+        ciemno = self._monitor_wylaczony or jasnosc_po_czasie(time.monotonic() - self.aktywnosc, self.gaszenie_s) < 1
         self.obudz()
+        if ciemno:
+            return  # klawisz tylko budzi zgaszony ekran i nie liczy się do serii
         if klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
             return  # same klawisze modyfikujące (także sztuczny Alt przy przejmowaniu klawiatury) nie psują serii
         spacja = klawisz == Qt.Key.Key_Space
@@ -313,6 +416,7 @@ class Zaslona(QWidget):
         if self.zamykanie:
             return
         self.zamykanie = True
+        self.hak.wylacz()
         self._pilnuj.stop()
         for e in self.ekrany:
             e.releaseKeyboard()
@@ -324,6 +428,7 @@ class Zaslona(QWidget):
         QTimer.singleShot(ZNIKANIE_MS + 300, self, self._koniec)  # gdyby system nie obsługiwał przezroczystości
 
     def _koniec(self):
+        self.hak.wylacz()
         if not self.ekrany:
             return
         self._animacja.stop()
