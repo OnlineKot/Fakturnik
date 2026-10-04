@@ -38,7 +38,6 @@ class Wydanie:
     adres_exe: str
     adres_sha256: str
     rozmiar: int
-    przegladarka: "Wydanie | None" = None  # FakturnikPrzegladarka.exe z tego samego wydania (jeśli jest)
 
 
 def numer_wersji(tekst: str) -> tuple[int, ...]:
@@ -81,16 +80,10 @@ def sprawdz() -> Wydanie | None:
     wersja = dane.get("tag_name", "").lstrip("v")
     if not jest_nowsza(wersja):
         return None
-    przegladarka = None
-    if "FakturnikPrzegladarka.exe" in pliki and "FakturnikPrzegladarka.exe.sha256" in pliki:
-        przegladarka = Wydanie(wersja=wersja, opis="",
-                               adres_exe=pliki["FakturnikPrzegladarka.exe"]["browser_download_url"],
-                               adres_sha256=pliki["FakturnikPrzegladarka.exe.sha256"]["browser_download_url"],
-                               rozmiar=int(pliki["FakturnikPrzegladarka.exe"].get("size") or 0))
     return Wydanie(wersja=wersja, opis=dane.get("body") or "",
                    adres_exe=pliki[NAZWA_PLIKU]["browser_download_url"],
                    adres_sha256=pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"],
-                   rozmiar=int(pliki[NAZWA_PLIKU].get("size") or 0), przegladarka=przegladarka)
+                   rozmiar=int(pliki[NAZWA_PLIKU].get("size") or 0))
 
 
 def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None) -> Path:
@@ -242,7 +235,7 @@ def zainstaluj(nowy: Path, obecny: Path | None = None) -> Path:
     """Podmienia działający .exe na nowy; zwraca ścieżkę do uruchomienia."""
     obecny = obecny or Path(sys.executable)
     odblokuj_program()  # inaczej Windows nie pozwoli zmienić nazwy
-    if not obecny.exists():  # np. przeglądarka, której jeszcze nie było
+    if not obecny.exists():  # pierwsza instalacja pliku
         nowy.rename(obecny)
         return obecny
     stary = obecny.with_name(obecny.stem + ".old" + obecny.suffix)

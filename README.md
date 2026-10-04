@@ -159,14 +159,6 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   połączenia zdalne trafiają do dziennika Fakturnika. Gdy komputer się blokuje, Fakturnik też.
   Nieudane próby odblokowania lub logowania do Windows (z dziennika zabezpieczeń, gdy program ma do
   niego dostęp) są zapisywane i zgłaszane powiadomieniem; połączenie zdalne zgłaszane od razu.
-- **Bezpieczna przeglądarka** (karta „Internet”, osobny plik FakturnikPrzegladarka.exe instalowany
-  instalatorem, dzięki czemu główny program jest mały i szybko startuje): zakładki KSeF, e-Urząd Skarbowy, biała lista VAT,
-  CEIDG, REGON i ZUS oraz dowolny adres (np. bank). Działa w osobnym, odizolowanym procesie (strony nie
-  mają dostępu do danych pacjentów), w sesji bez zapisu na dysku, tylko przez HTTPS, z odrzucaniem
-  błędnych certyfikatów i zablokowaną kamerą, mikrofonem i lokalizacją. Plików wykonywalnych nie da się
-  pobrać, a pobrane pliki są oznaczone jako pochodzące z internetu (sprawdza je antywirus); pobrany PDF
-  jednym kliknięciem trafia do zaszyfrowanych Plików. Blokada Fakturnika zamyka przeglądarkę i kończy
-  sesję. Opcjonalnie tylko zaufane strony (gov.pl, zakładki i dopisane domeny).
 - **Konta asystentek**: każda loguje się własnym hasłem (bez nazwy użytkownika). Asystentka wystawia
   dokumenty, szuka w historii, drukuje i dodaje pliki; przychody i ustawienia są dla niej ukryte,
   a eksporty, anulowanie, edycja i korekty wymagają hasła właściciela. Każdy dokument zapamiętuje,
@@ -178,7 +170,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   Ekran blokady pokazuje zegar, gabinet i najbliższe godziny pracy.
 - **Zamykam gabinet** (przycisk w menu, w menu ikony obok zegara i w przypomnieniu o końcu godzin):
   podsumowanie dnia (dokumenty, gotówka, karta, przelew), opcjonalna kartka podsumowująca do druku,
-  kopia zapasowa od razu, zamknięcie przeglądarki i wylogowanie.
+  kopia zapasowa od razu i wylogowanie.
 - **Narzędzia**: stoper, minutnik (szybkie 1–15 min, powiadomienie i dźwięk po czasie), kalkulator
 - **Zasłona ekranu z ząbkiem**: po ustawionym czasie bezczynności całego komputera (domyślnie 30 s, od 5 s do godziny; do wyłączenia w Ustawieniach → Bezpieczeństwo) wszystkie monitory zasłania pełnoekranowy obraz w stylu logo gabinetu: ząbek z lusterkiem, zegar i data, bez żadnych napisów. Animacja: płynne pojawienie się, kontur ząbka rysuje się sam, ząbek spokojnie się unosi, po szkliwie przesuwa się odblask, w tle płyną rozmyte światła. Znika tylko po dokładnie trzech spacjach i krótkiej pauzie — cztery i więcej spacji, przytrzymana spacja albo inny klawisz w serii nic nie dają. Nie czyści schowka i nie wylogowuje; blokada hasłem działa niezależnie. Można ją też włączyć od razu z menu ikony przy zegarze („Zasłoń ekran”).
 - **Narzędzia jako kafelki**: każde narzędzie otwiera się na osobnym ekranie (powrót strzałką albo Esc).
@@ -236,7 +228,6 @@ Poprawione:
 - Usługa kopii (konto SYSTEM) nie idzie za dowiązaniami ani junctionami, kopiuje tylko pliki Fakturnika i ma limit rozmiaru pliku.
 - Kopie chronione każdego użytkownika może czytać tylko on sam (oraz SYSTEM i Administratorzy).
 - Instalator przejmuje katalog `ProgramData\Fakturnik` na Administratorów, nawet jeśli wcześniej założył go ktoś inny. Starą wersję odinstalowuje bez uprawnień administratora.
-- Przeglądarka pobiera tylko dozwolone typy plików: PDF, obrazy, XML, ZIP, dokumenty bez makr. Strony `http://` zawsze przechodzą na `https://`.
 - Dziennik nie zapisuje nazw plików, które mogą zawierać nazwiska pacjentów.
 - Program ignoruje zmienne środowiskowe wskazujące obce wtyczki Qt.
 

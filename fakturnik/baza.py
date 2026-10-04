@@ -57,11 +57,6 @@ DOMYSLNE_USTAWIENIA = {
     "ostrzezenie_secure_boot": "0",  # "1" = już pokazano wskazówkę o wyłączonym Secure Boot
     "ostatnie_sprawdzenie_logowan": "",  # od kiedy liczyć nieudane logowania do Windows
     "poprzednia_tapeta": "",  # tapeta sprzed ustawienia tapety Fakturnika (do przywrócenia)
-    "przegladarka": "1",               # karta „Internet” z wbudowaną przeglądarką
-    "przegladarka_tylko_zaufane": "0",  # "1" = tylko gov.pl, zakładki i strony z listy poniżej
-    "przegladarka_zaufane": "",          # dodatkowe zaufane domeny, np. bank: "mbank.pl,ing.pl"
-    "przegladarka_czysc": "1",           # "1" = blokada programu czyści sesję przeglądarki
-    "przegladarka_start": "",            # strona startowa (pusta = pusta strona)
     "powiadomienie_startowe": "1",       # "1" = powiadomienie „Komputer zweryfikowany” przy starcie
     "powiadomienia_sekund": "6",         # jak długo widać powiadomienie
     "powiadomienia_dzwiek": "0",         # "1" = dźwięk przy powiadomieniu

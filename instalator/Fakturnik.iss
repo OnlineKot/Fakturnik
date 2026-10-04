@@ -53,9 +53,14 @@ Name: "pulpit"; Description: "Skrót na pulpicie"
 [Dirs]
 Name: "{commonappdata}\Fakturnik\kopie"
 
+[InstallDelete]
+; przeglądarka nie jest już częścią programu
+Type: files; Name: "{app}\FakturnikPrzegladarka.exe"
+Type: files; Name: "{app}\FakturnikPrzegladarka.old.exe"
+Type: files; Name: "{app}\FakturnikPrzegladarka.new.exe"
+
 [Files]
 Source: "..\dist\Fakturnik.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
-Source: "..\dist\FakturnikPrzegladarka.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
 ; zapasowa kopia do sprawdzania hasła przy odinstalowaniu (gdy ktoś usunie plik z Program Files); zostaje po odinstalowaniu
 Source: "..\dist\Fakturnik.exe"; DestDir: "{commonappdata}\Fakturnik\program"; Flags: ignoreversion uninsneveruninstall
 
