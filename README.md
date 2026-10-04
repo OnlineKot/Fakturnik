@@ -182,7 +182,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Narzędzia**: stoper, minutnik (szybkie 1–15 min, powiadomienie i dźwięk po czasie), kalkulator
 - **Narzędzia jako kafelki**: każde narzędzie otwiera się na osobnym ekranie (powrót strzałką albo Esc).
 - **Notatki GTD**: Skrzynka, Dziś, Następne działania, Czekam na, Kiedyś/może, Zrobione i swobodny Notatnik. Szybkie dodawanie w jednej linii: „Zadzwonić do laboratorium @telefon jutro !” ustawia kontekst, termin (dziś, jutro, dzień tygodnia, 15.10) i ważność. Filtr kontekstów, przenoszenie między listami, przypomnienie z zadania; zaszyfrowane razem z danymi.
-- **Więcej narzędzi**: przypomnienia z godziną (np. „14:30” albo „+15” = za 15 minut; powiadomienie i dźwięk), liczenie kasy według nominałów z porównaniem do dzisiejszej gotówki z dokumentów, kalkulator dat (np. kontrola za 6 miesięcy, dni robocze do terminu), rabat i raty, generator haseł (schowek czyści się po 30 s), a PESEL pokazuje datę urodzenia, wiek i płeć
+- **Więcej narzędzi**: przypomnienia z godziną (np. „14:30” albo „+15” = za 15 minut; powiadomienie i dźwięk), liczenie kasy według nominałów z porównaniem do dzisiejszej gotówki z dokumentów, kalkulator dat (np. kontrola za 6 miesięcy, dni robocze do terminu), rabat i raty, generator haseł (schowek czyści się po ustawionym czasie, domyślnie 30 s, z odliczaniem; także przy blokadzie i wyłączeniu programu), a PESEL pokazuje datę urodzenia, wiek i płeć
   (tylko działania, bez wykonywania kodu), dane firmy po NIP z oficjalnej białej listy VAT (Ministerstwo Finansów) z przyciskiem
   „Wystaw fakturę dla tej firmy” (także w formularzu faktury), sprawdzanie PESEL/NIP/numeru konta,
   kwota słownie i wspólny, zaszyfrowany notatnik gabinetu.

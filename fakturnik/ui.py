@@ -2927,6 +2927,21 @@ class StronaNarzedzia(Strona):
         rzad.addWidget(self.znaki_hasla)
         rzad.addStretch()
         ku.addLayout(rzad)
+        rzad_schowka = QHBoxLayout()
+        rzad_schowka.addWidget(QLabel("Czyść schowek po"))
+        self.czas_schowka = QSpinBox(minimum=5, maximum=600, singleStep=5, value=30, suffix=" s")
+        self.czas_schowka.valueChanged.connect(
+            lambda v: self.okno.baza.zapisz_ustawienia({"schowek_sekund": str(v)}))
+        rzad_schowka.addWidget(self.czas_schowka)
+        for sekundy in (10, 30, 60, 120):
+            rzad_schowka.addWidget(przycisk(f"{sekundy} s" if sekundy < 60 else f"{sekundy // 60} min", styl="plaski",
+                                            akcja=lambda _=False, v=sekundy: self.czas_schowka.setValue(v)))
+        rzad_schowka.addStretch()
+        ku.addLayout(rzad_schowka)
+        self._schowek_zostalo = 0
+        self._schowek_haslo = ""
+        self._tik_schowka = QTimer(self, interval=1000)
+        self._tik_schowka.timeout.connect(self._odliczaj_schowek)
         rzad2 = QHBoxLayout()
         rzad2.addWidget(przycisk("Nowe hasło", "odswiez", "glowny", self._nowe_haslo))
         rzad2.addWidget(przycisk("Kopiuj", "kopiuj", akcja=self._kopiuj_haslo))
@@ -2945,11 +2960,37 @@ class StronaNarzedzia(Strona):
         self.stan_hasla.clear()
 
     def _kopiuj_haslo(self):
+        self._schowek_haslo = self.haslo_gen.text()
+        QApplication.clipboard().setText(self._schowek_haslo)
+        self._schowek_zostalo = self.czas_schowka.value()
+        self._tik_schowka.start()
+        self._odliczaj_schowek(odlicz=False)
+
+    def _odliczaj_schowek(self, odlicz: bool = True):
+        """Odliczanie do wyczyszczenia schowka; czyści tylko, jeśli nadal jest w nim skopiowane hasło."""
         schowek = QApplication.clipboard()
-        schowek.setText(self.haslo_gen.text())
-        self.stan_hasla.setText("Skopiowano. Schowek wyczyści się za 30 s.")
-        haslo = self.haslo_gen.text()
-        QTimer.singleShot(30_000, lambda: schowek.clear() if schowek.text() == haslo else None)
+        if odlicz:
+            self._schowek_zostalo -= 1
+        if schowek.text() != self._schowek_haslo:  # w międzyczasie skopiowano coś innego
+            self._tik_schowka.stop()
+            self.stan_hasla.clear()
+            return
+        if self._schowek_zostalo <= 0:
+            schowek.clear()
+            self._tik_schowka.stop()
+            self._schowek_haslo = ""
+            self.stan_hasla.setText("Schowek wyczyszczony.")
+            return
+        m, sek = divmod(self._schowek_zostalo, 60)
+        self.stan_hasla.setText(f"Skopiowano. Schowek wyczyści się za {f'{m} min {sek:02d} s' if m else f'{sek} s'}.")
+
+    def wyczysc_schowek_teraz(self):
+        """Przy blokadzie i zamknięciu programu: skopiowane hasło nie zostaje w schowku."""
+        if self._schowek_haslo and QApplication.clipboard().text() == self._schowek_haslo:
+            QApplication.clipboard().clear()
+        self._schowek_haslo = ""
+        self._tik_schowka.stop()
+        self.stan_hasla.clear()
 
     @staticmethod
     def _tytul(tytul: str, opis: str) -> QWidget:
@@ -2971,6 +3012,12 @@ class StronaNarzedzia(Strona):
         self._wczytaj_gtd()
         self._pokaz_gtd()
         self._odswiez_kafelki()
+        self.czas_schowka.blockSignals(True)
+        try:
+            self.czas_schowka.setValue(int(self.okno.baza.ustawienia().get("schowek_sekund") or 30))
+        except ValueError:
+            pass
+        self.czas_schowka.blockSignals(False)
 
     def _zapisz_notatki(self):
         self.okno.baza.zapisz_ustawienia({"notatki": self.notatki.toPlainText()})
@@ -5632,6 +5679,7 @@ class OknoGlowne(QMainWindow):
         elif QMessageBox.question(None, "Fakturnik", "Wyłączyć Fakturnik? Program przestanie pilnować danych.") \
                 != QMessageBox.StandardButton.Yes:
             return
+        self.strona_narzedzia.wyczysc_schowek_teraz()
         self._wyjscie = True
         self.uruchom_po_zamknieciu = None  # wyłączenie na życzenie: nowa wersja wystartuje przy następnym uruchomieniu
         self.close()
@@ -5671,6 +5719,7 @@ class OknoGlowne(QMainWindow):
             pass  # np. baza już zamknięta przy wyłączaniu programu
 
     def zablokuj(self):
+        self.strona_narzedzia.wyczysc_schowek_teraz()
         if not self.baza.ma_haslo:
             self.timer.start()
             return
