@@ -3812,6 +3812,7 @@ class StronaUstawienia(Strona):
         rzad.addWidget(etykieta_wersji)
         rzad.addStretch()
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
+        rzad.addWidget(przycisk("Aktualizuj teraz", "pobierz", "glowny", lambda: self.okno.aktualizuj_teraz()))
         ku.addLayout(rzad)
         self.auto_aktualizacje = QCheckBox("Sprawdzaj aktualizacje automatycznie (w instalacji administratora instaluje je usługa)")
         ku.addWidget(self.auto_aktualizacje)
@@ -5446,6 +5447,7 @@ class OknoGlowne(QMainWindow):
             ("Zasłoń ekran", "Działanie", "pulpit", self.pokaz_zaslone),
             ("Zamykam gabinet", "Działanie", "klodka", self.zamknij_gabinet),
             ("Zamknięcie dnia", "Wydruk utargu", "drukarka", self.zamkniecie_dnia),
+            ("Aktualizuj teraz", "Najnowsza wersja programu", "pobierz", self.aktualizuj_teraz),
         ]
         wlaczony = self.baza.ustawienia()["zaslona"] == "1"
         wynik.append(("Wyłącz wygaszacz ekranu" if wlaczony else "Włącz wygaszacz ekranu", "Ustawienie", "pulpit",
@@ -5614,6 +5616,34 @@ class OknoGlowne(QMainWindow):
         w.gotowe.connect(lambda wydanie: self._wynik_sprawdzenia(wydanie, cicho))
         w.blad.connect(lambda tekst: None if cicho else QMessageBox.warning(self, "Aktualizacje", tekst))
         self._w_tle(w)
+
+    def aktualizuj_teraz(self):
+        """Od razu: sprawdza wydanie, pobiera instalator (SHA-256) i uruchamia go z prośbą o zgodę
+        administratora — bez czekania na usługę, która instaluje aktualizacje co godzinę."""
+        if self._aktualizacja_w_toku:
+            return
+        if not aktualizacje.czy_spakowany():
+            QMessageBox.information(self, "Aktualizacje", "Aktualizacje instalują się tylko w wersji .exe.")
+            return
+        if not self.jest_wlascicielka and not self.potwierdz_haslem("aktualizacja programu",
+                                                                     "Aktualizacja wymaga hasła właściciela."):
+            return
+        self.komunikat("Sprawdzanie aktualizacji…")
+        w = Watek(aktualizacje.sprawdz)
+        w.gotowe.connect(self._aktualizuj_teraz_wynik)
+        w.blad.connect(lambda tekst: QMessageBox.warning(self, "Aktualizacje", tekst))
+        self._w_tle(w)
+
+    def _aktualizuj_teraz_wynik(self, wydanie):
+        if not wydanie:
+            QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
+            return
+        self.wydanie = wydanie
+        opis = wydanie.opis.strip()
+        self.uruchom_instalator_admin(
+            f"Zainstalować teraz wersję {wydanie.wersja}? (masz {WERSJA})\n\nProgram zrobi kopię danych, pobierze "
+            "instalator, sprawdzi jego sumę SHA-256 i uruchomi go. Windows zapyta o zgodę administratora. "
+            "Dane zostają bez zmian." + (f"\n\nZmiany:\n{opis[:500]}" if opis else ""))
 
     def _dziennik_ok(self) -> bool:
         zapamietany = self.baza.ustawienia()["ostatni_wpis_dziennika"]
@@ -5838,10 +5868,11 @@ class OknoGlowne(QMainWindow):
                 QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
         if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany():
-            if not cicho:  # Program Files: nową wersję zainstaluje usługa (konto SYSTEM)
-                QMessageBox.information(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Zainstaluje ją "
-                                        "automatycznie usługa Fakturnika w ciągu godziny, a program uruchomi się "
-                                        "ponownie, gdy schowasz okno.")
+            if not cicho:  # Program Files: nową wersję zainstaluje usługa (konto SYSTEM) albo „Aktualizuj teraz”
+                if QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Usługa "
+                                        "Fakturnika zainstaluje ją sama w ciągu godziny.\n\nZaktualizować teraz?") \
+                        == QMessageBox.StandardButton.Yes:
+                    self._aktualizuj_teraz_wynik(wydanie)
             return
         self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. Instaluje ją instalator "
                                         "za zgodą administratora; dane zostają.")
@@ -5988,6 +6019,8 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
+        menu.addAction(ikona("pobierz", TEKST_2), "Aktualizuj teraz…",
+                       lambda: (self.pokaz_okno(), self.aktualizuj_teraz() if self.isVisible() else None))
         menu.addAction(ikona("zamknij", TEKST_2), "Zamknij wszystkie powiadomienia", OknoPowiadomienia.zamknij_wszystkie)
         menu.addAction(ikona("pulpit", TEKST_2), "Zasłoń ekran", self.pokaz_zaslone)
         self.akcja_wygaszacza = menu.addAction("Wygaszacz ekranu (ząbek) włączony")
