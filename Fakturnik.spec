@@ -6,6 +6,8 @@
 #  * programowy OpenGL (opengl32sw.dll, ok. 20 MB) — okna programu go nie potrzebują,
 #  * tłumaczenia Qt na wszystkie języki (zostaje polski i angielski),
 #  * wtyczki sieciowe Qt (TLS, informacje o sieci): połączenia z internetem robi Python, nie Qt.
+# Kod Pythona nie jest czytany z Fakturnik.exe w trakcie pracy (noarchive), więc podmiana pliku przez
+# aktualizację nie psuje działającego programu.
 import os
 import re
 
@@ -39,7 +41,10 @@ a = Analysis(
     ["main.py"],
     datas=[("fakturnik/zasoby", "fakturnik/zasoby")],
     excludes=WYKLUCZONE_MODULY,
-    noarchive=False,
+    # noarchive: moduły Pythona trafiają do folderu tymczasowego razem z resztą plików, a nie zostają
+    # w Fakturnik.exe. Inaczej po podmianie pliku programu przez usługę aktualizacji działający program
+    # doczytywał moduły z NOWEGO pliku i kończył się błędem „zlib.error: incorrect header check”.
+    noarchive=True,
 )
 przed = len(a.binaries) + len(a.datas)
 a.binaries = [x for x in a.binaries if potrzebny(x[0])]

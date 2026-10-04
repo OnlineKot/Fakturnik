@@ -5443,12 +5443,19 @@ class OknoGlowne(QMainWindow):
         if self.baza.ma_haslo:
             wynik.append(("Zablokuj program", "Działanie", "klodka", self.zablokuj))
         if self.jest_wlascicielka:
+            wynik.append(("Przenieś dane na inny komputer", "Pakiet migracji", "pobierz", self.strona_ustawienia.migracja))
             wynik += [("Przychody", "Ekran", "wzrost", lambda: self.przejdz(STRONA_PRZYCHODY)),
                       ("Ustawienia", "Ekran", "ustawienia", lambda: self.przejdz(STRONA_USTAWIENIA))]
         for klucz, nazwa, ik in n.NARZEDZIA:
             wynik.append((nazwa, "Narzędzie", ik,
                           lambda k=klucz: (self.przejdz(STRONA_NARZEDZIA), self.strona_narzedzia.pokaz(k))))
         return wynik
+
+    def _migracja(self):
+        """Pakiet migracji zawiera wszystkie dane: asystentka potrzebuje hasła właściciela."""
+        if self.jest_wlascicielka or self.potwierdz_haslem("pakiet migracji",
+                                                           "Przeniesienie danych wymaga hasła właściciela."):
+            self.strona_ustawienia.migracja()
 
     def szybkie_szukanie(self):
         if not self.isVisible() or QApplication.activeModalWidget():
@@ -5960,6 +5967,8 @@ class OknoGlowne(QMainWindow):
         menu.addAction(ikona("klodka", TEKST_2), "Zamykam gabinet…",
                        lambda: (self.pokaz_okno(), self.zamknij_gabinet() if self.isVisible() else None))
         menu.addAction(ikona("kalendarz", TEKST_2), "Zamknięcie dnia…", self._zamkniecie_z_zasobnika)
+        menu.addAction(ikona("pobierz", TEKST_2), "Przenieś dane na inny komputer…",
+                       lambda: (self.pokaz_okno(), self._migracja() if self.isVisible() else None))
         menu.addAction(ikona("tarcza", TEKST_2), "Kontrola komputera…",
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
@@ -6330,6 +6339,78 @@ def _czekaj_w_zasobniku(app: QApplication, plik: Path, jedna: JednaKopia, polece
     return wynik.get("polecenie")
 
 
+class OknoAwaryjne(QDialog):
+    """Tryb awaryjny: gdy główne okno się nie otworzy, dane można przenieść albo wyłączyć dodatkowe
+    zabezpieczenia (hasło i szyfrowanie zostają) i uruchomić program ponownie."""
+
+    def __init__(self, baza: Baza, dziennik: Dziennik, blad: str):
+        super().__init__()
+        self.baza, self.dziennik = baza, dziennik
+        self.setWindowTitle("Fakturnik — tryb awaryjny")
+        self.setMinimumWidth(560)
+        u = QVBoxLayout(self)
+        u.setContentsMargins(26, 24, 26, 20)
+        u.setSpacing(10)
+        t = QLabel("Tryb awaryjny")
+        t.setStyleSheet("font-size: 20px; font-weight: 700;")
+        u.addWidget(t)
+        u.addWidget(QLabel("Fakturnik nie mógł otworzyć głównego okna. Twoje dane są bezpieczne i zapisane.\n"
+                           "Możesz przenieść je na inny komputer albo wyłączyć dodatkowe zabezpieczenia "
+                           "i spróbować ponownie.", wordWrap=True))
+        szczegoly = QLabel(blad.strip().splitlines()[-1][:300] if blad.strip() else "", objectName="drobny",
+                           wordWrap=True)
+        szczegoly.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        u.addWidget(szczegoly)
+        u.addSpacing(6)
+        for tekst, ik, akcja, styl in (
+                ("Przenieś dane na inny komputer (pakiet .fkopia)", "pobierz", self.migracja, "glowny"),
+                ("Wyłącz dodatkowe zabezpieczenia i uruchom ponownie", "tarcza", self.wylacz_zabezpieczenia, None),
+                ("Otwórz folder z kopiami", "archiwum",
+                 lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(katalog_kopii()))), None),
+                ("Zamknij", None, self.reject, None)):
+            b = przycisk(tekst, ik, styl, akcja)
+            b.setMinimumHeight(38)
+            u.addWidget(b)
+
+    def migracja(self):
+        okno = OknoNowegoHasla(self, "Hasło pakietu migracji",
+                               "Pakiet (dane, ustawienia i wrzucone pliki) zostanie zaszyfrowany tym hasłem. Działa na "
+                               "każdym komputerze, także przy włączonej weryfikacji urządzenia.")
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return
+        sciezka, _ = QFileDialog.getSaveFileName(
+            self, "Pakiet migracji", str(Path.home() / f"Fakturnik-migracja-{date.today().isoformat()}.fkopia"),
+            "Szyfrowana kopia Fakturnika (*.fkopia)")
+        if not sciezka:
+            return
+        try:
+            self.baza.kopia_zaszyfrowana(sciezka, okno.haslo.text())
+        except OSError as e:
+            QMessageBox.critical(self, "Pakiet migracji", f"Nie udało się zapisać pakietu:\n{e}")
+            return
+        self.dziennik.zapisz("tryb awaryjny: utworzono pakiet migracji")
+        QMessageBox.information(self, "Pakiet migracji", "Zapisano pakiet migracji.\n\nNa nowym komputerze zainstaluj "
+                                "Fakturnik i na pierwszym ekranie wybierz „Przenieś dane z innego komputera”.")
+
+    def wylacz_zabezpieczenia(self):
+        if QMessageBox.question(self, "Dodatkowe zabezpieczenia",
+                                "Zostaną wyłączone: weryfikacja urządzenia, ukrywanie okien przed nagrywaniem ekranu, "
+                                "wygaszacz ekranu i skaner folderu Pobrane.\n\nHasło i szyfrowanie danych zostają. "
+                                "Każdą z tych funkcji można potem włączyć w Ustawieniach.\n\nKontynuować?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if self.baza.weryfikacja_urzadzenia:
+                self.baza.powiaz_z_urzadzeniem(None)
+            self.baza.zapisz_ustawienia({"ochrona_ekranu": "0", "zaslona": "0", "skaner_pobrane": "0"})
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Dodatkowe zabezpieczenia", f"Nie udało się zmienić ustawień:\n{e}")
+            return
+        self.dziennik.zapisz("tryb awaryjny: wyłączono dodatkowe zabezpieczenia")
+        self.restart = True
+        self.accept()
+
+
 def uruchom_jako_administrator(sciezka: Path) -> bool:
     """Uruchamia program zawsze z prośbą o zgodę administratora (UAC, polecenie „runas”)."""
     if sys.platform != "win32":
@@ -6619,7 +6700,23 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
 
     if baza.ma_haslo:
         znacznik_szyfrowania(True)
-    okno = OknoGlowne(baza, dziennik, wynik.get("uzytkownik"))
+    try:
+        okno = OknoGlowne(baza, dziennik, wynik.get("uzytkownik"))
+    except Exception:  # noqa: BLE001 - zamiast zamknięcia: tryb awaryjny z dostępem do danych
+        import traceback
+        blad = traceback.format_exc()
+        try:
+            with open(plik.parent / "bledy.log", "a", encoding="utf-8") as f:
+                f.write(f"--- {datetime.now():%Y-%m-%d %H:%M:%S}  Fakturnik {WERSJA} (tryb awaryjny)\n{blad}\n")
+        except OSError:
+            pass
+        dziennik.zapisz("TRYB AWARYJNY: główne okno się nie otworzyło")
+        awaryjne = OknoAwaryjne(baza, dziennik, blad)
+        awaryjne.exec()
+        if getattr(awaryjne, "restart", False) and aktualizacje.czy_spakowany():
+            baza.zamknij()
+            aktualizacje.uruchom_nowa_wersje(Path(sys.executable))
+        return 1, None
     jedna.polecenie.connect(okno.obsluz_polecenie)
     if w_tle and okno._w_tle_dostepne() and baza.ustawienia()["skonfigurowano"] == "1":
         okno._ukryty = baza.ma_haslo
