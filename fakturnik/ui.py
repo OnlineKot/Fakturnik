@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt,
+    QBuffer, QFileSystemWatcher, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt,
     QThread,
     QTime, QTimer, QUrl, Signal,
 )
@@ -2186,6 +2186,7 @@ class StronaNarzedzia(Strona):
         ("numer", "Sprawdź numer", "hash"),
         ("slownie", "Kwota słownie", "tekst"),
         ("hasla", "Generator haseł", "klucz"),
+        ("skaner", "Skaner plików", "tarcza"),
     ]
 
     def __init__(self, okno: "OknoGlowne"):
@@ -2236,7 +2237,7 @@ class StronaNarzedzia(Strona):
                   "kalkulator": self._karta_kalkulatora, "stoper": self._karta_stopera,
                   "minutnik": self._karta_minutnika, "daty": self._karta_dat, "rabat": self._karta_rabatu,
                   "firma": self._karta_firmy, "numer": self._karta_numeru, "slownie": self._karta_slownie,
-                  "hasla": self._karta_hasel}
+                  "hasla": self._karta_hasel, "skaner": self._karta_skanera}
         self.widoki: dict[str, int] = {}
         for klucz, _, _ in self.NARZEDZIA:
             w = budowa[klucz]()
@@ -2963,6 +2964,58 @@ class StronaNarzedzia(Strona):
         ku.addStretch()
         return k
 
+    # ---- skaner plików
+    def _karta_skanera(self) -> QFrame:
+        k, ku = karta()
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Wybierz pliki…", "plus", "glowny", self._skanuj_wybrane))
+        rzad.addWidget(przycisk("Sprawdź folder Pobrane (7 dni)", "pobierz", akcja=self._skanuj_pobrane))
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        self.wyniki_skanera = QLabel(wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        self.wyniki_skanera.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ku.addWidget(self.wyniki_skanera)
+        ku.addStretch()
+        return k
+
+    def _skanuj_wybrane(self):
+        sciezki, _ = QFileDialog.getOpenFileNames(self, "Pliki do sprawdzenia", str(katalog_pobranych()))
+        if sciezki:
+            self._skanuj([Path(p) for p in sciezki])
+
+    def _skanuj_pobrane(self):
+        from . import skaner
+        pliki = skaner.nowe_pobrane(katalog_pobranych(), time.time() - 7 * 86400, limit=200)
+        if not pliki:
+            self.wyniki_skanera.setText("W folderze Pobrane nie ma plików z ostatnich 7 dni.")
+            return
+        self._skanuj(pliki)
+
+    def _skanuj(self, pliki: list[Path]):
+        from . import skaner
+        self.wyniki_skanera.setText(f"Sprawdzanie {len(pliki)} plików…")
+        w = Watek(lambda: [skaner.skanuj(p) for p in pliki])
+        w.gotowe.connect(self._pokaz_wyniki_skanu)
+        w.blad.connect(lambda t: self.wyniki_skanera.setText(html_escape(t)))
+        self.okno._w_tle(w)
+
+    def _pokaz_wyniki_skanu(self, wyniki):
+        from . import skaner
+        kolory = {skaner.CZYSTY: ZIELONY, skaner.PODEJRZANY: "#b26a00", skaner.ZAGROZENIE: CZERWONY}
+        kolejnosc = {skaner.ZAGROZENIE: 0, skaner.PODEJRZANY: 1, skaner.CZYSTY: 2}
+        wyniki = sorted(wyniki, key=lambda w: kolejnosc[w.stan])
+        zle = sum(w.stan != skaner.CZYSTY for w in wyniki)
+        naglowek = (f"<b>Sprawdzono {len(wyniki)} plików.</b> " +
+                    (f"<span style='color:{CZERWONY}'>Uwaga: {zle}.</span>" if zle else
+                     f"<span style='color:{ZIELONY}'>Wszystkie bez zastrzeżeń.</span>") +
+                    (f"<br><span style='color:{TEKST_2}'>Sprawdził: {html_escape(wyniki[0].antywirus)} "
+                     "i własna analiza Fakturnika</span>" if wyniki else ""))
+        wiersze = [f"<span style='color:{kolory[w.stan]}; font-weight:600'>●</span> {html_escape(w.plik)} — "
+                   f"<span style='color:{kolory[w.stan]}'>{html_escape(w.opis)}</span>" for w in wyniki[:60]]
+        self.wyniki_skanera.setText(naglowek + "<br><br>" + "<br>".join(wiersze))
+        if zle:
+            self.okno.dziennik.zapisz(f"SKANER: pliki z uwagami ({zle} z {len(wyniki)})")
+
     def _nowe_haslo(self, *_):
         self.haslo_gen.setText(narzedzia.generuj_haslo(self.dlugosc_hasla.value(), self.znaki_hasla.isChecked()))
         self.stan_hasla.clear()
@@ -3308,28 +3361,8 @@ class StronaUstawienia(Strona):
         rzad_blokady.addWidget(self.blokada_minut)
         rzad_blokady.addStretch()
         ku.addLayout(rzad_blokady)
-        rzad_zaslony = QHBoxLayout()
-        self.zaslona_wl = QCheckBox("Zasłona ekranu z ząbkiem po")
-        rzad_zaslony.addWidget(self.zaslona_wl)
-        self.zaslona_sekund = QSpinBox(minimum=5, maximum=3600, singleStep=15, suffix=" s bezczynności")
-        self.zaslona_sekund.setFixedWidth(190)
-        self.zaslona_wl.toggled.connect(self.zaslona_sekund.setEnabled)
-        rzad_zaslony.addWidget(self.zaslona_sekund)
-        for sek in (30, 60, 120, 300):
-            rzad_zaslony.addWidget(przycisk(f"{sek} s" if sek < 60 else f"{sek // 60} min", styl="plaski",
-                                            akcja=lambda _=False, v=sek: self.zaslona_sekund.setValue(v)))
-        rzad_zaslony.addWidget(przycisk("Pokaż", "pulpit", akcja=lambda: self.okno.pokaz_zaslone()))
-        rzad_zaslony.addStretch()
-        ku.addLayout(rzad_zaslony)
-        rzad_gaszenia = QHBoxLayout()
-        rzad_gaszenia.addWidget(QLabel("Gaś ekran i monitor po", objectName="etykieta"))
-        self.zaslona_gaszenie = QSpinBox(minimum=0, maximum=240, suffix=" min zasłony")
-        self.zaslona_gaszenie.setSpecialValueText("nigdy")
-        self.zaslona_gaszenie.setFixedWidth(190)
-        self.zaslona_wl.toggled.connect(self.zaslona_gaszenie.setEnabled)
-        rzad_gaszenia.addWidget(self.zaslona_gaszenie)
-        rzad_gaszenia.addStretch()
-        ku.addLayout(rzad_gaszenia)
+        self.skaner_pobrane = QCheckBox("Sprawdzaj skanerem nowe pliki w folderze Pobrane (ostrzeżenie przy zagrożeniu)")
+        ku.addWidget(self.skaner_pobrane)
         self.ochrona_ekranu = QCheckBox("Ukrywaj okna programu przed zrzutami i nagrywaniem ekranu "
                                         "(np. narzędzia AI, programy zdalnego dostępu)")
         ku.addWidget(self.ochrona_ekranu)
@@ -3463,6 +3496,34 @@ class StronaUstawienia(Strona):
         self.op_druk_wystawil = QCheckBox("Drukuj na dokumencie „Wystawił(a): …”")
         ku.addWidget(self.op_zamkniecie_asystentki)
         ku.addWidget(self.op_druk_wystawil)
+        prawa.addWidget(k)
+        prawa.addSpacing(10)
+
+        # --- wygaszacz ekranu
+        prawa.addWidget(sekcja("Wygaszacz ekranu"))
+        k, ku = karta()
+        rzad_zaslony = QHBoxLayout()
+        self.zaslona_wl = QCheckBox("Włącz wygaszacz z ząbkiem po")
+        rzad_zaslony.addWidget(self.zaslona_wl)
+        self.zaslona_sekund = QSpinBox(minimum=5, maximum=3600, singleStep=15, suffix=" s bezczynności")
+        self.zaslona_sekund.setFixedWidth(190)
+        self.zaslona_wl.toggled.connect(self.zaslona_sekund.setEnabled)
+        rzad_zaslony.addWidget(self.zaslona_sekund)
+        for sek in (30, 60, 120, 300):
+            rzad_zaslony.addWidget(przycisk(f"{sek} s" if sek < 60 else f"{sek // 60} min", styl="plaski",
+                                            akcja=lambda _=False, v=sek: self.zaslona_sekund.setValue(v)))
+        rzad_zaslony.addWidget(przycisk("Pokaż", "pulpit", akcja=lambda: self.okno.pokaz_zaslone()))
+        rzad_zaslony.addStretch()
+        ku.addLayout(rzad_zaslony)
+        rzad_gaszenia = QHBoxLayout()
+        rzad_gaszenia.addWidget(QLabel("Gaś ekran i monitor po", objectName="etykieta"))
+        self.zaslona_gaszenie = QSpinBox(minimum=0, maximum=240, suffix=" min zasłony")
+        self.zaslona_gaszenie.setSpecialValueText("nigdy")
+        self.zaslona_gaszenie.setFixedWidth(190)
+        self.zaslona_wl.toggled.connect(self.zaslona_gaszenie.setEnabled)
+        rzad_gaszenia.addWidget(self.zaslona_gaszenie)
+        rzad_gaszenia.addStretch()
+        ku.addLayout(rzad_gaszenia)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -3857,6 +3918,7 @@ class StronaUstawienia(Strona):
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
         self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
         self.zaslona_wl.setChecked(u["zaslona"] == "1")
+        self.skaner_pobrane.setChecked(u["skaner_pobrane"] == "1")
         self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 30))
         self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
         self.zaslona_gaszenie.setValue(int(liczba(u["zaslona_gaszenie_min"]) or 0))
@@ -3944,6 +4006,7 @@ class StronaUstawienia(Strona):
         wartosci["tryb"] = self.tryb.currentData()
         wartosci["blokada_minut"] = str(self.blokada_minut.value())
         wartosci["zaslona"] = "1" if self.zaslona_wl.isChecked() else "0"
+        wartosci["skaner_pobrane"] = "1" if self.skaner_pobrane.isChecked() else "0"
         wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
         wartosci["zaslona_gaszenie_min"] = str(self.zaslona_gaszenie.value())
         if integracja_dostepna():
@@ -4718,6 +4781,9 @@ class StronaPliki(Strona):
     def _dodaj_sciezki(self, sciezki: list[Path]):
         if not sciezki:
             return
+        sciezki = self._sprawdz_skanerem(sciezki)
+        if not sciezki:
+            return
         okno = OknoOpisuPliku(self.okno.baza, [p.name for p in sciezki], self)
         if okno.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4739,6 +4805,32 @@ class StronaPliki(Strona):
         if bledy:
             QMessageBox.warning(self, "Nie wszystkie pliki dodano", "\n".join(bledy[:10]))
         self.odswiez()
+
+    def _sprawdz_skanerem(self, sciezki: list[Path]) -> list[Path]:
+        """Każdy plik przed dodaniem: zagrożenie = odrzucony, podejrzany = tylko po potwierdzeniu."""
+        from . import skaner
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            wyniki = [(p, skaner.skanuj(p)) for p in sciezki]
+        finally:
+            QApplication.restoreOverrideCursor()
+        dobre = [p for p, w in wyniki if w.stan == skaner.CZYSTY]
+        grozne = [w for _, w in wyniki if w.stan == skaner.ZAGROZENIE]
+        podejrzane = [(p, w) for p, w in wyniki if w.stan == skaner.PODEJRZANY]
+        if grozne:
+            self.okno.dziennik.zapisz(f"SKANER: odrzucono pliki z zagrożeniem ({len(grozne)})")
+            QMessageBox.critical(self, "Skaner plików", "Tych plików nie dodano, bo mogą być niebezpieczne:\n\n" +
+                                 "\n".join(f"• {w.plik}: {'; '.join(w.powody)}" for w in grozne[:8]))
+        if podejrzane:
+            odp = QMessageBox.warning(
+                self, "Skaner plików", "Te pliki wyglądają podejrzanie:\n\n" +
+                "\n".join(f"• {w.plik}: {'; '.join(w.powody)}" for _, w in podejrzane[:8]) +
+                "\n\nDodać je mimo to? Wybierz „Nie”, jeśli nie wiesz, skąd pochodzą.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if odp == QMessageBox.StandardButton.Yes:
+                dobre += [p for p, _ in podejrzane]
+                self.okno.dziennik.zapisz(f"SKANER: dodano mimo ostrzeżenia ({len(podejrzane)})")
+        return dobre
 
     def _tresc(self, p: Plik) -> bytes | None:
         try:
@@ -4946,7 +5038,6 @@ class OknoGlowne(QMainWindow):
         opis = QVBoxLayout()
         opis.setSpacing(1)
         opis.addWidget(QLabel("Fakturnik", objectName="nazwa_programu"))
-        opis.addWidget(QLabel("by TeodorTeo.com", objectName="gabinet"))
         marka.addLayout(opis)
         marka.addStretch()
         m.addLayout(marka)
@@ -4984,7 +5075,7 @@ class OknoGlowne(QMainWindow):
         self.etykieta_gabinetu.setFixedWidth(190)
         self.etykieta_gabinetu.setStyleSheet("padding: 6px 24px 0; color: #a9c3c8;")
         m.addWidget(self.etykieta_gabinetu)
-        wersja = QLabel(f"Wersja {WERSJA}")
+        wersja = QLabel(f"Wersja {WERSJA}  ·  TeodorTeo.com")
         wersja.setStyleSheet("color: #6f8f95; font-size: 11px; padding: 2px 24px 0;")
         m.addWidget(wersja)
         uklad.addWidget(menu)
@@ -5078,6 +5169,15 @@ class OknoGlowne(QMainWindow):
         self.zegar_zaslony = QTimer(self, interval=2000)
         self.zegar_zaslony.timeout.connect(self._sprawdz_zaslone)
         self.zegar_zaslony.start()
+        # skaner folderu Pobrane: nowe pliki sprawdzane w tle, ostrzeżenie tylko przy problemie
+        self._sprawdzone_pobrane: dict[str, float] = {}
+        self._pobrane_od = time.time()
+        self.obserwator_pobranych = QFileSystemWatcher(self)
+        if katalog_pobranych().is_dir():
+            self.obserwator_pobranych.addPath(str(katalog_pobranych()))
+        self._zwloka_pobranych = QTimer(self, singleShot=True, interval=4000)  # pobieranie musi się skończyć
+        self.obserwator_pobranych.directoryChanged.connect(lambda _: self._zwloka_pobranych.start())
+        self._zwloka_pobranych.timeout.connect(self._skanuj_pobrane)
         self.zegar_godzin = QTimer(self, interval=30 * 1000)
         self.zegar_godzin.timeout.connect(self.sprawdz_godziny)
         self.zegar_godzin.start()
@@ -5127,6 +5227,9 @@ class OknoGlowne(QMainWindow):
             ("Zamykam gabinet", "Działanie", "klodka", self.zamknij_gabinet),
             ("Zamknięcie dnia", "Wydruk utargu", "drukarka", self.zamkniecie_dnia),
         ]
+        wlaczony = self.baza.ustawienia()["zaslona"] == "1"
+        wynik.append(("Wyłącz wygaszacz ekranu" if wlaczony else "Włącz wygaszacz ekranu", "Ustawienie", "pulpit",
+                      lambda: self.przelacz_wygaszacz(not wlaczony)))
         if self.baza.ma_haslo:
             wynik.append(("Zablokuj program", "Działanie", "klodka", self.zablokuj))
         if self.jest_wlascicielka:
@@ -5175,6 +5278,37 @@ class OknoGlowne(QMainWindow):
         linie.append(godziny.opis_stanu(godziny.wczytaj(u["godziny_pracy"]), datetime.now()))
         linie.append("Ctrl+K: szybkie wyszukiwanie")
         self.powiadom(tytul, "\n".join(linie), "info", czas_ms=9000)
+
+    def _skanuj_pobrane(self):
+        if self.baza.ustawienia().get("skaner_pobrane") != "1":
+            return
+        from . import skaner
+        nowe = [p for p in skaner.nowe_pobrane(katalog_pobranych(), self._pobrane_od)
+                if self._sprawdzone_pobrane.get(str(p)) != p.stat().st_mtime]
+        if not nowe:
+            return
+        for p in nowe:
+            self._sprawdzone_pobrane[str(p)] = p.stat().st_mtime
+        w = Watek(lambda: [skaner.skanuj(p) for p in nowe])
+        w.gotowe.connect(self._wynik_pobranych)
+        self._w_tle(w)
+
+    def _wynik_pobranych(self, wyniki):
+        from . import skaner
+        zle = [w for w in wyniki if w.stan != skaner.CZYSTY]
+        if not zle:
+            return
+        grozne = any(w.stan == skaner.ZAGROZENIE for w in zle)
+        self.dziennik.zapisz(f"SKANER: pobrane pliki z uwagami ({len(zle)})")
+        self.powiadom("Niebezpieczny plik w Pobranych" if grozne else "Podejrzany plik w Pobranych",
+                      "\n".join(f"{w.plik}: {'; '.join(w.powody)}" for w in zle[:3]) +
+                      "\nNie otwieraj go, jeśli nie wiesz, skąd pochodzi.", "blad" if grozne else "uwaga",
+                      lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(katalog_pobranych()))), czas_ms=20000)
+
+    def przelacz_wygaszacz(self, wlacz: bool):
+        self.baza.zapisz_ustawienia({"zaslona": "1" if wlacz else "0"})
+        self.dziennik.zapisz("wygaszacz ekranu: " + ("włączony" if wlacz else "wyłączony"))
+        self.komunikat("Wygaszacz ekranu " + ("włączony" if wlacz else "wyłączony"))
 
     def _bezczynnosc(self) -> float:
         """Sekundy bez ruchu myszy i klawiatury: w całym Windows, a gdzie indziej w samym programie."""
@@ -5620,6 +5754,12 @@ class OknoGlowne(QMainWindow):
                        lambda: (self.pokaz_okno(), self.pokaz_kontrole() if self.isVisible() else None))
         menu.addSeparator()
         menu.addAction(ikona("pulpit", TEKST_2), "Zasłoń ekran", self.pokaz_zaslone)
+        self.akcja_wygaszacza = menu.addAction("Wygaszacz ekranu (ząbek) włączony")
+        self.akcja_wygaszacza.setCheckable(True)
+        self.akcja_wygaszacza.toggled.connect(self.przelacz_wygaszacz)
+        menu.aboutToShow.connect(lambda: (self.akcja_wygaszacza.blockSignals(True),
+                                          self.akcja_wygaszacza.setChecked(self.baza.ustawienia()["zaslona"] == "1"),
+                                          self.akcja_wygaszacza.blockSignals(False)))
         menu.addAction(ikona("klodka", TEKST_2), "Zablokuj", self.zablokuj)
         menu.addAction(ikona("zamknij", TEKST_2), "Zakończ program…", self.zakoncz)
         self._menu_zasobnika = menu
@@ -6101,6 +6241,10 @@ def _nowe_urzadzenie(plik: Path, haslo: str, dziennik: Dziennik, wynik: dict) ->
         pass  # bez zapamiętania: przy następnym uruchomieniu znów zapyta o kod
     dziennik.zapisz(f"weryfikacja urządzenia: nowe urządzenie {urzadzenie.nazwa_urzadzenia()} (kod odzyskiwania)")
     return True
+
+
+def katalog_pobranych() -> Path:
+    return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation) or Path.home())
 
 
 def znacznik_szyfrowania(ustaw: bool | None = None) -> bool:

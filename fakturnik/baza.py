@@ -73,6 +73,7 @@ DOMYSLNE_USTAWIENIA = {
     "zaslona_sekund": "30",             # po ilu sekundach bezczynności pokazać zasłonę
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
+    "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
     "przypomnienia": "",                # przypomnienia z godziną (JSON, w zaszyfrowanych danych)
     "kopia_folder": "",      # trzecie miejsce na kopie: pendrive, dysk sieciowy, OneDrive
     "ochrona_ekranu": "1",   # "1" = okna programu niewidoczne dla zrzutów i nagrań ekranu (Windows)
@@ -993,6 +994,9 @@ class Baza:
         if typ not in TYPY_PLIKOW:
             raise ValueError(f"Nieobsługiwany rodzaj pliku: {zrodlo.name}. Można dodać PDF lub zdjęcie.")
         tresc = zrodlo.read_bytes()
+        from .skaner import typ_z_zawartosci
+        if typ_z_zawartosci(tresc) in ("exe", "skrypt"):
+            raise ValueError(f"Plik {zrodlo.name} to program, a nie dokument. Nie został dodany.")
         if len(tresc) > MAKS_ROZMIAR_PLIKU:
             raise ValueError(f"Plik {zrodlo.name} jest za duży (maksymalnie {MAKS_ROZMIAR_PLIKU // 2**20} MB).")
         self.katalog_plikow.mkdir(parents=True, exist_ok=True)
