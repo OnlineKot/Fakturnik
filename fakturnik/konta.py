@@ -2,7 +2,8 @@
 
 Plik danych szyfruje klucz z hasła właściciela. Żeby asystentka mogła go otworzyć bez znajomości tego
 hasła, każde konto ma w pliku konta.json:
-  * losowy klucz konta (KA), zaszyfrowany kluczem z hasła asystentki (PBKDF2-SHA256, AES-256-GCM),
+  * losowy klucz konta (KA), zaszyfrowany kluczem z hasła asystentki (Argon2id, AES-256-GCM;
+    starsze wpisy PBKDF2-SHA256 przechodzą na Argon2id przy pierwszym logowaniu),
   * klucz danych (z hasła właściciela), zaszyfrowany kluczem konta KA.
 Klucze kont są też zapisane w zaszyfrowanych danych, więc gdy właściciel zmienia hasło, program
 przepisuje klucze wszystkich kont bez pytania asystentek o hasła. Usunięcie konta kasuje jego wpis
@@ -20,7 +21,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .szyfrowanie import klucz_z_hasla
+from .szyfrowanie import ARGON2, klucz_argon2, klucz_pbkdf2
 
 PLIK_KONT = "konta.json"
 ROLE = {"wlascicielka": "właściciel", "asystentka": "asystentka"}
@@ -49,10 +50,17 @@ def zapisz(katalog: Path, konta: list[dict]) -> None:
     os.replace(tymczasowy, plik)
 
 
+def _klucz(wpis: dict, haslo: str) -> bytes:
+    if wpis.get("kdf") == "argon2id":
+        return klucz_argon2(haslo, _z_b64(wpis["sol"]), tuple(wpis["argon2"]))
+    return klucz_pbkdf2(haslo, _z_b64(wpis["sol"]))
+
+
 def _wpis(id_: str, nazwa: str, rola: str, haslo: str, klucz_konta: bytes, klucz_danych: bytes) -> dict:
     sol, n1, n2 = os.urandom(16), os.urandom(12), os.urandom(12)
-    k = klucz_z_hasla(haslo, sol)
-    return {"id": id_, "nazwa": nazwa, "rola": rola, "sol": _b64(sol), "n1": _b64(n1),
+    k = klucz_argon2(haslo, sol, ARGON2)
+    return {"id": id_, "nazwa": nazwa, "rola": rola, "kdf": "argon2id", "argon2": list(ARGON2),
+            "sol": _b64(sol), "n1": _b64(n1),
             "klucz": _b64(AESGCM(k).encrypt(n1, klucz_konta, f"konto:{id_}".encode())),
             "n2": _b64(n2), "dane": _b64(AESGCM(klucz_konta).encrypt(n2, klucz_danych, f"dane:{id_}".encode()))}
 
@@ -77,22 +85,30 @@ def odnow_klucz_danych(wpis: dict, klucz_konta: bytes, klucz_danych: bytes) -> d
 
 def zaloguj(katalog: Path, haslo: str) -> tuple[dict, bytes] | None:
     """Szuka konta, do którego pasuje hasło. Zwraca (wpis, klucz danych) albo None."""
-    for wpis in wczytaj(katalog):
+    wszystkie = wczytaj(katalog)
+    for i, wpis in enumerate(wszystkie):
         try:
-            k = klucz_z_hasla(haslo, _z_b64(wpis["sol"]))
+            k = _klucz(wpis, haslo)
             klucz_konta = AESGCM(k).decrypt(_z_b64(wpis["n1"]), _z_b64(wpis["klucz"]), f"konto:{wpis['id']}".encode())
             klucz_danych = AESGCM(klucz_konta).decrypt(_z_b64(wpis["n2"]), _z_b64(wpis["dane"]),
                                                        f"dane:{wpis['id']}".encode())
-            return wpis, klucz_danych
-        except (InvalidTag, KeyError, ValueError):
+        except (InvalidTag, KeyError, ValueError, TypeError):
             continue
+        if wpis.get("kdf") != "argon2id":  # starszy wpis: przejście na Argon2id (znamy już hasło)
+            try:
+                wszystkie[i] = _wpis(wpis["id"], wpis["nazwa"], wpis["rola"], haslo, klucz_konta, klucz_danych)
+                zapisz(katalog, wszystkie)
+                wpis = wszystkie[i]
+            except OSError:
+                pass
+        return wpis, klucz_danych
     return None
 
 
 def sprawdz_haslo(wpis: dict, haslo: str) -> bool:
     try:
-        k = klucz_z_hasla(haslo, _z_b64(wpis["sol"]))
+        k = _klucz(wpis, haslo)
         AESGCM(k).decrypt(_z_b64(wpis["n1"]), _z_b64(wpis["klucz"]), f"konto:{wpis['id']}".encode())
         return True
-    except (InvalidTag, KeyError, ValueError):
+    except (InvalidTag, KeyError, ValueError, TypeError):
         return False

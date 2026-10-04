@@ -118,8 +118,9 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Anulowanie dokumentu** z powodem: dokument zostaje w historii (przekreślony, z adnotacją
   na wydruku), nie liczy się do sum, a jego numer nie jest używany ponownie.
 - „Użyj jako wzór”: nowy dokument na podstawie starego.
-- **Hasło i szyfrowanie**: klucz 256-bitowy z hasła (PBKDF2-HMAC-SHA256, 600 000 iteracji),
-  dane szyfrowane AES-256-GCM. Automatyczna blokada po ustawionym czasie bezczynności,
+- **Hasło i szyfrowanie**: klucz z hasła przez Argon2id (128 MiB pamięci na próbę, zalecenie RFC 9106),
+  dane szyfrowane podwójnie: AES-256-GCM, a na nim ChaCha20-Poly1305 (dwa niezależne klucze).
+  Pliki ze starszych wersji przechodzą na nowe szyfrowanie przy pierwszym otwarciu hasłem. Automatyczna blokada po ustawionym czasie bezczynności,
   rosnące opóźnienie po błędnych hasłach. Zapomnianego hasła nie da się odzyskać.
 - **Trzy niezależne kopie, robione cały czas**:
   1. `Dokumenty\Fakturnik\kopie`: co 10 minut, gdy dane się zmieniły, i przy zamknięciu (30 dni),
@@ -210,7 +211,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   całkowicie nieusuwalnym dla administratora, dlatego program robi też codzienne
   **kopie automatyczne** w trzech miejscach (patrz wyżej).
 - **Szyfrowana kopia zapasowa** (`.fkopia`): jeden plik z danymi i wrzuconymi plikami, zaszyfrowany
-  AES-256-GCM osobnym hasłem kopii (można ją bezpiecznie trzymać na pendrive lub w chmurze).
+  podwójnie (AES-256-GCM i ChaCha20-Poly1305, klucz Argon2id) osobnym hasłem kopii (można ją bezpiecznie trzymać na pendrive lub w chmurze).
   Przywracanie przyjmuje `.fkopia`, `.zip` i `.db`; kopie automatyczne plików trafiają do `Dokumenty\Fakturnik\kopie\pliki`.
 - **Automatyczne aktualizacje**: program sprawdza nowe wersje przy starcie i co 6 godzin. W instalacji
   z uprawnieniami administratora usługa sama pobiera nową wersję, sprawdza SHA-256 (tylko z GitHuba)
@@ -239,7 +240,9 @@ Poprawione:
 Znane ograniczenia (do zrobienia w przyszłości):
 - Pliki programu nie mają jeszcze podpisu cyfrowego (certyfikat Authenticode). Aktualizacja sprawdza sumę SHA-256 z wydania, ale nie podpis.
 - Asystentka zna klucz danych, więc po usunięciu jej konta warto zmienić hasło właściciela. Pełne unieważnienie dostępu wymaga przebudowy szyfrowania kont.
-- Hasło przy odinstalowaniu tylko utrudnia odinstalowanie. Administrator komputera zawsze może usunąć program.
+- Odinstalowanie wymaga hasła Fakturnika także z konta administratora i także po usunięciu pliku programu
+  (zapasowa kopia w `ProgramData\Fakturnik\program`). Administrator może jednak ręcznie skasować pliki
+  z dysku — tego żaden program nie zablokuje. Dane i kopie zostają wtedy nietknięte i zaszyfrowane.
 
 ## Uwaga o KSeF
 

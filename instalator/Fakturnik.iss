@@ -56,6 +56,8 @@ Name: "{commonappdata}\Fakturnik\kopie"
 [Files]
 Source: "..\dist\Fakturnik.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
 Source: "..\dist\FakturnikPrzegladarka.exe"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly uninsremovereadonly
+; zapasowa kopia do sprawdzania hasła przy odinstalowaniu (gdy ktoś usunie plik z Program Files); zostaje po odinstalowaniu
+Source: "..\dist\Fakturnik.exe"; DestDir: "{commonappdata}\Fakturnik\program"; Flags: ignoreversion uninsneveruninstall
 
 [Icons]
 Name: "{commonprograms}\Fakturnik"; Filename: "{app}\Fakturnik.exe"; AppUserModelID: "TeodorTeo.Fakturnik"
@@ -126,15 +128,16 @@ var
   Kod: Integer;
   Exe: String;
 begin
-  Result := True;
+  { bez pliku programu nie da się sprawdzić hasła, więc wtedy odinstalowanie jest zablokowane }
   Exe := ExpandConstant('{app}\Fakturnik.exe');
-  if FileExists(Exe) then
-  begin
-    if not Exec(Exe, '--odinstaluj', '', SW_SHOW, ewWaitUntilTerminated, Kod) then
-      Result := False
-    else
-      Result := (Kod = 0);
-  end;
+  if not FileExists(Exe) then
+    Exe := ExpandConstant('{commonappdata}\Fakturnik\program\Fakturnik.exe');
+  if not FileExists(Exe) then
+    Result := False
+  else if not Exec(Exe, '--odinstaluj', '', SW_SHOW, ewWaitUntilTerminated, Kod) then
+    Result := False
+  else
+    Result := (Kod = 0);
   if not Result then
     MsgBox('Fakturnik nie został odinstalowany (wymagane hasło Fakturnika).', mbInformation, MB_OK);
 end;

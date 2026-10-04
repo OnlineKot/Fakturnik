@@ -503,7 +503,7 @@ class OknoHasla(QDialog):
 
 class OknoNowegoHasla(QDialog):
     def __init__(self, parent=None, tytul: str = "Ustaw hasło",
-                 opis: str = "Hasło szyfruje wszystkie dane (AES-256, klucz z hasła przez PBKDF2-SHA256)."):
+                 opis: str = "Hasło szyfruje wszystkie dane (Argon2id, AES-256-GCM i ChaCha20-Poly1305)."):
         super().__init__(parent)
         self.setWindowTitle("Hasło")
         self.setFixedWidth(420)
@@ -3511,7 +3511,7 @@ class StronaUstawienia(Strona):
         ma = self.okno.baza.ma_haslo
         self.ikona_stanu.setPixmap(pixmapa("tarcza" if ma else "uwaga", ZIELONY if ma else CZERWONY, 18))
         self.stan_hasla.setText(
-            f"Dane są zaszyfrowane (AES-256). Program blokuje się po {u['blokada_minut']} min bezczynności."
+            f"Dane są zaszyfrowane podwójnie (AES-256 i ChaCha20). Program blokuje się po {u['blokada_minut']} min bezczynności."
             if ma else "Dane nie są zaszyfrowane. Ustaw hasło, żeby chronić dane pacjentów.")
         self.btn_haslo.setText("Zmień hasło" if ma else "Ustaw hasło")
         self.btn_usun_haslo.setVisible(ma)
@@ -3817,7 +3817,7 @@ class StronaUstawienia(Strona):
 
     def kopia_zapasowa(self, *_, nazwa_pliku: str | None = None):
         haslo = OknoNowegoHasla(self, "Hasło kopii zapasowej",
-                                "Kopia (dane i wrzucone pliki) zostanie zaszyfrowana AES-256 tym hasłem. "
+                                "Kopia (dane i wrzucone pliki) zostanie zaszyfrowana podwójnie (AES-256 i ChaCha20) tym hasłem. "
                                 "Może być inne niż hasło programu, np. do kopii na pendrive lub w chmurze.")
         if haslo.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5524,10 +5524,20 @@ def potwierdz_odinstalowanie() -> int:
     pliki = [d / usluga.PLIK_DANYCH for _, d in usluga.profile_z_danymi()]
     if sciezka_danych().exists() and sciezka_danych() not in pliki:
         pliki.append(sciezka_danych())
-    chronione = [p for p in pliki if Baza.wymaga_hasla(p)]
+    # (katalog z weryfikatorem hasła, plik danych do sprawdzenia, sekret urządzenia)
+    chronione = [(p.parent, p, urzadzenie.wczytaj_sekret(p.parent)) for p in pliki if Baza.wymaga_hasla(p)]
+    # dane usunięte z profilu nie wyłączają hasła: liczą się też zaszyfrowane kopie usługi
+    katalog_kopii_uslugi = usluga.katalog_kopii_chronionych()
+    for katalog in (katalog_kopii_uslugi.iterdir() if katalog_kopii_uslugi.is_dir() else []):
+        kopie = sorted(katalog.glob("fakturnik-*.db"))
+        if kopie and Baza.wymaga_hasla(kopie[-1]):
+            chronione.append((katalog, kopie[-1], None))
+
+    def sprawdz(h: str) -> bool:
+        return any(Baza.haslo_pasuje(katalog, h, sekret, plik) for katalog, plik, sekret in chronione)
+
     if chronione:
-        okno = OknoHasla(lambda h: any(Baza.da_sie_otworzyc(p, h, urzadzenie.wczytaj_sekret(p.parent))
-                                       for p in chronione), "Odinstaluj Fakturnik",
+        okno = OknoHasla(sprawdz, "Odinstaluj Fakturnik",
                          opis="Podaj hasło Fakturnika, aby go odinstalować.\nDane i kopie zostaną na dysku.")
         return 0 if okno.exec() == QDialog.DialogCode.Accepted else 1
     odp = QMessageBox.question(None, "Odinstaluj Fakturnik", "Odinstalować Fakturnik?\n\nDane i kopie zostaną "

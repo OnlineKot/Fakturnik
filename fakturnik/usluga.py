@@ -170,6 +170,9 @@ def kopia_uzytkownika(dane: Path, cel: Path, teraz: datetime | None = None) -> b
     dziennik = dane / "dziennik.log"
     if dziennik.is_file() and not _dowiazanie(dziennik):
         _kopiuj(dziennik, cel / "dziennik.log")
+    weryfikator = dane / "weryfikator.json"  # żeby deinstalator sprawdził hasło także po usunięciu danych z profilu
+    if weryfikator.is_file() and not _dowiazanie(weryfikator) and weryfikator.stat().st_size < 4096:
+        _kopiuj(weryfikator, cel / "weryfikator.json")
     (cel / "ostatnia-kopia.txt").write_text(f"{teraz:%Y-%m-%d %H:%M}")
     rotacja(cel, teraz)
     return nowa
@@ -246,6 +249,27 @@ def aktualizuj_program() -> str:
     return f"zainstalowano wersję {wydanie.wersja}"
 
 
+def kopia_programu() -> str:
+    """Zapasowa kopia Fakturnik.exe w ProgramData (tylko administratorzy/SYSTEM mogą ją zmienić).
+    Deinstalator używa jej do pytania o hasło, gdy ktoś usunie albo podmieni plik w Program Files."""
+    from . import aktualizacje
+    if not aktualizacje.czy_spakowany():
+        return "pominięto (wersja ze źródeł)"
+    exe = Path(sys.executable)
+    cel = katalog_uslugi() / "program" / "Fakturnik.exe"
+    if _dowiazanie(cel.parent) or _dowiazanie(cel):
+        raise Dowiazanie(str(cel))
+    if aktualizacje.sprawdz_wlasny_plik() is False:
+        return "nie odświeżono (plik programu różni się od wydania)"
+    if cel.is_file() and _skrot(cel) == _skrot(exe):
+        return "aktualna"
+    cel.parent.mkdir(parents=True, exist_ok=True)
+    tymczasowy = cel.with_suffix(".tmp")
+    shutil.copyfile(exe, tymczasowy)
+    os.replace(tymczasowy, cel)
+    return "odświeżona"
+
+
 def zapisz_stan_programu() -> str:
     """Przy starcie komputera i co godzinę: czy plik programu jest identyczny z opublikowanym wydaniem."""
     from . import aktualizacje
@@ -284,6 +308,10 @@ def uruchom_usluge() -> int:
         _zapisz_log("plik programu: " + zapisz_stan_programu())
     except Exception as e:  # noqa: BLE001
         _zapisz_log(f"plik programu: nie sprawdzono ({e})")
+    try:
+        _zapisz_log("kopia programu: " + kopia_programu())
+    except Exception as e:  # noqa: BLE001
+        _zapisz_log(f"kopia programu: nie udało się ({e})")
     try:
         _zapisz_log("aktualizacja: " + aktualizuj_program())
     except Exception as e:  # noqa: BLE001 - brak internetu itp.; spróbujemy za godzinę

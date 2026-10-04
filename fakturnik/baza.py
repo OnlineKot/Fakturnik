@@ -21,8 +21,10 @@ from .ochrona import BlokadaPliku, tylko_do_odczytu
 from . import konta
 from .szyfrowanie import (
     BledneHaslo, Szyfr, WymaganeUrzadzenie, czy_kopia_szyfrowana, czy_powiazane_z_urzadzeniem, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
-    zaszyfruj_plik,
+    sprawdz_weryfikator, weryfikator, zaszyfruj_plik,
 )
+
+PLIK_WERYFIKATORA = "weryfikator.json"  # do sprawdzenia hasła przez deinstalator
 
 DOMYSLNE_USTAWIENIA = {
     "nazwa": "",
@@ -332,6 +334,10 @@ class Baza:
                 raise ValueError("Plik danych jest uszkodzony.")
         self._migruj(kopia_przed=istnial)
         self._utrwal()
+        if haslo and self.szyfr and self.szyfr.wersja < 3:
+            self.ustaw_haslo(haslo)  # starszy format: przejście na Argon2id i podwójne szyfrowanie
+        elif self.szyfr and self.szyfr.wersja >= 3 and not (self.sciezka.parent / PLIK_WERYFIKATORA).exists():
+            self._zapisz_weryfikator()
 
     def _migruj(self, kopia_przed: bool) -> None:
         """Doprowadza dane do bieżącej wersji układu; przed zmianą zachowuje kopię pliku."""
@@ -412,7 +418,7 @@ class Baza:
         """Do odblokowania ekranu: porównuje klucz wyliczony z podanego hasła z bieżącym."""
         if not self.szyfr:
             return True
-        return hmac.compare_digest(Szyfr(haslo, self.szyfr.sol).klucz_hasla, self.szyfr.klucz_hasla)
+        return hmac.compare_digest(self.szyfr.klucz_dla(haslo), self.szyfr.klucz_hasla)
 
     def ustaw_haslo(self, haslo: str | None) -> None:
         """Ustawia, zmienia (nowy tekst) lub usuwa (None) hasło i od razu przepisuje plik.
@@ -421,6 +427,7 @@ class Baza:
         self.szyfr = Szyfr(haslo, sekret=sekret) if haslo else None
         self._sekret = self.szyfr.sekret if self.szyfr else None
         self._utrwal()
+        self._zapisz_weryfikator()
         if self.szyfr:
             self._odnow_konta()
         else:  # bez hasła nie ma szyfrowania, więc i kont asystentek
@@ -492,6 +499,30 @@ class Baza:
             for w in wpisy if w["id"] in klucze])
 
     # ---------- weryfikacja urządzenia ----------
+    def _zapisz_weryfikator(self) -> None:
+        """Weryfikator hasła dla deinstalatora (patrz szyfrowanie.weryfikator); bez hasła jest usuwany."""
+        plik = self.sciezka.parent / PLIK_WERYFIKATORA
+        try:
+            if self.szyfr and self.szyfr.wersja >= 3:
+                tymczasowy = plik.with_suffix(".tmp")
+                tymczasowy.write_text(json.dumps(weryfikator(self.szyfr)), encoding="utf-8")
+                os.replace(tymczasowy, plik)
+            else:
+                plik.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def haslo_pasuje(katalog: Path, haslo: str, sekret: bytes | None = None, plik: Path | None = None) -> bool:
+        """Czy to hasło danych w katalogu (także bez sekretu urządzenia, np. z konta administratora)."""
+        try:
+            dane = json.loads((Path(katalog) / PLIK_WERYFIKATORA).read_text(encoding="utf-8"))
+            if sprawdz_weryfikator(dane, haslo):
+                return True
+        except (OSError, ValueError):
+            pass
+        return Baza.da_sie_otworzyc(plik or Path(katalog) / "fakturnik.db", haslo, sekret)
+
     @property
     def weryfikacja_urzadzenia(self) -> bool:
         return bool(self.szyfr and self.szyfr.sekret)
