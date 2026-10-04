@@ -122,12 +122,15 @@ def autostart_wlaczony() -> bool:
     if not integracja_dostepna():
         return False
     winreg = _rejestr()
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KLUCZ_AUTOSTARTU) as k:
-            wartosc, _ = winreg.QueryValueEx(k, NAZWA_WPISU)
-            return str(sciezka_programu()) in wartosc
-    except OSError:
-        return False
+    for galaz in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):  # HKLM: wpis z instalatora (wszystkie konta)
+        try:
+            with winreg.OpenKey(galaz, KLUCZ_AUTOSTARTU) as k:
+                wartosc, _ = winreg.QueryValueEx(k, NAZWA_WPISU)
+                if str(sciezka_programu()).lower() in wartosc.lower():
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def ustaw_autostart(wlacz: bool) -> bool:

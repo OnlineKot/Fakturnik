@@ -1,92 +1,93 @@
-"""Tapeta pulpitu w stylu Fakturnika, rysowana w rozdzielczości ekranu (ostra także na 4K).
+"""Tapety pulpitu w stylu gabinetu, rysowane w rozdzielczości ekranu (ostre także na 4K).
 
-Polecana: „Turkus nocą” – ciemny morski turkus z miękkim światłem, duży, ledwo widoczny ząb jako znak
-wodny i dyskretna nazwa gabinetu w rogu. Spokojna, nie męczy oczu i nie przeszkadza ikonom pulpitu.
+Spokojne, płaskie kolory marki (bez poświat i efektów), ostre logo gabinetu (ząb z narzędziem)
+i nazwa gabinetu. Ikony pulpitu są zwykle po lewej stronie, więc ważne elementy stoją z dala od nich.
+Mały podpis TeodorTeo.com jest w prawym dolnym rogu, nad paskiem zadań.
 """
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QRadialGradient
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPainter
+from PySide6.QtSvg import QSvgRenderer
 
 ZASOBY = Path(__file__).parent / "zasoby"
 
+# tlo: kolor tła; logo: (kolor, krycie); uklad: gdzie stoi logo
 WARIANTY = {
-    "turkus": {"nazwa": "Turkus nocą (polecana)", "tlo": ("#123842", "#06171b"), "swiatlo": ("#2a8a9b", 150),
-               "drugie": ("#5fc4b4", 45), "znak": ("#ffffff", 0.07), "tekst": "#e8f4f5", "opis": "#8fb3b9"},
-    "granat": {"nazwa": "Granat", "tlo": ("#14243a", "#060b14"), "swiatlo": ("#2f5d8c", 140),
-               "drugie": ("#7fa7d9", 35), "znak": ("#ffffff", 0.06), "tekst": "#e9eef6", "opis": "#93a5bf"},
-    "jasny": {"nazwa": "Jasny gabinet", "tlo": ("#fbfcfc", "#dfeaec"), "swiatlo": ("#ffffff", 220),
-              "drugie": ("#9fd3cf", 60), "znak": ("#1e6b7b", 0.07), "tekst": "#0f2c33", "opis": "#5b6670"},
+    "morski": {"nazwa": "Morski (polecana)", "tlo": "#103038", "logo": ("#e8f3f5", 0.10), "uklad": "znak",
+               "tekst": "#e8f3f5", "opis": "#86a6ac"},
+    "srodek": {"nazwa": "Logo na środku", "tlo": "#0d1b1f", "logo": ("#e8f3f5", 0.92), "uklad": "srodek",
+               "tekst": "#e8f3f5", "opis": "#7f9499"},
+    "grafit": {"nazwa": "Grafit", "tlo": "#17191b", "logo": ("#5fb3c2", 0.85), "uklad": "rog",
+               "tekst": "#e6e8ea", "opis": "#8a9196"},
+    "jasny": {"nazwa": "Jasny gabinet", "tlo": "#f2f5f6", "logo": ("#1e6b7b", 0.10), "uklad": "znak",
+              "tekst": "#0f2c33", "opis": "#5b6670"},
+    "biel": {"nazwa": "Biel z logo", "tlo": "#ffffff", "logo": ("#1e6b7b", 0.95), "uklad": "srodek",
+             "tekst": "#0f2c33", "opis": "#5b6670"},
 }
+STARE_NAZWY = {"turkus": "morski", "granat": "grafit"}  # warianty z poprzednich wersji
 
 
-def _zab(kolor: str, wysokosc: int) -> QImage:
-    """Biały ząb z ikony programu, przekolorowany i przeskalowany (znak wodny)."""
-    ikona = QImage(str(ZASOBY / "ikona.png")).convertToFormat(QImage.Format.Format_ARGB32)
-    maska = QImage(ikona.size(), QImage.Format.Format_ARGB32)
-    maska.fill(Qt.GlobalColor.transparent)
-    c = QColor(kolor)
-    for y in range(ikona.height()):
-        for x in range(ikona.width()):
-            p = QColor(ikona.pixel(x, y))
-            jasnosc = min(p.red(), p.green(), p.blue())
-            if jasnosc > 120:  # biały ząb na morskim tle ikony
-                alfa = int(255 * min(1.0, (jasnosc - 120) / 120) * ikona.pixelColor(x, y).alphaF())
-                maska.setPixelColor(x, y, QColor(c.red(), c.green(), c.blue(), alfa))
-    przyciete = maska.copy(maska.rect().adjusted(130, 80, -130, -80))
-    return przyciete.scaledToHeight(wysokosc, Qt.TransformationMode.SmoothTransformation)
+def _logo(kolor: str) -> QSvgRenderer:
+    svg = (ZASOBY / "logo.svg").read_text(encoding="utf-8").replace("#e8f3f5", kolor)
+    return QSvgRenderer(QByteArray(svg.encode("utf-8")))
 
 
 def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str = "") -> QImage:
-    w = WARIANTY.get(wariant, WARIANTY["turkus"])
+    w = WARIANTY.get(STARE_NAZWY.get(wariant, wariant), WARIANTY["morski"])
     obraz = QImage(szerokosc, wysokosc, QImage.Format.Format_RGB32)
+    obraz.fill(QColor(w["tlo"]))
     p = QPainter(obraz)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    skala = min(szerokosc / 1920, wysokosc / 1080)
+    logo = _logo(w["logo"][0])
+    nazwa = nazwa_gabinetu or "Fakturnik"
 
-    tlo = QLinearGradient(0, 0, szerokosc, wysokosc)
-    tlo.setColorAt(0, QColor(w["tlo"][0]))
-    tlo.setColorAt(1, QColor(w["tlo"][1]))
-    p.fillRect(obraz.rect(), tlo)
+    def tekst(t: str, px: float, waga, kolor: str, prostokat: QRectF, wyrownanie):
+        f = QFont("Inter")
+        f.setPixelSize(max(10, int(px)))
+        f.setWeight(waga)
+        p.setFont(f)
+        p.setPen(QColor(kolor))
+        p.drawText(prostokat, wyrownanie, t)
 
-    for (kolor, alfa), srodek, promien in ((w["swiatlo"], (0.30, 0.32), 0.75), (w["drugie"], (0.85, 0.85), 0.55)):
-        c = QColor(kolor)
-        poswiata = QRadialGradient(QPointF(szerokosc * srodek[0], wysokosc * srodek[1]), max(szerokosc, wysokosc) * promien)
-        c.setAlpha(alfa)
-        poswiata.setColorAt(0, c)
-        c.setAlpha(0)
-        poswiata.setColorAt(1, c)
-        p.fillRect(obraz.rect(), poswiata)
+    if w["uklad"] == "znak":
+        # duży, ledwo widoczny znak wodny po prawej i nazwa gabinetu po prawej na dole
+        wys = wysokosc * 0.72
+        szer = wys * 80 / 120
+        p.setOpacity(w["logo"][1])
+        logo.render(p, QRectF(szerokosc * 0.74 - szer / 2, wysokosc * 0.46 - wys / 2, szer, wys))
+        p.setOpacity(1.0)
+        tekst(nazwa, 30 * skala, QFont.Weight.DemiBold, w["tekst"],
+              QRectF(0, wysokosc - 170 * skala, szerokosc - 70 * skala, 40 * skala),
+              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    elif w["uklad"] == "srodek":
+        # logo na środku, pod nim nazwa gabinetu (jak na zasłonie ekranu)
+        wys = wysokosc * 0.26
+        szer = wys * 80 / 120
+        p.setOpacity(w["logo"][1])
+        logo.render(p, QRectF((szerokosc - szer) / 2, wysokosc * 0.40 - wys / 2, szer, wys))
+        p.setOpacity(1.0)
+        tekst(nazwa, 34 * skala, QFont.Weight.DemiBold, w["tekst"],
+              QRectF(0, wysokosc * 0.40 + wys / 2 + 30 * skala, szerokosc, 50 * skala), Qt.AlignmentFlag.AlignCenter)
+    else:
+        # małe logo z nazwą w prawym dolnym rogu, reszta pusta
+        wys = 120 * skala
+        szer = wys * 80 / 120
+        x = szerokosc - 90 * skala - szer
+        y = wysokosc - 200 * skala - wys
+        p.setOpacity(w["logo"][1])
+        logo.render(p, QRectF(x, y, szer, wys))
+        p.setOpacity(1.0)
+        tekst(nazwa, 26 * skala, QFont.Weight.DemiBold, w["tekst"],
+              QRectF(0, y + wys + 18 * skala, szerokosc - 90 * skala, 36 * skala),
+              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-    znak = _zab(w["znak"][0], int(wysokosc * 0.78))
-    p.setOpacity(w["znak"][1])
-    p.drawImage(QPointF(szerokosc * 0.80 - znak.width() / 2, wysokosc * 0.47 - znak.height() / 2), znak)
-    p.setOpacity(1.0)
-
-    # podpis w lewym dolnym rogu (ikony pulpitu są zwykle po lewej u góry)
-    skala = wysokosc / 1080
-    margines = int(56 * skala)
-    rozmiar_ikony = int(52 * skala)
-    ikona = QImage(str(ZASOBY / "ikona.png")).scaled(rozmiar_ikony, rozmiar_ikony,
-                                                     Qt.AspectRatioMode.KeepAspectRatio,
-                                                     Qt.TransformationMode.SmoothTransformation)
-    dol = wysokosc - margines - int(90 * skala)  # nad paskiem zadań
-    p.drawImage(QPointF(margines, dol), ikona)
-    tytul = QFont("Inter")
-    tytul.setPixelSize(max(12, int(26 * skala)))
-    tytul.setWeight(QFont.Weight.DemiBold)
-    p.setFont(tytul)
-    p.setPen(QColor(w["tekst"]))
-    x = margines + rozmiar_ikony + int(18 * skala)
-    p.drawText(QRectF(x, dol - 4 * skala, szerokosc * 0.6, 34 * skala), Qt.AlignmentFlag.AlignVCenter,
-               nazwa_gabinetu or "Fakturnik")
-    opis = QFont("Inter")
-    opis.setPixelSize(max(10, int(15 * skala)))
-    p.setFont(opis)
-    p.setPen(QColor(w["opis"]))
-    p.drawText(QRectF(x, dol + 28 * skala, szerokosc * 0.6, 24 * skala), Qt.AlignmentFlag.AlignVCenter,
-               "Fakturnik  ·  by TeodorTeo.com")
+    tekst("TeodorTeo.com", 13 * skala, QFont.Weight.Normal, w["opis"],
+          QRectF(0, wysokosc - 80 * skala, szerokosc - 24 * skala, 20 * skala),
+          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     p.end()
     return obraz
 

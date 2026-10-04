@@ -170,6 +170,8 @@ QDialog#szukanie QListWidget::item:selected {{ background: {AKCENT_TLO}; color: 
 QPushButton#szukaj_menu {{ background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; color: {MENU_TEKST}; text-align: left; padding: 8px 10px; }}
 QPushButton#szukaj_menu:hover {{ background: rgba(255,255,255,0.12); color: white; }}
+QPushButton#tapeta {{ background: white; border: 1px solid {LINIA}; border-radius: 10px; padding: 6px; }}
+QPushButton#tapeta:hover {{ border: 2px solid {AKCENT}; padding: 5px; }}
 QToolButton#kafelek {{ background: white; border: 1px solid {LINIA}; border-radius: 16px; padding: 22px 10px 16px;
     font-size: 14px; font-weight: 600; color: {TEKST}; }}
 QToolButton#kafelek:hover {{ border-color: {AKCENT}; background: #fbfdfd; }}
@@ -2189,6 +2191,7 @@ class StronaNarzedzia(Strona):
         ("hasla", "Generator haseł", "klucz"),
         ("skaner", "Skaner plików", "tarcza"),
         ("qr", "Kod QR do strony", "qr"),
+        ("tapety", "Tapety pulpitu", "pulpit"),
     ]
 
     def __init__(self, okno: "OknoGlowne"):
@@ -2222,8 +2225,8 @@ class StronaNarzedzia(Strona):
         for i, (klucz, nazwa, nazwa_ikony) in enumerate(self.NARZEDZIA):
             k = QToolButton(objectName="kafelek")
             k.setText(nazwa)
-            k.setIcon(ikona(nazwa_ikony, AKCENT, rozmiar=34))
-            k.setIconSize(QSize(34, 34))
+            k.setIcon(ikona_kafelka(nazwa_ikony))
+            k.setIconSize(QSize(56, 56))
             k.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             k.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             k.setMinimumSize(150, 128)
@@ -2240,7 +2243,7 @@ class StronaNarzedzia(Strona):
                   "minutnik": self._karta_minutnika, "daty": self._karta_dat, "rabat": self._karta_rabatu,
                   "firma": self._karta_firmy, "numer": self._karta_numeru, "slownie": self._karta_slownie,
                   "hasla": self._karta_hasel, "skaner": self._karta_skanera,
-                  "qr": self._karta_qr}
+                  "qr": self._karta_qr, "tapety": self._karta_tapet}
         self.widoki: dict[str, int] = {}
         for klucz, _, _ in self.NARZEDZIA:
             w = budowa[klucz]()
@@ -2282,6 +2285,8 @@ class StronaNarzedzia(Strona):
             self.kwota.setFocus()
         elif klucz == "przypomnienia":
             self.tekst_przyp.setFocus()
+        elif klucz == "tapety":
+            self._miniatury_tapet()
 
     def _odswiez_kafelki(self):
         try:
@@ -2966,6 +2971,42 @@ class StronaNarzedzia(Strona):
         self._nowe_haslo()
         ku.addStretch()
         return k
+
+    # ---- tapety pulpitu
+    def _karta_tapet(self) -> QFrame:
+        from . import tapeta
+        k, ku = karta()
+        siatka = QGridLayout()
+        siatka.setSpacing(12)
+        self._tapety_przyciski: list[tuple[QPushButton, str]] = []
+        for i, (klucz, opis) in enumerate(tapeta.WARIANTY.items()):
+            kolumna = QVBoxLayout()
+            b = QPushButton(cursor=Qt.CursorShape.PointingHandCursor, objectName="tapeta")
+            b.setIconSize(QSize(176, 99))
+            b.setFixedSize(192, 115)
+            b.setToolTip("Ustaw jako tapetę pulpitu")
+            b.clicked.connect(lambda _=False, kl=klucz: self.okno.strona_ustawienia.ustaw_tapete(kl))
+            kolumna.addWidget(b)
+            kolumna.addWidget(QLabel(opis["nazwa"], alignment=Qt.AlignmentFlag.AlignCenter))
+            siatka.addLayout(kolumna, i // 3, i % 3)
+            self._tapety_przyciski.append((b, klucz))
+        ku.addLayout(siatka)
+        rzad = QHBoxLayout()
+        rzad.addStretch()
+        rzad.addWidget(przycisk("Przywróć poprzednią tapetę", "przywroc",
+                                akcja=lambda: self.okno.strona_ustawienia.przywroc_tapete()))
+        ku.addLayout(rzad)
+        return k
+
+    def _miniatury_tapet(self):
+        if getattr(self, "_tapety_gotowe", False):
+            return
+        from . import tapeta
+        nazwa = self.okno.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        for b, klucz in self._tapety_przyciski:
+            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 640, 360, nazwa).scaled(
+                176, 99, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))))
+        self._tapety_gotowe = True
 
     # ---- kod QR do strony
     def _karta_qr(self) -> QFrame:
@@ -3744,8 +3785,11 @@ class StronaUstawienia(Strona):
         f.addRow("Wystawianie", self.tryb)
         self.w_tle = QCheckBox("Działaj w tle: zamknięcie okna chowa program obok zegara")
         self.autostart = QCheckBox("Uruchamiaj razem z Windows")
+        self.okno_startu = QCheckBox("Po uruchomieniu komputera pokaż okno programu (a nie tylko ikonę przy zegarze)")
+        self.okno_startu.setChecked(okno_przy_starcie())
+        self.okno_startu.toggled.connect(lambda v: okno_przy_starcie(v))
         self.menu_kontekstowe = QCheckBox("„Dodaj do Fakturnika” w menu prawego przycisku myszy (PDF i zdjęcia)")
-        for w in (self.w_tle, self.autostart, self.menu_kontekstowe):
+        for w in (self.w_tle, self.autostart, self.okno_startu, self.menu_kontekstowe):
             ku.addWidget(w)
         rzad = QHBoxLayout()
         rzad.addWidget(przycisk("Utwórz skrót na pulpicie", "plus", akcja=self._skrot))
@@ -6424,6 +6468,32 @@ def opis_wersji(pelny: bool = False) -> str:
     return " · ".join(czesci)
 
 
+def ikona_kafelka(nazwa: str) -> QIcon:
+    """Ikona kafelka: linia w kolorze marki na jasnym, zaokrąglonym kwadracie."""
+    skala = 3
+    bok = 56 * skala
+    pix = QPixmap(bok, bok)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(AKCENT_TLO))
+    p.drawRoundedRect(0, 0, bok, bok, 16 * skala, 16 * skala)
+    p.drawPixmap(QRect(13 * skala, 13 * skala, 30 * skala, 30 * skala), pixmapa(nazwa, AKCENT, 30, grubosc=1.9))
+    p.end()
+    pix.setDevicePixelRatio(skala)
+    return QIcon(pix)
+
+
+def okno_przy_starcie(ustaw: bool | None = None) -> bool:
+    """Czy po uruchomieniu komputera pokazać okno programu (zapisane w rejestrze użytkownika, bo przy
+    starcie dane są jeszcze zaszyfrowane i ich ustawień nie da się odczytać)."""
+    ustawienia = QSettings("Fakturnik", "Fakturnik")
+    if ustaw is not None:
+        ustawienia.setValue("okno_przy_starcie", int(ustaw))
+    return str(ustawienia.value("okno_przy_starcie", 1)) == "1"
+
+
 def katalog_pobranych() -> Path:
     return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation) or Path.home())
 
@@ -6465,6 +6535,8 @@ def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dzien
 def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia,
             polecenie: dict) -> tuple[int, OknoGlowne | None]:
     w_tle = polecenie.get("akcja") == "w_tle" and QSystemTrayIcon.isSystemTrayAvailable()
+    if w_tle and okno_przy_starcie():
+        w_tle = False  # start z Windows: od razu widoczne okno (logowanie), a nie tylko ikona przy zegarze
     if w_tle and Baza.wymaga_hasla(plik):
         polecenie = _czekaj_w_zasobniku(app, plik, jedna, polecenie)
         if polecenie is None:

@@ -71,7 +71,11 @@ Name: "{commonprograms}\Fakturnik"; Filename: "{app}\Fakturnik.exe"; AppUserMode
 Name: "{commondesktop}\Fakturnik"; Filename: "{app}\Fakturnik.exe"; AppUserModelID: "TeodorTeo.Fakturnik"; Tasks: pulpit
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Fakturnik"; ValueData: """{app}\Fakturnik.exe"" --w-tle"; Tasks: autostart; Flags: uninsdeletevalue
+; autostart dla każdego konta Windows (HKLM): instalator działa jako administrator, więc wpis w HKCU trafiałby
+; do konta administratora, a nie do konta, na którym pracuje gabinet
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Fakturnik"; ValueData: """{app}\Fakturnik.exe"" --w-tle"; Tasks: autostart; Flags: uninsdeletevalue
+; wyłączenie z menedżera zadań („Aplikacje autostartu”) Windows zapisuje osobno: czyścimy je, żeby autostart naprawdę działał
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"; ValueName: "Fakturnik"; Flags: deletevalue; Tasks: autostart
 ; pozycje „Dodaj do Fakturnika” (włączane w programie) znikają razem z programem
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.pdf\shell\Fakturnik"; Flags: uninsdeletekey dontcreatekey
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.jpg\shell\Fakturnik"; Flags: uninsdeletekey dontcreatekey
