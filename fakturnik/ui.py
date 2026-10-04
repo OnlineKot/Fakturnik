@@ -1259,6 +1259,7 @@ class StronaNowy(Strona):
         dok.id, dok.numer, dok.rodzaj, dok.anulowano, dok.powod_anulowania, dok.wystawil = (
             org.id, org.numer, org.rodzaj, org.anulowano, org.powod_anulowania, org.wystawil)
         self.okno.baza.zaktualizuj_dokument(dok, powod)
+        self.okno.do_plikow(self.okno.baza.dokument(dok.id))
         self.okno.dziennik.zapisz(f"edycja dokumentu nr {dok.numer}")  # powód zostaje w zaszyfrowanej historii zmian
         self.okno.komunikat(f"Zapisano zmiany w dokumencie nr {dok.numer}")
         self.zakoncz_edycje()
@@ -1605,6 +1606,7 @@ class StronaNowy(Strona):
         drukarka, u, z_kopia = wybor
         self.okno.baza.zapisz_dokument(dok)
         druk.drukuj(druk.html_dokumentu(dok, u, z_kopia), drukarka)
+        self.okno.do_plikow(dok)
         self.okno.komunikat(f"Wydrukowano: {dok.nazwa_druku.lower()} nr {dok.numer}")
         self.zakoncz_edycje()
 
@@ -1619,6 +1621,7 @@ class StronaNowy(Strona):
         u = self.okno.baza.ustawienia()
         self.okno.baza.zapisz_dokument(dok)
         druk.drukuj(druk.html_dokumentu(dok, u, self.kopia.isChecked()), druk.przygotuj_drukarke(u, sciezka))
+        self.okno.do_plikow(dok)
         self.okno.komunikat(f"Zapisano PDF: {sciezka}")
         self.zakoncz_edycje()
 
@@ -1973,6 +1976,27 @@ class StronaHistoria(Strona):
         self._wypelnij_lata()
         self.filtruj()
 
+    def odswiez_jesli_widoczna(self):
+        if self.isVisible():
+            self.odswiez()
+
+    def uzupelnij_wystawione(self):
+        if self.okno.baza.ustawienia().get("dokumenty_do_plikow", "1") != "1":
+            QMessageBox.information(self, "Pliki", "Zapisywanie wystawionych dokumentów w Plikach jest wyłączone "
+                                    "w Ustawieniach.")
+            return
+        brak = len(self.okno.baza.dokumenty_bez_pdf())
+        if not brak:
+            self.okno.komunikat("Wszystkie wystawione dokumenty są już w Plikach")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            dodano = self.okno.uzupelnij_pliki_dokumentow(wszystkie=True)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.odswiez()
+        self.okno.komunikat(f"Dodano do Plików: {liczba_dokumentow(dodano)}")
+
     def pokaz_wszystko(self):
         if self.okno.potwierdz_haslem("pokazanie pełnej listy", "Podaj hasło, aby zobaczyć pełną listę."):
             self.pelny_dostep = True
@@ -2119,7 +2143,7 @@ class StronaHistoria(Strona):
             "Zostaje w historii, a jego numer nie zostanie użyty ponownie.\n\nPowód (opcjonalnie):")
         if not ok:
             return
-        self.okno.baza.anuluj(d.id, powod)
+        self.okno.do_plikow(self.okno.baza.anuluj(d.id, powod))
         self.okno.dziennik.zapisz(f"anulowanie dokumentu nr {d.numer}")
         self.okno.komunikat(f"Anulowano dokument nr {d.numer}")
         self.filtruj()
@@ -3567,6 +3591,9 @@ class StronaUstawienia(Strona):
         ku.addLayout(rzad_blokady)
         self.skaner_pobrane = QCheckBox("Sprawdzaj skanerem nowe pliki w folderze Pobrane (ostrzeżenie przy zagrożeniu)")
         ku.addWidget(self.skaner_pobrane)
+        self.dokumenty_do_plikow = QCheckBox("Zapisuj PDF każdego wystawionego dokumentu w Plikach "
+                                             "(także po poprawce i anulowaniu)")
+        ku.addWidget(self.dokumenty_do_plikow)
         self.ochrona_ekranu = QCheckBox("Ukrywaj okna programu przed zrzutami i nagrywaniem ekranu "
                                         "(np. narzędzia AI, programy zdalnego dostępu)")
         ku.addWidget(self.ochrona_ekranu)
@@ -4139,6 +4166,7 @@ class StronaUstawienia(Strona):
         self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
         self.zaslona_wl.setChecked(u["zaslona"] == "1")
         self.skaner_pobrane.setChecked(u["skaner_pobrane"] == "1")
+        self.dokumenty_do_plikow.setChecked(u["dokumenty_do_plikow"] == "1")
         self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 30))
         self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
         self.zaslona_gaszenie.setValue(int(liczba(u["zaslona_gaszenie_min"]) or 0))
@@ -4227,6 +4255,7 @@ class StronaUstawienia(Strona):
         wartosci["blokada_minut"] = str(self.blokada_minut.value())
         wartosci["zaslona"] = "1" if self.zaslona_wl.isChecked() else "0"
         wartosci["skaner_pobrane"] = "1" if self.skaner_pobrane.isChecked() else "0"
+        wartosci["dokumenty_do_plikow"] = "1" if self.dokumenty_do_plikow.isChecked() else "0"
         wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
         wartosci["zaslona_gaszenie_min"] = str(self.zaslona_gaszenie.value())
         if integracja_dostepna():
@@ -4850,6 +4879,9 @@ class StronaPliki(Strona):
         naglowek.addLayout(naglowek_strony("Pliki", "Wrzucaj faktury kosztowe, skany i zdjęcia dokumentów: "
                                                     "przeciągnij je tutaj albo kliknij „Dodaj pliki”."))
         naglowek.addStretch()
+        btn_dokumenty = przycisk("Uzupełnij wystawione", "faktura", akcja=self.uzupelnij_wystawione)
+        btn_dokumenty.setToolTip("Dodaje PDF-y wystawionych dokumentów, których jeszcze nie ma w Plikach")
+        naglowek.addWidget(btn_dokumenty, alignment=Qt.AlignmentFlag.AlignBottom)
         naglowek.addWidget(przycisk("Dodaj pliki…", "plus", "glowny", self.dodaj), alignment=Qt.AlignmentFlag.AlignBottom)
         u.addLayout(naglowek)
         u.addSpacing(10)
@@ -4948,6 +4980,27 @@ class StronaPliki(Strona):
             pole_wyboru.setCurrentIndex(max(pole_wyboru.findData(obecna), 0) if obecna is not None else 0)
             pole_wyboru.blockSignals(False)
         self.filtruj()
+
+    def odswiez_jesli_widoczna(self):
+        if self.isVisible():
+            self.odswiez()
+
+    def uzupelnij_wystawione(self):
+        if self.okno.baza.ustawienia().get("dokumenty_do_plikow", "1") != "1":
+            QMessageBox.information(self, "Pliki", "Zapisywanie wystawionych dokumentów w Plikach jest wyłączone "
+                                    "w Ustawieniach.")
+            return
+        brak = len(self.okno.baza.dokumenty_bez_pdf())
+        if not brak:
+            self.okno.komunikat("Wszystkie wystawione dokumenty są już w Plikach")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            dodano = self.okno.uzupelnij_pliki_dokumentow(wszystkie=True)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.odswiez()
+        self.okno.komunikat(f"Dodano do Plików: {liczba_dokumentow(dodano)}")
 
     def pokaz_wszystko(self):
         if self.okno.potwierdz_haslem("pokazanie pełnej listy", "Podaj hasło, aby zobaczyć pełną listę."):
@@ -5372,9 +5425,10 @@ class OknoGlowne(QMainWindow):
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
             QTimer.singleShot(6000, self.sprawdz_program)
         # program działa w tle całymi dniami, więc o nowe wersje pyta też co 6 godzin
-        self.zegar_aktualizacji = QTimer(self, interval=6 * 60 * 60 * 1000)
+        self.zegar_aktualizacji = QTimer(self, interval=2 * 60 * 60 * 1000)
         self.zegar_aktualizacji.timeout.connect(self._okresowa_aktualizacja)
         self.zegar_aktualizacji.start()
+        QTimer.singleShot(20_000, self._uzupelniaj_w_tle)
         # kopie co 10 minut (gdy dane się zmieniły) i sprawdzenie, czy usługa nie zainstalowała nowej wersji
         self.ostatnia_kopia: datetime | None = None
         self._skrot_kopii = ""
@@ -5584,6 +5638,46 @@ class OknoGlowne(QMainWindow):
 
     def komunikat(self, tekst: str, blad: bool = False):
         self.powiadomienie.pokaz(tekst, blad)
+
+    def do_plikow(self, dok: Dokument | None) -> bool:
+        """PDF wystawionego dokumentu do Plików (każda wersja: wystawienie, poprawka, anulowanie).
+
+        Błąd nigdy nie zatrzymuje wystawiania, bo dokument jest już zapisany; brakujące PDF-y
+        program uzupełnia przy następnym uruchomieniu.
+        """
+        if dok is None or dok.id is None:
+            return False
+        u = self.baza.ustawienia()
+        if u.get("dokumenty_do_plikow", "1") != "1":
+            return False
+        try:
+            if self.baza.dokument_w_plikach(dok):
+                return False
+            self.baza.dodaj_pdf_dokumentu(dok, druk.pdf_dokumentu(dok, u))
+        except Exception as e:  # noqa: BLE001
+            self.komunikat(f"Nie zapisano PDF-u dokumentu nr {dok.numer} w Plikach: {e}", blad=True)
+            return False
+        if hasattr(self, "strona_pliki"):
+            self.strona_pliki.odswiez_jesli_widoczna()
+        return True
+
+    def _uzupelniaj_w_tle(self):
+        """Po starcie dopisuje brakujące PDF-y po kawałku, aż wszystkie dokumenty będą w Plikach."""
+        try:
+            dodano = self.uzupelnij_pliki_dokumentow()
+        except Exception:  # noqa: BLE001
+            return
+        if dodano and self.baza.dokumenty_bez_pdf():
+            QTimer.singleShot(3_000, self._uzupelniaj_w_tle)
+
+    def uzupelnij_pliki_dokumentow(self, wszystkie: bool = False) -> int:
+        """Dopisuje do Plików PDF-y dokumentów, które ich jeszcze nie mają (np. sprzed tej wersji)."""
+        if self.baza.ustawienia().get("dokumenty_do_plikow", "1") != "1":
+            return 0
+        braki = self.baza.dokumenty_bez_pdf()
+        if not wszystkie:
+            braki = braki[:50]  # w tle po kawałku, żeby nie przymulać startu
+        return sum(1 for d in braki if self.do_plikow(d))
 
     def podglad(self, dok: Dokument, z_kopia=False, duplikat=False):
         OknoDokumentu(self, dok, z_kopia, duplikat).exec()
@@ -5868,11 +5962,14 @@ class OknoGlowne(QMainWindow):
                 QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
         if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany():
-            if not cicho:  # Program Files: nową wersję zainstaluje usługa (konto SYSTEM) albo „Aktualizuj teraz”
-                if QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Usługa "
-                                        "Fakturnika zainstaluje ją sama w ciągu godziny.\n\nZaktualizować teraz?") \
-                        == QMessageBox.StandardButton.Yes:
-                    self._aktualizuj_teraz_wynik(wydanie)
+            if cicho:
+                self._straznik_aktualizacji(wydanie)
+                return
+            # Program Files: nową wersję zainstaluje usługa (konto SYSTEM) albo „Aktualizuj teraz”
+            if QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Usługa "
+                                    "Fakturnika zainstaluje ją sama w ciągu godziny.\n\nZaktualizować teraz?") \
+                    == QMessageBox.StandardButton.Yes:
+                self._aktualizuj_teraz_wynik(wydanie)
             return
         self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. Instaluje ją instalator "
                                         "za zgodą administratora; dane zostają.")
@@ -5880,6 +5977,25 @@ class OknoGlowne(QMainWindow):
         if cicho and not self.isVisible():
             self.powiadom("Dostępna aktualizacja", f"Wersja {wydanie.wersja}. Kliknij, aby ją zainstalować.", "info",
                           lambda: (self.pokaz_okno(), self.instaluj_aktualizacje() if self.isVisible() else None))
+
+    def _straznik_aktualizacji(self, wydanie):
+        """Gdy usługa nie zainstalowała dostępnej wersji w ciągu 3 godzin (np. usługa wyłączona, brak
+        uprawnień, sieć firmowa), program sam proponuje „Aktualizuj teraz” — aktualizacja nigdy nie utyka."""
+        if aktualizacje.plik_programu_zmieniony():
+            return  # usługa już podmieniła plik; nowa wersja wystartuje po schowaniu okna
+        stary = self.baza.ustawienia().get("aktualizacja_widziana", "")
+        zapis, zalegla = aktualizacje.zalegla(wydanie.wersja, stary, datetime.now())
+        if zapis != stary:
+            self.baza.zapisz_ustawienia({"aktualizacja_widziana": zapis})
+        if not zalegla:
+            return
+        self.dziennik.zapisz(f"aktualizacja {wydanie.wersja} czeka ponad 3 godziny na usługę")
+        self.tekst_aktualizacji.setText(f"Wersja {wydanie.wersja} nie zainstalowała się sama. "
+                                        "Kliknij, aby zaktualizować teraz.")
+        self.pasek_aktualizacji.show()
+        self.powiadom("Aktualizacja czeka", f"Wersja {wydanie.wersja} nie zainstalowała się automatycznie. "
+                      "Kliknij, aby zaktualizować teraz.", "uwaga",
+                      lambda: (self.pokaz_okno(), self.aktualizuj_teraz()), 15000)
 
     def instaluj_aktualizacje(self):
         """Program nigdy nie podmienia sam swojego pliku: aktualizacja idzie przez instalator z okienkiem zgody
@@ -5890,8 +6006,10 @@ class OknoGlowne(QMainWindow):
             QMessageBox.information(self, "Aktualizacje", "Aktualizacje instalują się tylko w wersji .exe.")
             return
         if aktualizacje.zainstalowany():
-            QMessageBox.information(self, "Aktualizacje", "Nową wersję zainstaluje automatycznie usługa Fakturnika "
-                                    "w ciągu godziny, a program uruchomi się ponownie, gdy schowasz okno.")
+            if QMessageBox.question(self, "Aktualizacje", f"Wersję {self.wydanie.wersja} zainstaluje usługa "
+                                    "Fakturnika w ciągu godziny.\n\nZaktualizować od razu?") \
+                    == QMessageBox.StandardButton.Yes:
+                self.aktualizuj_teraz()
             return
         opis = self.wydanie.opis.strip()
         self.uruchom_instalator_admin(

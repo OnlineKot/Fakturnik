@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import sys
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ from .wersja import WERSJA
 
 REPOZYTORIUM = "OnlineKot/Fakturnik"
 ADRES_API = f"https://api.github.com/repos/{REPOZYTORIUM}/releases/latest"
+# zapasowa droga bez API GitHuba (API ma limit zapytań i bywa niedostępne):
+# strona najnowszego wydania przekierowuje na /releases/tag/vX, a pliki leżą pod stałymi adresami
+ADRES_NAJNOWSZEGO = f"https://github.com/{REPOZYTORIUM}/releases/latest"
+ADRES_POBIERANIA = f"https://github.com/{REPOZYTORIUM}/releases/download"
 NAZWA_PLIKU = "Fakturnik.exe"
 ZAUFANE_HOSTY = {"github.com", "api.github.com", "objects.githubusercontent.com",
                  "release-assets.githubusercontent.com"}
@@ -65,29 +70,61 @@ def _pobierz(adres: str, timeout: float = 10):
     return odpowiedz
 
 
-def sprawdz() -> Wydanie | None:
-    """Zwraca nowsze wydanie albo None, gdy program jest aktualny."""
-    try:
-        with _pobierz(ADRES_API) as o:
-            dane = json.load(o)
-    except BladAktualizacji:
-        raise
-    except Exception as e:
-        raise BladAktualizacji(f"Nie udało się połączyć z serwerem aktualizacji ({e}).") from None
+def _z_api() -> Wydanie | None:
+    with _pobierz(ADRES_API) as o:
+        dane = json.load(o)
     pliki = {a["name"]: a for a in dane.get("assets", [])}
     if NAZWA_PLIKU not in pliki or NAZWA_PLIKU + ".sha256" not in pliki:
         return None
-    wersja = dane.get("tag_name", "").lstrip("v")
-    if not jest_nowsza(wersja):
-        return None
-    return Wydanie(wersja=wersja, opis=dane.get("body") or "",
+    return Wydanie(wersja=dane.get("tag_name", "").lstrip("v"), opis=dane.get("body") or "",
                    adres_exe=pliki[NAZWA_PLIKU]["browser_download_url"],
                    adres_sha256=pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"],
                    rozmiar=int(pliki[NAZWA_PLIKU].get("size") or 0))
 
 
-def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None) -> Path:
-    """Pobiera nowy .exe do `cel` i sprawdza jego SHA-256. Przy niezgodności plik jest usuwany."""
+def wydanie_wersji(wersja: str, nazwa: str = NAZWA_PLIKU) -> Wydanie:
+    """Wydanie o znanym numerze pod stałymi adresami GitHuba (bez API)."""
+    return Wydanie(wersja=wersja, opis="", adres_exe=f"{ADRES_POBIERANIA}/v{wersja}/{nazwa}",
+                   adres_sha256=f"{ADRES_POBIERANIA}/v{wersja}/{nazwa}.sha256", rozmiar=0)
+
+
+def _bez_api() -> Wydanie | None:
+    with _pobierz(ADRES_NAJNOWSZEGO) as o:
+        koncowy = o.geturl()
+    znalezione = re.search(r"/releases/tag/v?(\d+(?:\.\d+){0,2})/?$", urlparse(koncowy).path)
+    if not znalezione:
+        return None
+    return wydanie_wersji(znalezione.group(1))
+
+
+def najnowsze() -> Wydanie | None:
+    """Najnowsze wydanie: najpierw przez API GitHuba, a gdy się nie uda, przez zwykłą stronę wydań."""
+    bledy = []
+    for sposob in (_z_api, _bez_api):
+        try:
+            wydanie = sposob()
+        except BladAktualizacji as e:
+            bledy.append(str(e))
+            continue
+        except Exception as e:  # noqa: BLE001 - limit API, brak sieci, zła odpowiedź
+            bledy.append(str(e))
+            continue
+        if wydanie and wydanie.wersja:
+            return wydanie
+    if bledy:
+        raise BladAktualizacji(f"Nie udało się połączyć z serwerem aktualizacji ({bledy[-1]}).")
+    return None
+
+
+def sprawdz() -> Wydanie | None:
+    """Zwraca nowsze wydanie albo None, gdy program jest aktualny."""
+    wydanie = najnowsze()
+    if wydanie is None or not jest_nowsza(wydanie.wersja):
+        return None
+    return wydanie
+
+
+def _pobierz_raz(wydanie: Wydanie, cel: Path, postep) -> Path:
     with _pobierz(wydanie.adres_sha256) as o:
         oczekiwany = o.read().decode("ascii", "replace").split()[0].strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", oczekiwany):
@@ -95,19 +132,76 @@ def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None) -> Path:
     skrot = hashlib.sha256()
     pobrano = 0
     try:
-        with _pobierz(wydanie.adres_exe, timeout=30) as o, open(cel, "wb") as f:
+        with _pobierz(wydanie.adres_exe, timeout=60) as o, open(cel, "wb") as f:
+            naglowki = getattr(o, "headers", None)
+            rozmiar = wydanie.rozmiar or int((naglowki.get("Content-Length") if naglowki else 0) or 0)
             while blok := o.read(256 * 1024):
                 f.write(blok)
                 skrot.update(blok)
                 pobrano += len(blok)
-                if wydanie.rozmiar:
-                    postep(min(100, pobrano * 100 // wydanie.rozmiar))
+                if rozmiar:
+                    postep(min(100, pobrano * 100 // rozmiar))
+            f.flush()
+            os.fsync(f.fileno())
         if skrot.hexdigest() != oczekiwany:
             raise BladAktualizacji("Suma kontrolna SHA-256 pobranego pliku się nie zgadza. Aktualizacja przerwana.")
     except BaseException:
         cel.unlink(missing_ok=True)
         raise
     return cel
+
+
+PROBY_POBIERANIA = 4
+PRZERWA_POBIERANIA = 5.0  # sekundy przed pierwszym ponowieniem, potem dwa razy dłużej
+
+
+def zalegla(wersja: str, zapis: str, teraz, godzin: float = 3) -> tuple[str, bool]:
+    """Strażnik usługi: czy dostępna wersja czeka już za długo na instalację przez usługę.
+
+    `zapis` to "wersja|kiedy pierwszy raz widziana"; zwraca (nowy zapis, czy zaległa).
+    """
+    from datetime import datetime, timedelta
+    poprzednia, _, kiedy = (zapis or "").partition("|")
+    try:
+        od = datetime.fromisoformat(kiedy) if poprzednia == wersja else None
+    except ValueError:
+        od = None
+    if od is None or od > teraz:
+        return f"{wersja}|{teraz.isoformat(timespec='seconds')}", False
+    return zapis, teraz - od >= timedelta(hours=godzin)
+
+
+def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None, proby: int | None = None,
+            przerwa: float | None = None) -> Path:
+    """Pobiera nowy .exe do `cel` i sprawdza jego SHA-256. Przy niezgodności plik jest usuwany.
+
+    Zerwane połączenie albo uszkodzony plik nie kończą aktualizacji: pobieranie jest ponawiane
+    (z coraz dłuższą przerwą), także drugą drogą (stałe adresy bez API), gdy pierwsza zawodzi.
+    """
+    proby = PROBY_POBIERANIA if proby is None else proby
+    przerwa = PRZERWA_POBIERANIA if przerwa is None else przerwa
+    nazwa = urlparse(wydanie.adres_sha256).path.rsplit("/", 1)[-1].removesuffix(".sha256")
+    zapasowe = wydanie_wersji(wydanie.wersja, nazwa) if wydanie.wersja and nazwa else None
+    if zapasowe and zapasowe.adres_exe == wydanie.adres_exe:
+        zapasowe = None
+    ostatni: Exception | None = None
+    for proba in range(max(1, proby)):
+        zrodlo = zapasowe if (proba % 2 and zapasowe) else wydanie
+        try:
+            return _pobierz_raz(zrodlo, cel, postep)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BladAktualizacji as e:
+            if "Niedozwolon" in str(e):  # adres spoza GitHuba: nie ponawiamy
+                raise
+            ostatni = e
+        except Exception as e:  # noqa: BLE001 - sieć, dysk
+            ostatni = e
+        if proba + 1 < proby:
+            time.sleep(przerwa * (2 ** proba))
+    if isinstance(ostatni, BladAktualizacji):
+        raise ostatni
+    raise BladAktualizacji(f"Nie udało się pobrać aktualizacji ({ostatni}).")
 
 
 def skrot_pliku(sciezka: Path) -> str:
@@ -118,13 +212,8 @@ def skrot_pliku(sciezka: Path) -> str:
     return skrot.hexdigest()
 
 
-def _skrot_z_wydania(adres_api: str) -> str | None:
-    with _pobierz(adres_api) as o:
-        dane = json.load(o)
-    pliki = {a["name"]: a for a in dane.get("assets", [])}
-    if NAZWA_PLIKU + ".sha256" not in pliki:
-        return None
-    with _pobierz(pliki[NAZWA_PLIKU + ".sha256"]["browser_download_url"]) as o:
+def _skrot_z_adresu(adres_sha: str) -> str | None:
+    with _pobierz(adres_sha) as o:
         oczekiwany = o.read().decode("ascii", "replace").split()[0].strip().lower()
     return oczekiwany if re.fullmatch(r"[0-9a-f]{64}", oczekiwany) else None
 
@@ -143,17 +232,21 @@ def sprawdz_wlasny_plik(obecny: Path | None = None, wersja: str = WERSJA) -> boo
         obecny = Path(sys.executable)
     try:
         skrot = skrot_pliku(obecny)
-        znane = set()
-        for adres in (f"https://api.github.com/repos/{REPOZYTORIUM}/releases/tags/v{wersja}", ADRES_API):
-            try:
-                if (oczekiwany := _skrot_z_wydania(adres)):
-                    znane.add(oczekiwany)
-            except BladAktualizacji:
-                raise
-            except Exception:  # noqa: BLE001 - np. brak wydania o tym numerze
-                continue
-    except Exception:  # noqa: BLE001
+    except OSError:
         return None
+    adresy = [wydanie_wersji(wersja).adres_sha256]
+    try:
+        if (ostatnie := najnowsze()) is not None:
+            adresy.append(ostatnie.adres_sha256)
+    except Exception:  # noqa: BLE001
+        pass
+    znane = set()
+    for adres in adresy:
+        try:
+            if (oczekiwany := _skrot_z_adresu(adres)):
+                znane.add(oczekiwany)
+        except Exception:  # noqa: BLE001 - np. brak wydania o tym numerze
+            continue
     if not znane:
         return None
     return skrot in znane
@@ -245,21 +338,10 @@ def _usun(sciezka: Path) -> None:
 
 def pobierz_instalator(cel: Path, postep=lambda procent: None) -> Path:
     """Najnowszy FakturnikSetup.exe z GitHuba, sprawdzony sumą SHA-256 (do instalacji z uprawnieniami admina)."""
-    try:
-        with _pobierz(ADRES_API) as o:
-            dane = json.load(o)
-    except BladAktualizacji:
-        raise
-    except Exception as e:
-        raise BladAktualizacji(f"Nie udało się połączyć z GitHubem ({e}).") from None
-    pliki = {a["name"]: a for a in dane.get("assets", [])}
-    if "FakturnikSetup.exe" not in pliki or "FakturnikSetup.exe.sha256" not in pliki:
-        raise BladAktualizacji("W najnowszym wydaniu nie ma instalatora.")
-    wydanie = Wydanie(wersja=dane.get("tag_name", "").lstrip("v"), opis="",
-                      adres_exe=pliki["FakturnikSetup.exe"]["browser_download_url"],
-                      adres_sha256=pliki["FakturnikSetup.exe.sha256"]["browser_download_url"],
-                      rozmiar=int(pliki["FakturnikSetup.exe"].get("size") or 0))
-    return pobierz(wydanie, cel, postep)
+    wydanie = najnowsze()
+    if wydanie is None:
+        raise BladAktualizacji("Nie znaleziono wydania z instalatorem.")
+    return pobierz(wydanie_wersji(wydanie.wersja, "FakturnikSetup.exe"), cel, postep)
 
 
 def zainstaluj(nowy: Path, obecny: Path | None = None) -> Path:

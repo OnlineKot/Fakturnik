@@ -39,8 +39,9 @@ def uruchom(plik_wyniku: str) -> int:
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance() or QApplication([])
         from . import druk
-        druk.html_dokumentu(Dokument("1/01/2026", "2026-01-01", "2026-01-01", "gotówka", "Test",
-                                     pozycje=[Pozycja("A", 1, 1)]), dict(DOMYSLNE_USTAWIENIA), False, False)
+        proba = Dokument("1/01/2026", "2026-01-01", "2026-01-01", "gotówka", "Test", pozycje=[Pozycja("A", 1, 1)])
+        druk.html_dokumentu(proba, dict(DOMYSLNE_USTAWIENIA), False, False)
+        druk.pdf_dokumentu(proba, dict(DOMYSLNE_USTAWIENIA))  # PDF-y wystawionych dokumentów do Plików
         del app
         wynik.write_text(f"AUTOTEST OK {WERSJA}\n", encoding="utf-8")
         return 0

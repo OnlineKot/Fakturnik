@@ -351,6 +351,25 @@ def drukuj(html: str, drukarka: QPrinter) -> None:
     dokument_tekstowy(html).print_(drukarka)
 
 
+def pdf_dokumentu(dok, u: dict[str, str]) -> bytes:
+    """PDF dokumentu w pamięci (do archiwum w Plikach); plik roboczy jest od razu usuwany."""
+    import os
+    import tempfile
+    uchwyt, sciezka = tempfile.mkstemp(prefix="fakturnik-", suffix=".pdf")
+    os.close(uchwyt)
+    try:
+        drukuj(html_dokumentu(dok, u, False), przygotuj_drukarke(u, sciezka))
+        tresc = Path(sciezka).read_bytes()
+    finally:
+        try:
+            os.remove(sciezka)
+        except OSError:
+            pass
+    if not tresc.startswith(b"%PDF"):
+        raise ValueError("Nie udało się utworzyć PDF-u dokumentu.")
+    return tresc
+
+
 def dostepne_drukarki() -> list[str]:
     return QPrinterInfo.availablePrinterNames()
 

@@ -74,6 +74,8 @@ DOMYSLNE_USTAWIENIA = {
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
+    "aktualizacja_widziana": "",        # wersja|kiedy: strażnik aktualizacji (usługa ma ją zainstalować w 3 h)
+    "dokumenty_do_plikow": "1",         # "1" = PDF każdego wystawionego dokumentu trafia do Plików
     "pliki_edycja": "0",                # "1" = pliki można opisywać i usuwać (ustawienia deweloperskie)
     "qr_strony": "",                    # strony do pokazania jako kod QR (JSON: nazwa, adres)
     "sprawdzaj_plik_programu": "1",     # "1" = porównuj Fakturnik.exe z sumą SHA-256 wydania (ustawienia deweloperskie)
@@ -171,7 +173,8 @@ class Plik:
     dodano: str
 
 
-KATEGORIE_PLIKOW = ["Faktura kosztowa", "Faktura od kontrahenta", "Dokument pacjenta", "Umowa", "Inne"]
+KATEGORIA_WYSTAWIONE = "Wystawiony dokument"  # PDF-y dokumentów wystawionych w programie (dodawane samoczynnie)
+KATEGORIE_PLIKOW = [KATEGORIA_WYSTAWIONE, "Faktura kosztowa", "Faktura od kontrahenta", "Dokument pacjenta", "Umowa", "Inne"]
 TYPY_PLIKOW = {"pdf", "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff"}
 MAKS_ROZMIAR_PLIKU = 50 * 1024 * 1024
 
@@ -305,6 +308,14 @@ MIGRACJE: dict[int, str] = {
     """,
     4: """
         ALTER TABLE pliki ADD COLUMN sha256_dysk TEXT NOT NULL DEFAULT '';
+    """,
+    5: """
+        CREATE TABLE IF NOT EXISTS pliki_dokumentow (
+            dokument_id INTEGER NOT NULL,
+            odcisk TEXT NOT NULL,
+            plik_id INTEGER NOT NULL,
+            PRIMARY KEY (dokument_id, odcisk)
+        );
     """,
 }
 WERSJA_DANYCH = max(MIGRACJE)
@@ -780,6 +791,10 @@ class Baza:
                         (granica,))
         for d in stare:
             self.db.execute("UPDATE wersje_dokumentow SET powod = '' WHERE dokument_id = ?", (d.id,))
+            # PDF-y tych dokumentów w Plikach zawierają dane osobowe, więc znikają razem z nimi
+            for plik_id, in list(self.db.execute("SELECT plik_id FROM pliki_dokumentow WHERE dokument_id = ?",
+                                                 (d.id,))):
+                self._usun_plik(plik_id)
         self.db.commit()
         self.db.execute("VACUUM")  # przepisuje bazę od nowa, bez śladów starych wartości
         self._utrwal()
@@ -1023,10 +1038,14 @@ class Baza:
     def dodaj_plik(self, zrodlo: Path | str, data: str | None = None, kategoria: str = "", osoba: str = "",
                    opis: str = "") -> Plik:
         zrodlo = Path(zrodlo)
+        return self.dodaj_plik_z_bajtow(zrodlo.name, zrodlo.read_bytes(), data, kategoria, osoba, opis)
+
+    def dodaj_plik_z_bajtow(self, nazwa: str, tresc: bytes, data: str | None = None, kategoria: str = "",
+                            osoba: str = "", opis: str = "", utrwal: bool = True) -> Plik:
+        zrodlo = Path(nazwa)
         typ = zrodlo.suffix.lower().lstrip(".")
         if typ not in TYPY_PLIKOW:
             raise ValueError(f"Nieobsługiwany rodzaj pliku: {zrodlo.name}. Można dodać PDF lub zdjęcie.")
-        tresc = zrodlo.read_bytes()
         from .skaner import typ_z_zawartosci
         if typ_z_zawartosci(tresc) in ("exe", "skrypt"):
             raise ValueError(f"Plik {zrodlo.name} to program, a nie dokument. Nie został dodany.")
@@ -1049,8 +1068,42 @@ class Baza:
             (zrodlo.name, typ, len(tresc), nazwa_na_dysku, hashlib.sha256(tresc).hexdigest(),
              data or date.today().isoformat(), kategoria, osoba.strip(), opis.strip(),
              hashlib.sha256(zaszyfrowane).hexdigest()))
-        self._utrwal()
+        if utrwal:
+            self._utrwal()
         return self.plik(kursor.lastrowid)
+
+    # ---------- wystawione dokumenty w Plikach ----------
+    @staticmethod
+    def odcisk_dokumentu(dok: Dokument) -> str:
+        """Skrót treści dokumentu: nowy PDF w Plikach powstaje tylko, gdy dokument naprawdę się zmienił."""
+        dane = asdict(dok)
+        dane.pop("id", None)
+        return hashlib.sha256(json.dumps(dane, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def dokument_w_plikach(self, dok: Dokument) -> bool:
+        return self.db.execute("SELECT 1 FROM pliki_dokumentow WHERE dokument_id = ? AND odcisk = ?",
+                               (dok.id, self.odcisk_dokumentu(dok))).fetchone() is not None
+
+    def dodaj_pdf_dokumentu(self, dok: Dokument, pdf: bytes) -> Plik | None:
+        """Zapisuje PDF wystawionego dokumentu w Plikach (raz dla każdej wersji dokumentu)."""
+        if dok.id is None:
+            raise ValueError("Dokument nie jest zapisany.")
+        if self.dokument_w_plikach(dok):
+            return None
+        stan = "anulowany" if dok.anulowano else ("poprawiony" if dok.poprawiono else "")
+        numer = dok.numer.replace("/", "-")
+        nazwa = f"{dok.tytul} {numer}{' ' + stan if stan else ''}.pdf"
+        opis = f"{dok.tytul} nr {dok.numer}" + (f" ({stan} {dok.anulowano or dok.poprawiono})" if stan else "")
+        plik = self.dodaj_plik_z_bajtow(nazwa, pdf, dok.data_wystawienia, KATEGORIA_WYSTAWIONE, dok.nabywca,
+                                        opis, utrwal=False)
+        self.db.execute("INSERT OR REPLACE INTO pliki_dokumentow (dokument_id, odcisk, plik_id) VALUES (?, ?, ?)",
+                        (dok.id, self.odcisk_dokumentu(dok), plik.id))
+        self._utrwal()
+        return plik
+
+    def dokumenty_bez_pdf(self) -> list[Dokument]:
+        """Dokumenty, których bieżąca wersja nie ma jeszcze PDF-u w Plikach."""
+        return [d for d in self.dokumenty() if not self.dokument_w_plikach(d)]
 
     def plik(self, id_: int) -> Plik | None:
         w = self.db.execute(f"SELECT {self._POLA_PLIKU} FROM pliki WHERE id = ?", (id_,)).fetchone()
@@ -1102,10 +1155,14 @@ class Baza:
     def usun_plik(self, id_: int) -> None:
         if not self.pliki_zmienialne:
             raise PermissionError("Pliki są tylko do odczytu.")
+        self._usun_plik(id_)
+
+    def _usun_plik(self, id_: int) -> None:
         w = self.db.execute("SELECT plik FROM pliki WHERE id = ?", (id_,)).fetchone()
         if not w:
             return
         self.db.execute("DELETE FROM pliki WHERE id = ?", (id_,))
+        self.db.execute("DELETE FROM pliki_dokumentow WHERE plik_id = ?", (id_,))
         self._utrwal()
         sciezka = self._sciezka_pliku(w[0])
         if sciezka.exists():

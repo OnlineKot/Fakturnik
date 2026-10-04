@@ -34,3 +34,11 @@ def blokada_jak_w_windows(monkeypatch):
     monkeypatch.setattr(ochrona.BlokadaPliku, "zaloz", zaloz)
     monkeypatch.setattr(ochrona.BlokadaPliku, "zwolnij", zwolnij)
     yield
+
+
+@pytest.fixture(autouse=True)
+def szybkie_ponowienia(monkeypatch):
+    """Ponowienia pobierania aktualizacji bez czekania (w programie przerwy rosną od 5 s)."""
+    from fakturnik import aktualizacje
+    monkeypatch.setattr(aktualizacje, "PRZERWA_POBIERANIA", 0)
+    yield

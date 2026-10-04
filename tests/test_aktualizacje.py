@@ -122,10 +122,9 @@ def test_sprawdzenie_wlasnego_pliku(tmp_path, monkeypatch):
     skrot = hashlib.sha256(exe.read_bytes()).hexdigest()
 
     def falszywe_pobieranie(adres, timeout=10):
-        if adres.endswith("/releases/tags/v1.0.5"):
-            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
-                              b'"browser_download_url": "https://github.com/x/Fakturnik.exe.sha256"}]}')
-        return io.BytesIO(skrot.encode())
+        if adres.endswith("/download/v1.0.5/Fakturnik.exe.sha256"):
+            return io.BytesIO(skrot.encode())
+        raise OSError("404")  # brak wydania o tym numerze, API niedostępne
 
     monkeypatch.setattr(aktualizacje, "_pobierz", falszywe_pobieranie)
     assert aktualizacje.sprawdz_wlasny_plik(exe, "1.0.5") is True
@@ -180,13 +179,95 @@ def test_plik_nowszej_wersji_nie_jest_falszywym_alarmem(tmp_path, monkeypatch):
     nowy = hashlib.sha256(exe.read_bytes()).hexdigest()
 
     def falszywe_pobieranie(adres, timeout=10):
-        if adres.endswith("/releases/tags/v1.0.40"):
-            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
-                              b'"browser_download_url": "https://github.com/x/stara.sha256"}]}')
+        if adres.endswith("/download/v1.0.40/Fakturnik.exe.sha256"):
+            return io.BytesIO(b"0" * 64)
         if adres == aktualizacje.ADRES_API:
-            return io.BytesIO(b'{"assets": [{"name": "Fakturnik.exe.sha256", '
+            return io.BytesIO(b'{"tag_name": "v1.0.41", "assets": ['
+                              b'{"name": "Fakturnik.exe", "browser_download_url": "https://github.com/x/nowa.exe"}, '
+                              b'{"name": "Fakturnik.exe.sha256", '
                               b'"browser_download_url": "https://github.com/x/nowa.sha256"}]}')
         return io.BytesIO((nowy if adres.endswith("nowa.sha256") else "0" * 64).encode())
 
     monkeypatch.setattr(aktualizacje, "_pobierz", falszywe_pobieranie)
     assert aktualizacje.sprawdz_wlasny_plik(exe, "1.0.40") is True
+
+
+class Przekierowanie(Odpowiedz):
+    def __init__(self, adres):
+        super().__init__(b"")
+        self.adres = adres
+
+    def geturl(self):
+        return self.adres
+
+
+def test_sprawdzanie_bez_api_githuba(monkeypatch):
+    """Gdy API GitHuba odmawia (limit zapytań), wersję bierze się z przekierowania strony wydań."""
+    def serwer(adres, timeout=10):
+        if adres == aktualizacje.ADRES_API:
+            raise OSError("HTTP Error 403: rate limit exceeded")
+        assert adres == aktualizacje.ADRES_NAJNOWSZEGO
+        return Przekierowanie("https://github.com/OnlineKot/Fakturnik/releases/tag/v99.0.7")
+
+    monkeypatch.setattr(aktualizacje, "_pobierz", serwer)
+    w = aktualizacje.sprawdz()
+    assert w.wersja == "99.0.7"
+    assert w.adres_exe == "https://github.com/OnlineKot/Fakturnik/releases/download/v99.0.7/Fakturnik.exe"
+    assert w.adres_sha256.endswith("/v99.0.7/Fakturnik.exe.sha256")
+
+
+def test_brak_obu_drog_to_blad(monkeypatch):
+    def serwer(adres, timeout=10):
+        raise OSError("brak sieci")
+    monkeypatch.setattr(aktualizacje, "_pobierz", serwer)
+    with pytest.raises(BladAktualizacji):
+        aktualizacje.sprawdz()
+
+
+def test_pobieranie_ponawia_po_zerwaniu(tmp_path, monkeypatch):
+    exe = b"MZ nowy" * 5000
+    suma = hashlib.sha256(exe).hexdigest().encode()
+    proby = []
+
+    def serwer(adres, timeout=10):
+        if adres.endswith(".sha256"):
+            return Odpowiedz(suma)
+        proby.append(adres)
+        if len(proby) < 3:
+            raise ConnectionResetError("zerwane połączenie")
+        return Odpowiedz(exe)
+
+    monkeypatch.setattr(aktualizacje, "_pobierz", serwer)
+    w = aktualizacje.wydanie_wersji("9.9.9")
+    w.adres_exe = "https://api.github.com/x/assets/1"  # pierwsza droga (API), potem stałe adresy
+    cel = aktualizacje.pobierz(w, tmp_path / "Fakturnik.new.exe")
+    assert cel.read_bytes() == exe and len(proby) == 3
+    assert proby[1].endswith("/releases/download/v9.9.9/Fakturnik.exe")  # druga droga
+
+
+def test_instalator_tez_bez_api(tmp_path, monkeypatch):
+    setup = b"MZ instalator" * 100
+    suma = hashlib.sha256(setup).hexdigest().encode()
+
+    def serwer(adres, timeout=10):
+        if adres == aktualizacje.ADRES_API:
+            raise OSError("403")
+        if adres == aktualizacje.ADRES_NAJNOWSZEGO:
+            return Przekierowanie("https://github.com/OnlineKot/Fakturnik/releases/tag/v1.0.60")
+        assert "/download/v1.0.60/FakturnikSetup.exe" in adres
+        return Odpowiedz(suma if adres.endswith(".sha256") else setup)
+
+    monkeypatch.setattr(aktualizacje, "_pobierz", serwer)
+    assert aktualizacje.pobierz_instalator(tmp_path / "s.exe").read_bytes() == setup
+
+
+def test_straznik_zaleglej_aktualizacji():
+    from datetime import datetime, timedelta
+    t0 = datetime(2026, 10, 4, 8, 0)
+    zapis, zalegla = aktualizacje.zalegla("1.0.60", "", t0)
+    assert zapis == "1.0.60|2026-10-04T08:00:00" and not zalegla
+    assert aktualizacje.zalegla("1.0.60", zapis, t0 + timedelta(hours=2))[1] is False
+    assert aktualizacje.zalegla("1.0.60", zapis, t0 + timedelta(hours=3))[1] is True
+    nowy, zalegla = aktualizacje.zalegla("1.0.61", zapis, t0 + timedelta(hours=5))  # nowsza wersja: liczy od nowa
+    assert nowy.startswith("1.0.61|") and not zalegla
+    assert aktualizacje.zalegla("1.0.60", "1.0.60|zle", t0)[1] is False
