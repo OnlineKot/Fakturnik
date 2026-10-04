@@ -436,7 +436,55 @@ def stan_programu() -> bool | None:
     return {"oryginalny": True, "ZMIENIONY": False}.get(stan)
 
 
+# Komputer nie musi działać cały czas: usługa rusza też po zalogowaniu (po „zamknięciu” z szybkim
+# uruchamianiem Windows nie ma prawdziwego startu systemu) i po wybudzeniu ze snu, a nie tylko co godzinę.
+WYBUDZENIE = "*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]"
+
+
+def zadania_uslugi(exe: Path) -> dict[str, list[str]]:
+    polecenie = f'"{exe}" --usluga'
+    wspolne = ["/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", polecenie]
+    return {
+        "Fakturnik\\Kopie co godzine": ["/SC", "HOURLY"] + wspolne,
+        "Fakturnik\\Kopie po starcie": ["/SC", "ONSTART", "/DELAY", "0005:00"] + wspolne,
+        "Fakturnik\\Kopie po zalogowaniu": ["/SC", "ONLOGON", "/DELAY", "0002:00"] + wspolne,
+        "Fakturnik\\Kopie po wybudzeniu": ["/SC", "ONEVENT", "/EC", "System", "/MO", WYBUDZENIE,
+                                             "/DELAY", "0002:00"] + wspolne,
+    }
+
+
+def zapewnij_zadania() -> str:
+    """Dopisuje brakujące zadania usługi (starsze instalacje miały tylko „co godzinę” i „po starcie”)."""
+    from . import aktualizacje
+    if sys.platform != "win32" or not aktualizacje.czy_spakowany() or not aktualizacje.zainstalowany():
+        return "pominięto"
+    schtasks = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "schtasks.exe"
+    bez_okna = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    dodane = []
+    for nazwa, argumenty in zadania_uslugi(Path(sys.executable)).items():
+        if subprocess.run([str(schtasks), "/Query", "/TN", nazwa], capture_output=True,
+                          creationflags=bez_okna, timeout=30).returncode == 0:
+            continue
+        wynik = subprocess.run([str(schtasks), "/Create", "/F", "/TN", nazwa] + argumenty, capture_output=True,
+                               creationflags=bez_okna, timeout=30)
+        dodane.append(nazwa.split("\\")[-1] + ("" if wynik.returncode == 0 else " (błąd)"))
+    return "dodano: " + ", ".join(dodane) if dodane else "komplet"
+
+
 def uruchom_usluge() -> int:
+    # kilka zadań może ruszyć naraz (np. start komputera i zalogowanie): pracuje tylko jedno
+    with _Blokada(katalog_uslugi() / "usluga.lock") as moja:
+        if not moja:
+            _zapisz_log("pominięto (usługa już działa)")
+            return 0
+        return _uruchom_usluge()
+
+
+def _uruchom_usluge() -> int:
+    try:
+        _zapisz_log("zadania usługi: " + zapewnij_zadania())
+    except Exception as e:  # noqa: BLE001
+        _zapisz_log(f"zadania usługi: nie sprawdzono ({e})")
     profile = profile_z_danymi()
     for uzytkownik, dane in profile:
         try:

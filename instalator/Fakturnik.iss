@@ -95,6 +95,9 @@ Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Fakturnik"" /inheri
 ; usługa kopii i aktualizacji: co godzinę oraz 5 minut po starcie komputera, z konta SYSTEM
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC HOURLY /TN ""Fakturnik\Kopie co godzine"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated; StatusMsg: "Włączanie usługi kopii..."
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONSTART /DELAY 0005:00 /TN ""Fakturnik\Kopie po starcie"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated
+; komputer nie działa cały czas: także po zalogowaniu (szybkie uruchamianie Windows pomija start systemu);
+; zadanie „po wybudzeniu” dopisuje sama usługa przy pierwszym uruchomieniu
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /RU SYSTEM /RL HIGHEST /SC ONLOGON /DELAY 0002:00 /TN ""Fakturnik\Kopie po zalogowaniu"" /TR ""\""{app}\Fakturnik.exe\"" --usluga"""; Flags: runhidden waituntilterminated
 ; pierwsza chroniona kopia od razu, przez Harmonogram zadań (konto SYSTEM, czyste środowisko)
 Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""Fakturnik\Kopie co godzine"""; Flags: runhidden nowait
 ; start przez Eksploratora: program dostaje środowisko pulpitu, a nie instalatora (ani programu, który go uruchomił)
@@ -103,6 +106,8 @@ Filename: "{win}\explorer.exe"; Parameters: """{app}\Fakturnik.exe"""; Descripti
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie co godzine"""; Flags: runhidden; RunOnceId: "UsunZadanie1"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie po starcie"""; Flags: runhidden; RunOnceId: "UsunZadanie2"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie po zalogowaniu"""; Flags: runhidden; RunOnceId: "UsunZadanie3"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Fakturnik\Kopie po wybudzeniu"""; Flags: runhidden; RunOnceId: "UsunZadanie4"
 
 [UninstallDelete]
 Type: files; Name: "{app}\Fakturnik.old.exe"

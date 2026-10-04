@@ -261,13 +261,34 @@ def test_instalator_tez_bez_api(tmp_path, monkeypatch):
     assert aktualizacje.pobierz_instalator(tmp_path / "s.exe").read_bytes() == setup
 
 
-def test_straznik_zaleglej_aktualizacji():
+def test_straznik_liczy_tylko_czas_pracy_komputera():
     from datetime import datetime, timedelta
-    t0 = datetime(2026, 10, 4, 8, 0)
-    zapis, zalegla = aktualizacje.zalegla("1.0.60", "", t0)
-    assert zapis == "1.0.60|2026-10-04T08:00:00" and not zalegla
-    assert aktualizacje.zalegla("1.0.60", zapis, t0 + timedelta(hours=2))[1] is False
-    assert aktualizacje.zalegla("1.0.60", zapis, t0 + timedelta(hours=3))[1] is True
-    nowy, zalegla = aktualizacje.zalegla("1.0.61", zapis, t0 + timedelta(hours=5))  # nowsza wersja: liczy od nowa
-    assert nowy.startswith("1.0.61|") and not zalegla
-    assert aktualizacje.zalegla("1.0.60", "1.0.60|zle", t0)[1] is False
+    t = datetime(2026, 10, 4, 8, 0)
+    zapis, zalegla = aktualizacje.zalegla("1.0.60", "", t)
+    assert not zalegla
+    for _ in range(2):  # dwie godziny pracy
+        t += timedelta(hours=1)
+        zapis, zalegla = aktualizacje.zalegla("1.0.60", zapis, t)
+    assert not zalegla
+    t += timedelta(hours=14)  # komputer wyłączony na noc: noc się nie liczy
+    zapis, zalegla = aktualizacje.zalegla("1.0.60", zapis, t)
+    assert not zalegla
+    t += timedelta(hours=1)  # trzecia godzina pracy
+    zapis, zalegla = aktualizacje.zalegla("1.0.60", zapis, t)
+    assert zalegla
+    nowy, zalegla = aktualizacje.zalegla("1.0.61", zapis, t)  # nowsza wersja: liczy od nowa
+    assert nowy.startswith("1.0.61|0|") and not zalegla
+    assert aktualizacje.zalegla("1.0.60", "1.0.60|zle|x", t)[1] is False
+
+
+def test_zadania_uslugi_po_starcie_zalogowaniu_i_wybudzeniu():
+    from pathlib import Path
+    from fakturnik import usluga
+    zadania = usluga.zadania_uslugi(Path(r"C:\Program Files\Fakturnik\Fakturnik.exe"))
+    assert set(zadania) == {"Fakturnik\\Kopie co godzine", "Fakturnik\\Kopie po starcie",
+                            "Fakturnik\\Kopie po zalogowaniu", "Fakturnik\\Kopie po wybudzeniu"}
+    wybudzenie = zadania["Fakturnik\\Kopie po wybudzeniu"]
+    assert "ONEVENT" in wybudzenie and "Power-Troubleshooter" in wybudzenie[wybudzenie.index("/MO") + 1]
+    assert all(a[a.index("/RU") + 1] == "SYSTEM" for a in zadania.values())
+    assert all(a[a.index("/TR") + 1] == '"C:\\Program Files\\Fakturnik\\Fakturnik.exe" --usluga'
+               for a in zadania.values())

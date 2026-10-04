@@ -5425,7 +5425,7 @@ class OknoGlowne(QMainWindow):
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
             QTimer.singleShot(6000, self.sprawdz_program)
         # program działa w tle całymi dniami, więc o nowe wersje pyta też co 6 godzin
-        self.zegar_aktualizacji = QTimer(self, interval=2 * 60 * 60 * 1000)
+        self.zegar_aktualizacji = QTimer(self, interval=60 * 60 * 1000)
         self.zegar_aktualizacji.timeout.connect(self._okresowa_aktualizacja)
         self.zegar_aktualizacji.start()
         QTimer.singleShot(20_000, self._uzupelniaj_w_tle)
@@ -5979,7 +5979,8 @@ class OknoGlowne(QMainWindow):
                           lambda: (self.pokaz_okno(), self.instaluj_aktualizacje() if self.isVisible() else None))
 
     def _straznik_aktualizacji(self, wydanie):
-        """Gdy usługa nie zainstalowała dostępnej wersji w ciągu 3 godzin (np. usługa wyłączona, brak
+        """Gdy usługa nie zainstalowała dostępnej wersji w ciągu 3 godzin pracy komputera (czas wyłączenia
+        i uśpienia się nie liczy; np. usługa wyłączona, brak
         uprawnień, sieć firmowa), program sam proponuje „Aktualizuj teraz” — aktualizacja nigdy nie utyka."""
         if aktualizacje.plik_programu_zmieniony():
             return  # usługa już podmieniła plik; nowa wersja wystartuje po schowaniu okna
@@ -5989,7 +5990,7 @@ class OknoGlowne(QMainWindow):
             self.baza.zapisz_ustawienia({"aktualizacja_widziana": zapis})
         if not zalegla:
             return
-        self.dziennik.zapisz(f"aktualizacja {wydanie.wersja} czeka ponad 3 godziny na usługę")
+        self.dziennik.zapisz(f"aktualizacja {wydanie.wersja} czeka ponad 3 godziny pracy komputera na usługę")
         self.tekst_aktualizacji.setText(f"Wersja {wydanie.wersja} nie zainstalowała się sama. "
                                         "Kliknij, aby zaktualizować teraz.")
         self.pasek_aktualizacji.show()

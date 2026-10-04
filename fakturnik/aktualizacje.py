@@ -155,20 +155,26 @@ PROBY_POBIERANIA = 4
 PRZERWA_POBIERANIA = 5.0  # sekundy przed pierwszym ponowieniem, potem dwa razy dłużej
 
 
-def zalegla(wersja: str, zapis: str, teraz, godzin: float = 3) -> tuple[str, bool]:
+def zalegla(wersja: str, zapis: str, teraz, godzin: float = 3, przerwa_h: float = 2.5) -> tuple[str, bool]:
     """Strażnik usługi: czy dostępna wersja czeka już za długo na instalację przez usługę.
 
-    `zapis` to "wersja|kiedy pierwszy raz widziana"; zwraca (nowy zapis, czy zaległa).
+    Liczy się tylko czas, gdy komputer działał: przerwa między sprawdzeniami dłuższa niż `przerwa_h`
+    (komputer wyłączony albo uśpiony) nie jest doliczana, bo wtedy usługa nie mogła nic zrobić.
+    `zapis` to "wersja|sekundy oczekiwania|ostatni pomiar"; zwraca (nowy zapis, czy zaległa).
     """
-    from datetime import datetime, timedelta
-    poprzednia, _, kiedy = (zapis or "").partition("|")
-    try:
-        od = datetime.fromisoformat(kiedy) if poprzednia == wersja else None
-    except ValueError:
-        od = None
-    if od is None or od > teraz:
-        return f"{wersja}|{teraz.isoformat(timespec='seconds')}", False
-    return zapis, teraz - od >= timedelta(hours=godzin)
+    from datetime import datetime
+    czesci = (zapis or "").split("|")
+    czekano = 0.0
+    if len(czesci) == 3 and czesci[0] == wersja:
+        try:
+            czekano = float(czesci[1])
+            odstep = (teraz - datetime.fromisoformat(czesci[2])).total_seconds()
+            if 0 < odstep <= przerwa_h * 3600:
+                czekano += odstep
+        except ValueError:
+            czekano = 0.0
+    nowy = f"{wersja}|{int(czekano)}|{teraz.isoformat(timespec='seconds')}"
+    return nowy, czekano >= godzin * 3600
 
 
 def pobierz(wydanie: Wydanie, cel: Path, postep=lambda procent: None, proby: int | None = None,
