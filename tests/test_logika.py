@@ -165,3 +165,15 @@ def test_zestawienie_do_druku(tmp_path):
     b = baza_z_danymi(tmp_path)
     html = druk.html_zestawienia(b.dokumenty(rok=2026, miesiac=10), b.ustawienia(), "Październik 2026")
     assert "Październik 2026" in html and "Jan Kowalski" in html and "2\u00a0700,00" in html
+
+
+def test_nazwy_uslug_do_podpowiedzi(tmp_path):
+    from fakturnik.baza import Baza, Dokument, Pozycja
+    b = Baza(tmp_path / "d.db")
+    b.zapisz_dokument(Dokument("1/10/2026", "2026-10-01", "2026-10-01", "gotówka", "Jan",
+                               pozycje=[Pozycja("Przegląd", 1, 100), Pozycja("Czyszczenie", 1, 200)]))
+    b.zapisz_dokument(Dokument("2/10/2026", "2026-10-02", "2026-10-02", "gotówka", "Ola",
+                               pozycje=[Pozycja("Przegląd", 1, 100), Pozycja("Wypełnienie", 1, 300)]))
+    nazwy = b.nazwy_uslug()
+    assert set(nazwy) == {"Przegląd", "Czyszczenie", "Wypełnienie"}  # bez powtórek
+    assert nazwy[0] == "Przegląd"  # najnowszy dokument pierwszy

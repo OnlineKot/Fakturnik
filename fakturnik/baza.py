@@ -945,6 +945,18 @@ class Baza:
         return [int(r[0]) for r in self.db.execute(
             "SELECT DISTINCT substr(data_wystawienia, 1, 4) FROM dokumenty ORDER BY 1 DESC")]
 
+    def nazwy_uslug(self, limit: int = 300) -> list[str]:
+        """Nazwy usług z wcześniejszych dokumentów (do podpowiedzi przy wpisywaniu pozycji), od najnowszych."""
+        widziane: dict[str, None] = {}
+        for dok in self.dokumenty():
+            for poz in dok.pozycje:
+                nazwa = poz.nazwa.strip()
+                if nazwa and nazwa not in widziane:
+                    widziane[nazwa] = None
+                    if len(widziane) >= limit:
+                        return list(widziane)
+        return list(widziane)
+
     def nabywcy(self) -> dict[str, Dokument]:
         """Ostatni dokument każdego nabywcy (do podpowiedzi przy wpisywaniu)."""
         wynik: dict[str, Dokument] = {}

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QStackedWidget, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
+    QSpinBox, QStackedWidget, QStyledItemDelegate, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import aktualizacje, druk, godziny, gtd, konta, kontrola, mf, narzedzia, urzadzenie, windows
@@ -925,6 +925,23 @@ class StronaPulpit(Strona):
         self.pusto.setVisible(not self._docs)
 
 
+class PodpowiedziDelegate(QStyledItemDelegate):
+    """Edytor komórki z podpowiedziami (autouzupełnianie). `zrodlo()` zwraca aktualną listę nazw."""
+
+    def __init__(self, zrodlo, parent=None):
+        super().__init__(parent)
+        self.zrodlo = zrodlo
+
+    def createEditor(self, rodzic, opcja, indeks):
+        pole = QLineEdit(rodzic)
+        comp = QCompleter(list(self.zrodlo()), pole)
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchFlag.MatchContains)
+        comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        pole.setCompleter(comp)
+        return pole
+
+
 class StronaNowy(Strona):
     def __init__(self, okno: "OknoGlowne"):
         super().__init__(okno, przewijana=True)
@@ -1061,6 +1078,8 @@ class StronaNowy(Strona):
         self.tabela.verticalHeader().setDefaultSectionSize(36)
         self.tabela.setShowGrid(False)
         self.tabela.setMinimumHeight(150)
+        self._nazwy_uslug: list[str] = []
+        self.tabela.setItemDelegateForColumn(0, PodpowiedziDelegate(lambda: self._nazwy_uslug, self.tabela))
         self.tabela.itemChanged.connect(self.przelicz)
         ku.addWidget(self.tabela, 1)
         rzad = QHBoxLayout()
@@ -1445,14 +1464,26 @@ class StronaNowy(Strona):
             self.data_uslugi.setDate(dzis)
         self.kopia.setChecked(u["kopia"] == "1")
         wyczysc_uklad(self.przyciski_uslug)
+        nazwy_cennika = []
         for linia in u["uslugi"].splitlines():
             nazwa, _, cena = linia.partition(";")
             if not nazwa.strip():
                 continue
+            nazwy_cennika.append(nazwa.strip())
             tekst = nazwa.strip() + (f"   {druk.zl(liczba(cena))} zł" if liczba(cena) else "")
             b = QPushButton(tekst, objectName="chip", cursor=Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, n=nazwa.strip(), c=liczba(cena): self.dodaj_usluge(n, c))
             self.przyciski_uslug.addWidget(b)
+        # podpowiedzi nazw usług przy wpisywaniu pozycji: najpierw cennik, potem wcześniej używane
+        widziane, nazwy = set(nazwy_cennika), list(nazwy_cennika)
+        try:
+            for n in self.okno.baza.nazwy_uslug():
+                if n not in widziane:
+                    widziane.add(n)
+                    nazwy.append(n)
+        except Exception:  # noqa: BLE001
+            pass
+        self._nazwy_uslug = nazwy
 
         # podpowiedzi nazwisk dopiero po wpisaniu 2 liter: nikt przy biurku nie zobaczy listy pacjentów
         self._podpowiedzi = QCompleter([p.nazwa for p in self.okno.baza.pacjenci()], self)
@@ -3727,8 +3758,11 @@ class StronaUstawienia(Strona):
         prawa.addWidget(sekcja("Cennik usług"))
         k, ku = karta()
         ku.setContentsMargins(0, 8, 0, 12)
+        ku.addWidget(QLabel("Cena jest opcjonalna — zostaw ją pustą, a cenę wpiszesz ręcznie przy każdym "
+                            "dokumencie (bez stałej ceny). Nazwy usług podpowiadają się przy wpisywaniu pozycji.",
+                            objectName="drobny", wordWrap=True))
         self.cennik = QTableWidget(0, 2)
-        self.cennik.setHorizontalHeaderLabels(["Usługa", "Cena (zł)"])
+        self.cennik.setHorizontalHeaderLabels(["Usługa", "Cena (zł) — opcjonalnie"])
         self.cennik.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.cennik.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.cennik.setColumnWidth(1, 140)
