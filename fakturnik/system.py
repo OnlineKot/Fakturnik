@@ -289,3 +289,20 @@ def utworz_skrot_na_pulpicie() -> bool:
     wynik = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", skrypt],
                            capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return wynik.returncode == 0
+
+
+def popros_usluge_o_aktualizacje() -> bool:
+    """Prosi usługę (zadanie Harmonogramu) o natychmiastowe sprawdzenie i pobranie aktualizacji w tle.
+    Najlepszy wysiłek: gdy zwykłe konto nie może uruchomić zadania SYSTEM, usługa i tak zrobi to w swoim cyklu."""
+    if not na_windows():
+        return False
+    import subprocess
+    schtasks = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "schtasks.exe")
+    for nazwa in (r"Fakturnik\Kopie co godzine", r"Fakturnik\Kopie po zalogowaniu"):
+        try:
+            if subprocess.run([schtasks, "/Run", "/TN", nazwa], capture_output=True,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=20).returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return False

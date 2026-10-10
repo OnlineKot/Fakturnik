@@ -38,7 +38,7 @@ from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
 from .system import (
     JednaKopia, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
-    ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie, zapewnij_autostart,
+    popros_usluge_o_aktualizacje, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie, zapewnij_autostart,
 )
 from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
@@ -491,7 +491,7 @@ class OknoHasla(QDialog):
         u.addWidget(naglowek)
         u.addWidget(QLabel(opis, objectName="podtytul", alignment=Qt.AlignmentFlag.AlignHCenter))
         u.addSpacing(6)
-        self.pole = QLineEdit(echoMode=QLineEdit.EchoMode.Password, placeholderText="Hasło")
+        self.pole = QLineEdit(echoMode=QLineEdit.EchoMode.Password, placeholderText="Hasło lub PIN")
         self.pole.returnPressed.connect(self.sprobuj)
         u.addWidget(self.pole)
         self.blad = QLabel(styleSheet=f"color: {CZERWONY}; font-size: 12px;")
@@ -3576,11 +3576,24 @@ class OknoSzukania(QDialog):
         self.pole.installEventFilter(self)
         self._filtruj("")
 
+    def event(self, e):
+        # kliknięcie poza oknem (utrata aktywności) zamyka wyszukiwanie — jak zwykłe menu
+        if e.type() == QEvent.Type.WindowDeactivate:
+            self.reject()
+        return super().event(e)
+
     def eventFilter(self, obj, event):
-        if obj is self.pole and event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
-            krok = 1 if event.key() == Qt.Key.Key_Down else -1
-            self.lista.setCurrentRow(max(0, min(self.lista.count() - 1, self.lista.currentRow() + krok)))
-            return True
+        if obj is self.pole and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                krok = 1 if event.key() == Qt.Key.Key_Down else -1
+                self.lista.setCurrentRow(max(0, min(self.lista.count() - 1, self.lista.currentRow() + krok)))
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self.reject()  # Esc zamyka
+                return True
+            if event.key() == Qt.Key.Key_Space and not self.pole.text():
+                self.reject()  # spacja przy pustym polu zamyka (spacja w trakcie pisania działa normalnie)
+                return True
         return super().eventFilter(obj, event)
 
     def _filtruj(self, tekst: str):
@@ -4467,30 +4480,33 @@ class StronaUstawienia(Strona):
                 wartosci[klucz] = p.toPlainText().strip()
             else:
                 wartosci[klucz] = p.text().strip()
+        # Pojedyncze błędne pole faktury nie może już gubić reszty ustawień (zasłona, PIN, aktualizacje):
+        # odrzucamy tylko to jedno pole (zostaje stara wartość), a całą resztę zapisujemy.
+        pomin: set[str] = set()
         formaty = [wartosci[k] for k in ("format_numeru", "format_numeru_faktury", "format_numeru_korekty")]
-        if any("{n}" not in f for f in formaty):
-            QMessageBox.warning(self, "Format numeru", "Format numeru musi zawierać {n} (kolejny numer).")
-            return
-        if len(set(formaty)) < 3:
-            QMessageBox.warning(self, "Format numeru", "Rachunki, faktury i korekty muszą mieć różne formaty numeru, "
-                                "np. faktury z przedrostkiem FV/, korekty KOR/.")
-            return
-        if not wartosci["termin_dni"].isdigit() or int(wartosci["termin_dni"]) > 365:
-            QMessageBox.warning(self, "Termin przelewu", "Termin przelewu to liczba dni od 0 do 365.")
-            return
+        if any("{n}" not in f for f in formaty) or len(set(formaty)) < 3:
+            QMessageBox.warning(self, "Format numeru", "Każdy format numeru musi zawierać {n}, a rachunki, faktury "
+                                "i korekty muszą mieć różne formaty (np. faktury FV/, korekty KOR/). "
+                                "Formaty numeru zostają bez zmian, reszta ustawień zapisze się.")
+            pomin.update(("format_numeru", "format_numeru_faktury", "format_numeru_korekty"))
+        if not wartosci["termin_dni"].isdigit() or int(wartosci["termin_dni"] or 0) > 365:
+            QMessageBox.warning(self, "Termin przelewu", "Termin przelewu to liczba dni od 0 do 365. "
+                                "Zostaje bez zmian, reszta ustawień zapisze się.")
+            pomin.add("termin_dni")
         nip = wartosci["nip"]
         if nip and not nip_poprawny(nip) and QMessageBox.warning(
                 self, "NIP", f"NIP „{nip}” ma złą cyfrę kontrolną. Zapisać mimo to?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            return
+            pomin.add("nip")
         konto = wartosci["konto"]
         if konto:
             if not konto_poprawne(konto) and QMessageBox.warning(
                     self, "Numer konta", f"Numer konta „{konto}” wygląda na błędny (zła suma kontrolna). "
                     "Zapisać mimo to?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-                return
-            wartosci["konto"] = formatuj_konto(konto)
+                pomin.add("konto")
+            else:
+                wartosci["konto"] = formatuj_konto(konto)
         wartosci["uslugi"] = self._tekst_cennika()
         wartosci["logo"] = self.logo
         wartosci["okno_drukarki"] = "1" if self.okno_drukarki.isChecked() else "0"
@@ -4502,13 +4518,17 @@ class StronaUstawienia(Strona):
         wartosci["ochrona_ekranu"] = "1" if self.ochrona_ekranu.isChecked() else "0"
         wartosci["kopia_folder"] = self.kopia_folder.text().strip()
         nowe_godziny = {}
+        godziny_ok = True
         for d, (pole_dnia, od, do) in enumerate(self.dni_pracy):
             if pole_dnia.isChecked():
                 if od.time() >= do.time():
                     QMessageBox.warning(self, "Godziny pracy", f"{godziny.DNI[d].capitalize()}: godzina końca "
-                                        "musi być późniejsza niż początku.")
-                    return
+                                        "musi być późniejsza niż początku. Godziny pracy zostają bez zmian.")
+                    godziny_ok = False
+                    break
                 nowe_godziny[d] = (od.time().toPython(), do.time().toPython())
+        if not godziny_ok:
+            pomin.add("godziny_pracy")
         wartosci.update({
             "nazwa_wlascicielki": self.nazwa_wlascicielki.text().strip() or "Właściciel",
             "godziny_pracy": godziny.zapisz(nowe_godziny),
@@ -4548,13 +4568,15 @@ class StronaUstawienia(Strona):
         if integracja_dostepna():
             zapewnij_autostart()
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
+        for k in pomin:
+            wartosci.pop(k, None)
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.zapisz_znacznik_aktualizacji()
         self.okno.komunikat("Zapisano ustawienia")
+        self.odswiez()  # pokaż zapisane wartości (także pola odrzucone, bez zmian)
         self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
         self.okno.ustaw_czas_blokady()
-        OCHRONA_EKRANU.ustaw(wartosci["ochrona_ekranu"] == "1")
-        self.okno.przejdz(STRONA_NOWY)
+        OCHRONA_EKRANU.ustaw(wartosci["ochrona_ekranu"] == "1")  # użytkownik zostaje na Ustawieniach (widzi, że zapisano)
 
     def anonimizuj(self):
         lat = self.rodo_lat.value()
@@ -6353,28 +6375,31 @@ class OknoGlowne(QMainWindow):
             if not cicho:
                 QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
-        tylko_powiadom = self.baza.ustawienia().get("aktualizacje_powiadom", "1") == "1"
+        tylko_powiadom = self.baza.ustawienia().get("aktualizacje_powiadom", "0") == "1"
         if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany():
             if tylko_powiadom:
-                # użytkownik woli być powiadamiany, a nie aktualizowany automatycznie: pokazujemy tylko info
                 self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. "
                                                 "Kliknij „Aktualizuj teraz”, aby ją zainstalować.")
-                self.pasek_aktualizacji.show()
-                if cicho:
-                    self._powiadom_o_aktualizacji(wydanie)
-                elif QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja} "
-                                          f"(masz {WERSJA}).\n\nZainstalować teraz?") \
+            else:
+                self.tekst_aktualizacji.setText(f"Wersja {wydanie.wersja} pobiera się i zainstaluje automatycznie "
+                                                "(program uruchomi się ponownie, gdy schowasz okno).")
+            self.pasek_aktualizacji.show()
+            if cicho:
+                pierwszy_raz = self.baza.ustawienia().get("ostatnio_powiadomiono_wersja") != wydanie.wersja
+                self._powiadom_o_aktualizacji(wydanie, tylko_powiadom)  # od razu, raz na wersję
+                if not tylko_powiadom:
+                    if pierwszy_raz:
+                        popros_usluge_o_aktualizacje()  # usługa pobiera i instaluje w tle od razu
+                    self._straznik_aktualizacji(wydanie)  # gdyby usługa nie zdążyła w 3 h
+                return
+            if tylko_powiadom:
+                if QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja} "
+                                        f"(masz {WERSJA}).\n\nZainstalować teraz?") \
                         == QMessageBox.StandardButton.Yes:
                     self._aktualizuj_teraz_wynik(wydanie)
-                return
-            if cicho:
-                self._straznik_aktualizacji(wydanie)
-                return
-            # Program Files: nową wersję zainstaluje usługa (konto SYSTEM) albo „Aktualizuj teraz”
-            if QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja}. Usługa "
-                                    "Fakturnika zainstaluje ją sama w ciągu godziny.\n\nZaktualizować teraz?") \
-                    == QMessageBox.StandardButton.Yes:
-                self._aktualizuj_teraz_wynik(wydanie)
+            else:
+                QMessageBox.information(self, "Aktualizacje", f"Wersja {wydanie.wersja} pobiera się i zainstaluje "
+                                       "się automatycznie. Program uruchomi się ponownie, gdy schowasz okno.")
             return
         self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. Instaluje ją instalator "
                                         "za zgodą administratora; dane zostają.")
@@ -6397,15 +6422,19 @@ class OknoGlowne(QMainWindow):
         except OSError:
             pass
 
-    def _powiadom_o_aktualizacji(self, wydanie):
-        """Powiadamia o nowej wersji raz na wersję (nie zasypuje przy sprawdzaniu co 15 minut)."""
+    def _powiadom_o_aktualizacji(self, wydanie, tylko_powiadom: bool = True):
+        """Od razu powiadamia o nowej wersji, raz na wersję (nie zasypuje przy sprawdzaniu co 15 minut)."""
         if self.baza.ustawienia().get("ostatnio_powiadomiono_wersja") == wydanie.wersja:
             return
         self.baza.zapisz_ustawienia({"ostatnio_powiadomiono_wersja": wydanie.wersja})
         self.dziennik.zapisz(f"powiadomienie o dostępnej wersji {wydanie.wersja}")
-        self.powiadom("Dostępna aktualizacja", f"Jest wersja {wydanie.wersja} (masz {WERSJA}). "
-                      "Kliknij, aby zainstalować teraz.", "info",
-                      lambda: (self.pokaz_okno(), self.aktualizuj_teraz()), 15000)
+        if tylko_powiadom:
+            self.powiadom("Dostępna aktualizacja", f"Jest wersja {wydanie.wersja} (masz {WERSJA}). "
+                          "Kliknij, aby zainstalować teraz.", "info",
+                          lambda: (self.pokaz_okno(), self.aktualizuj_teraz()), 15000)
+        else:
+            self.powiadom("Aktualizacja w toku", f"Wersja {wydanie.wersja} pobiera się i zainstaluje "
+                          "się automatycznie.", "info", None, 10000)
 
     def _straznik_aktualizacji(self, wydanie):
         """Gdy usługa nie zainstalowała dostępnej wersji w ciągu 3 godzin pracy komputera (czas wyłączenia
