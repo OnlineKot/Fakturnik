@@ -4801,6 +4801,9 @@ class OknoKontroli(QDialog):
                 if w.klucz == "dziennik":
                     rzad.addWidget(przycisk("Nowy dziennik…", styl="plaski", akcja=self._nowy_dziennik),
                                    alignment=Qt.AlignmentFlag.AlignTop)
+                if w.klucz == "autostart":
+                    rzad.addWidget(przycisk("Włącz ponownie", styl="plaski", akcja=self._wlacz_autostart),
+                                   alignment=Qt.AlignmentFlag.AlignTop)
                 if w.klucz in ignor:
                     rzad.addWidget(przycisk("Przywróć", styl="plaski",
                                             akcja=lambda _=False, k=w.klucz: self._ignoruj(k, False)),
@@ -4830,6 +4833,15 @@ class OknoKontroli(QDialog):
     def _przywroc_wszystkie(self):
         kontrola.zapisz_zignorowane(self.okno.baza, set())
         self.okno.dziennik.zapisz("kontrola komputera: przywrócono wszystkie ostrzeżenia")
+        self.odswiez()
+
+    def _wlacz_autostart(self):
+        from .system import wlacz_autostart_ponownie
+        ok = wlacz_autostart_ponownie()
+        self.okno.dziennik.zapisz("włączenie autostartu ponownie (kontrola komputera)" if ok
+                                  else "nie udało się włączyć autostartu ponownie")
+        self.okno.komunikat("Fakturnik znów uruchamia się z Windows" if ok else
+                            "Nie udało się. Włącz Fakturnik w Menedżerze zadań → Uruchamianie.", blad=not ok)
         self.odswiez()
 
     def _nowy_dziennik(self):

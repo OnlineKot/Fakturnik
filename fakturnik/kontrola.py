@@ -76,6 +76,13 @@ def kontrola(baza, dziennik_ok: bool, program_ok: bool | None) -> list[Wynik]:
     wyniki.append(Wynik("urzadzenie", "Weryfikacja urządzenia", baza.weryfikacja_urzadzenia if baza.ma_haslo else None,
                         "Włączona" if baza.weryfikacja_urzadzenia else "Wyłączona",
                         "Ustawienia → Komputer i urządzenie → Włącz weryfikację urządzenia.", "zalecenie"))
+    from .system import autostart_zablokowany
+    zablokowany = autostart_zablokowany()
+    wyniki.append(Wynik("autostart", "Uruchamianie z Windows", None if zablokowany is None else not zablokowany,
+                        {False: "Włączone: program pilnuje danych od startu komputera",
+                         True: "Wyłączone (np. w Menedżerze zadań) — program nie pilnuje danych po starcie",
+                         None: "Nie da się sprawdzić"}[zablokowany],
+                        "Kliknij „Włącz ponownie”."))
     konto = urzadzenie.konto_administratora()
     wyniki.append(Wynik("konto", "Konto Windows do pracy", None if konto is None else not konto,
                         {True: "Administrator", False: "Zwykłe konto", None: "Nie da się sprawdzić"}[konto],

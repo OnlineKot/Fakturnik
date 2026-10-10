@@ -131,6 +131,53 @@ def _usun_wartosc(galaz, klucz: str, nazwa: str) -> None:
         pass
 
 
+KLUCZ_ZATWIERDZONYCH = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+
+
+def autostart_zablokowany() -> bool | None:
+    """Czy ktoś wyłączył Fakturnik w Menedżerze zadań → Uruchamianie (None = nie da się sprawdzić).
+    Windows zapisuje to w StartupApproved: pierwszy bajt nieparzysty (np. 03) = wyłączone."""
+    if not integracja_dostepna():
+        return None
+    winreg = _rejestr()
+    for galaz in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(galaz, KLUCZ_ZATWIERDZONYCH) as k:
+                dane = winreg.QueryValueEx(k, NAZWA_WPISU)[0]
+        except OSError:
+            continue
+        if isinstance(dane, bytes) and dane and dane[0] & 1:
+            if galaz == winreg.HKEY_CURRENT_USER or not _wpis_uzytkownika_dziala():
+                return True
+    return not autostart_wlaczony()
+
+
+def _wpis_uzytkownika_dziala() -> bool:
+    """Wpis w HKCU\Run istnieje i nie jest wyłączony (wtedy wyłączony wpis instalatora nie przeszkadza)."""
+    winreg = _rejestr()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KLUCZ_AUTOSTARTU) as k:
+            winreg.QueryValueEx(k, NAZWA_WPISU)
+    except OSError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KLUCZ_ZATWIERDZONYCH) as k:
+            dane = winreg.QueryValueEx(k, NAZWA_WPISU)[0]
+        return not (isinstance(dane, bytes) and dane and dane[0] & 1)
+    except OSError:
+        return True
+
+
+def wlacz_autostart_ponownie() -> bool:
+    """Na kliknięcie użytkownika: cofnięcie wyłączenia z Menedżera zadań dla tego konta i wpis autostartu."""
+    if not integracja_dostepna():
+        return False
+    winreg = _rejestr()
+    _usun_wartosc(winreg.HKEY_CURRENT_USER, KLUCZ_ZATWIERDZONYCH, NAZWA_WPISU)
+    ustaw_autostart(True)
+    return autostart_zablokowany() is False
+
+
 def zapewnij_autostart() -> None:
     """Przy każdym starcie: wpis autostartu programu jest na miejscu."""
     if not integracja_dostepna():
