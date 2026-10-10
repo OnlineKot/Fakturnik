@@ -41,7 +41,8 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
     p = QPainter(obraz)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    skala = min(szerokosc / 1920, wysokosc / 1080)
+    skala = min(szerokosc, wysokosc) / 1080  # działa tak samo na ekranie poziomym i pionowym
+    pion = wysokosc > szerokosc * 1.1        # monitor pionowy (obrócony)
     logo = _logo(w["logo"][0])
     nazwa = nazwa_gabinetu or "Fakturnik"
     napis = " ".join(napis.split())[:120]
@@ -54,7 +55,21 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
         p.setPen(QColor(kolor))
         p.drawText(prostokat, wyrownanie, t)
 
-    if w["uklad"] == "znak":
+    if w["uklad"] == "znak" and pion:
+        # pionowy monitor: znak wodny na środku, nazwa i napis wyśrodkowane na dole (nie wychodzą poza boki)
+        szer = szerokosc * 0.78
+        wys = szer * 120 / 80
+        p.setOpacity(w["logo"][1])
+        logo.render(p, QRectF((szerokosc - szer) / 2, wysokosc * 0.40 - wys / 2, szer, wys))
+        p.setOpacity(1.0)
+        tekst(nazwa, 30 * skala, QFont.Weight.DemiBold, w["tekst"],
+              QRectF(35 * skala, wysokosc - 150 * skala, szerokosc - 70 * skala, 40 * skala),
+              Qt.AlignmentFlag.AlignCenter)
+        if napis:
+            tekst(napis, 20 * skala, QFont.Weight.Normal, w["opis"],
+                  QRectF(35 * skala, wysokosc - 106 * skala, szerokosc - 70 * skala, 32 * skala),
+                  Qt.AlignmentFlag.AlignCenter)
+    elif w["uklad"] == "znak":
         # duży, ledwo widoczny znak wodny po prawej i nazwa gabinetu po prawej na dole
         wys = wysokosc * 0.72
         szer = wys * 80 / 120

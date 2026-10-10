@@ -4162,9 +4162,11 @@ class StronaUstawienia(Strona):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             u = self.okno.baza.ustawienia()
-            plik = tapeta.zapisz(wariant, self.okno.baza.sciezka.parent, max(1280, rozmiar.width()),
-                                 max(720, rozmiar.height()), u["nazwa"].split(",")[0].strip(),
-                                 u.get("tapeta_napis", ""))
+            # zachowaj rzeczywistą orientację ekranu (pionowy monitor: wysokość > szerokość)
+            szer = max(800, int(rozmiar.width()) or 1920)
+            wys = max(600, int(rozmiar.height()) or 1080)
+            plik = tapeta.zapisz(wariant, self.okno.baza.sciezka.parent, szer, wys,
+                                 u["nazwa"].split(",")[0].strip(), u.get("tapeta_napis", ""))
             obecna = windows.obecna_tapeta()
             if obecna and "tapeta-" not in Path(obecna).name and not u["poprzednia_tapeta"]:
                 self.okno.baza.zapisz_ustawienia({"poprzednia_tapeta": obecna})

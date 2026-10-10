@@ -20,8 +20,23 @@ def test_tapeta_w_rozdzielczosci_ekranu(tmp_path):
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     from fakturnik import tapeta
+    from PySide6.QtGui import QImage
     for wariant in tapeta.WARIANTY:
         plik = tapeta.zapisz(wariant, tmp_path, 640, 360, "Gabinet")
-        from PySide6.QtGui import QImage
         obraz = QImage(str(plik))
         assert (obraz.width(), obraz.height()) == (640, 360)
+
+
+def test_tapeta_na_pionowym_monitorze(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from fakturnik import tapeta
+    from PySide6.QtGui import QImage
+    # monitor obrócony (pionowy): tapeta ma tę samą orientację i nic nie wychodzi poza krawędź
+    for wariant in tapeta.WARIANTY:
+        obraz = tapeta.wygeneruj(wariant, 1080, 1920, "Gabinet Dr Nowak", "Rejestracja: 600 100 200")
+        assert (obraz.width(), obraz.height()) == (1080, 1920)
+        # róg prawy-górny tła nie jest zamalowany logo/tekstem wychodzącym poza kadr: po prostu renderuje się bez błędu
+    plik = tapeta.zapisz("morski", tmp_path, 1080, 1920, "Gabinet", "tel. 600 100 200")
+    assert QImage(str(plik)).height() > QImage(str(plik)).width()
