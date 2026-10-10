@@ -325,14 +325,32 @@ def _wyglada_na_program(plik: Path) -> bool:
         return False
 
 
+ZNACZNIK_BEZ_AUTO = "bez-auto-aktualizacji"
+
+
+def auto_aktualizacje_wylaczone() -> bool:
+    """True, gdy choć jeden użytkownik wybrał „tylko powiadamiaj” (znacznik obok danych): usługa
+    wtedy nie instaluje aktualizacji sama, tylko czeka, aż ktoś kliknie „Aktualizuj teraz”."""
+    for _, dane in profile_z_danymi():
+        try:
+            if (dane / ZNACZNIK_BEZ_AUTO).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def aktualizuj_program() -> str:
     """Pancerna aktualizacja: pobranie (SHA-256) → autotest pobranej wersji → podmiana → autotest
     zainstalowanej; przy jakimkolwiek błędzie zostaje (albo wraca) poprzednia, działająca wersja,
     a wadliwa wersja jest pomijana przez dobę. Działający u użytkownika program zauważy nowy plik
-    i uruchomi się ponownie, gdy okno będzie schowane."""
+    i uruchomi się ponownie, gdy okno będzie schowane. Gdy użytkownik wybrał „tylko powiadamiaj”,
+    usługa aktualizacji nie instaluje — robi to dopiero „Aktualizuj teraz” w programie."""
     from . import aktualizacje
     if not aktualizacje.czy_spakowany():
         return "pominięto (wersja ze źródeł)"
+    if auto_aktualizacje_wylaczone():
+        return "pominięto (ustawienie: tylko powiadamiaj)"
     exe = Path(sys.executable)
     with _Blokada(katalog_uslugi() / "aktualizacja.lock") as moja:
         if not moja:

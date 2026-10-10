@@ -3956,10 +3956,16 @@ class StronaUstawienia(Strona):
                               ("5 spacji, potem PIN", "spacje_pin"), ("Spacja, potem hasło", "haslo")):
             self.zaslona_odblokowanie.addItem(opis, wartosc)
         self.zaslona_odblokowanie.setToolTip("PIN: cyfry i Enter. Hasło: spacja, potem hasło i Enter. "
-                                             "Po 5 błędach Windows się blokuje.")
+                                             "Po 10 błędach Windows się blokuje.")
         rzad_odbl.addWidget(self.zaslona_odblokowanie)
         rzad_odbl.addStretch()
         ku.addLayout(rzad_odbl)
+        rzad_napis_z = QHBoxLayout()
+        rzad_napis_z.addWidget(QLabel("Własny napis", objectName="etykieta"))
+        self.zaslona_napis = QLineEdit(placeholderText="Napis na zasłonie, pod zegarem (np. „Gabinet zamknięty do 8:00”)",
+                                       maxLength=80)
+        rzad_napis_z.addWidget(self.zaslona_napis, 1)
+        ku.addLayout(rzad_napis_z)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -4045,8 +4051,11 @@ class StronaUstawienia(Strona):
         rzad.addWidget(przycisk("Sprawdź teraz", "odswiez", akcja=lambda: self.okno.sprawdz_aktualizacje(cicho=False)))
         rzad.addWidget(przycisk("Aktualizuj teraz", "pobierz", "glowny", lambda: self.okno.aktualizuj_teraz()))
         ku.addLayout(rzad)
-        self.auto_aktualizacje = QCheckBox("Sprawdzaj aktualizacje automatycznie (w instalacji administratora instaluje je usługa)")
+        self.auto_aktualizacje = QCheckBox("Sprawdzaj aktualizacje automatycznie (co 15 minut)")
         ku.addWidget(self.auto_aktualizacje)
+        self.aktualizacje_powiadom = QCheckBox("Tylko powiadamiaj o aktualizacji — nie instaluj automatycznie "
+                                               "(instalujesz ją sam przyciskiem „Aktualizuj teraz”)")
+        ku.addWidget(self.aktualizacje_powiadom)
         prawa.addWidget(k)
         prawa.addSpacing(14)
 
@@ -4372,11 +4381,13 @@ class StronaUstawienia(Strona):
                 self._dodaj_do_cennika(nazwa.strip(), liczba(cena))
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
+        self.aktualizacje_powiadom.setChecked(u.get("aktualizacje_powiadom", "1") == "1")
         self.tryb.setCurrentIndex(max(self.tryb.findData(u["tryb"]), 0))
         self.blokada_minut.setValue(int(liczba(u["blokada_minut"]) or 10))
         self.zaslona_wl.setChecked(u["zaslona"] == "1")
         self.skaner_pobrane.setChecked(u["skaner_pobrane"] == "1")
         self.dokumenty_do_plikow.setChecked(u["dokumenty_do_plikow"] == "1")
+        self.zaslona_napis.setText(u.get("zaslona_napis", ""))
         self.zaslona_sekund.setValue(int(liczba(u["zaslona_sekund"]) or 30))
         self.zaslona_sekund.setEnabled(u["zaslona"] == "1")
         self.zaslona_gaszenie.setValue(int(liczba(u["zaslona_gaszenie_min"]) or 0))
@@ -4514,6 +4525,7 @@ class StronaUstawienia(Strona):
         })
         wartosci["rodo_lat"] = str(self.rodo_lat.value())
         wartosci["auto_aktualizacje"] = "1" if self.auto_aktualizacje.isChecked() else "0"
+        wartosci["aktualizacje_powiadom"] = "1" if self.aktualizacje_powiadom.isChecked() else "0"
         wartosci["w_tle"] = "1" if self.w_tle.isChecked() else "0"
         wartosci["tryb"] = self.tryb.currentData()
         wartosci["blokada_minut"] = str(self.blokada_minut.value())
@@ -4532,10 +4544,12 @@ class StronaUstawienia(Strona):
                                     "Zostaje odblokowanie 5 spacjami.")
             odbl = "spacje"
         wartosci["zaslona_odblokowanie"] = odbl
+        wartosci["zaslona_napis"] = " ".join(self.zaslona_napis.text().split())
         if integracja_dostepna():
             zapewnij_autostart()
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
         self.okno.baza.zapisz_ustawienia(wartosci)
+        self.okno.zapisz_znacznik_aktualizacji()
         self.okno.komunikat("Zapisano ustawienia")
         self.okno.strona_nowy.ustaw_tryb(wartosci["tryb"])
         self.okno.ustaw_czas_blokady()
@@ -5707,11 +5721,11 @@ class OknoGlowne(QMainWindow):
         self.wydanie: aktualizacje.Wydanie | None = None
         self._restart_argumenty: list[str] = []
         self._aktualizacja_w_toku = False
+        self.zapisz_znacznik_aktualizacji()  # znacznik „tylko powiadamiaj” dla usługi, zgodny z ustawieniem
         if aktualizacje.czy_spakowany() and self.baza.ustawienia()["auto_aktualizacje"] == "1":
             QTimer.singleShot(2500, lambda: self.sprawdz_aktualizacje(cicho=True))
             QTimer.singleShot(6000, self.sprawdz_program)
-        # program działa w tle całymi dniami, więc o nowe wersje pyta też co 6 godzin
-        self.zegar_aktualizacji = QTimer(self, interval=60 * 60 * 1000)
+        self.zegar_aktualizacji = QTimer(self, interval=15 * 60 * 1000)  # sprawdzaj co 15 minut
         self.zegar_aktualizacji.timeout.connect(self._okresowa_aktualizacja)
         self.zegar_aktualizacji.start()
         QTimer.singleShot(20_000, self._uzupelniaj_w_tle)
@@ -5911,7 +5925,8 @@ class OknoGlowne(QMainWindow):
         elif tryb == "haslo" and not self.baza.ma_haslo:
             tryb = "spacje"
         self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0),
-                               tryb=tryb, sprawdz_pin=self._pin_zaslony, sprawdz_haslo=self._haslo_zaslony)
+                               tryb=tryb, sprawdz_pin=self._pin_zaslony, sprawdz_haslo=self._haslo_zaslony,
+                               napis=u.get("zaslona_napis", ""))
         self.zaslona.zamknieta.connect(lambda: setattr(self, "zaslona", None))
         self.zaslona.za_duzo_prob.connect(self._zaslona_za_duzo_prob)
         self.zaslona.pokaz()
@@ -6338,7 +6353,20 @@ class OknoGlowne(QMainWindow):
             if not cicho:
                 QMessageBox.information(self, "Aktualizacje", f"Masz najnowszą wersję ({WERSJA}).")
             return
+        tylko_powiadom = self.baza.ustawienia().get("aktualizacje_powiadom", "1") == "1"
         if aktualizacje.czy_spakowany() and aktualizacje.zainstalowany():
+            if tylko_powiadom:
+                # użytkownik woli być powiadamiany, a nie aktualizowany automatycznie: pokazujemy tylko info
+                self.tekst_aktualizacji.setText(f"Dostępna jest wersja {wydanie.wersja}. "
+                                                "Kliknij „Aktualizuj teraz”, aby ją zainstalować.")
+                self.pasek_aktualizacji.show()
+                if cicho:
+                    self._powiadom_o_aktualizacji(wydanie)
+                elif QMessageBox.question(self, "Aktualizacje", f"Dostępna jest wersja {wydanie.wersja} "
+                                          f"(masz {WERSJA}).\n\nZainstalować teraz?") \
+                        == QMessageBox.StandardButton.Yes:
+                    self._aktualizuj_teraz_wynik(wydanie)
+                return
             if cicho:
                 self._straznik_aktualizacji(wydanie)
                 return
@@ -6354,6 +6382,30 @@ class OknoGlowne(QMainWindow):
         if cicho and not self.isVisible():
             self.powiadom("Dostępna aktualizacja", f"Wersja {wydanie.wersja}. Kliknij, aby ją zainstalować.", "info",
                           lambda: (self.pokaz_okno(), self.instaluj_aktualizacje() if self.isVisible() else None))
+
+    ZNACZNIK_BEZ_AUTO = "bez-auto-aktualizacji"
+
+    def zapisz_znacznik_aktualizacji(self):
+        """Zapisuje obok danych znacznik „tylko powiadamiaj”, który czyta usługa (konto SYSTEM),
+        żeby nie instalowała aktualizacji automatycznie wbrew ustawieniu użytkownika."""
+        plik = self.baza.sciezka.parent / self.ZNACZNIK_BEZ_AUTO
+        try:
+            if self.baza.ustawienia().get("aktualizacje_powiadom", "1") == "1":
+                plik.write_text("1", encoding="ascii")
+            else:
+                plik.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _powiadom_o_aktualizacji(self, wydanie):
+        """Powiadamia o nowej wersji raz na wersję (nie zasypuje przy sprawdzaniu co 15 minut)."""
+        if self.baza.ustawienia().get("ostatnio_powiadomiono_wersja") == wydanie.wersja:
+            return
+        self.baza.zapisz_ustawienia({"ostatnio_powiadomiono_wersja": wydanie.wersja})
+        self.dziennik.zapisz(f"powiadomienie o dostępnej wersji {wydanie.wersja}")
+        self.powiadom("Dostępna aktualizacja", f"Jest wersja {wydanie.wersja} (masz {WERSJA}). "
+                      "Kliknij, aby zainstalować teraz.", "info",
+                      lambda: (self.pokaz_okno(), self.aktualizuj_teraz()), 15000)
 
     def _straznik_aktualizacji(self, wydanie):
         """Gdy usługa nie zainstalowała dostępnej wersji w ciągu 3 godzin pracy komputera (czas wyłączenia

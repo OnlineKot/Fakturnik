@@ -16,6 +16,7 @@ def zaslona(tryb):
     from fakturnik.zaslona import Zaslona
     z = Zaslona("Gabinet", 10, tryb=tryb, sprawdz_pin=lambda p: p == "2580",
                 sprawdz_haslo=lambda h: h == "Tajne Hasło!")
+    z._poll_aktywny = False  # w testach podajemy klawisze przez _klawisz_windows (na Windows liczyłby je odczyt stanu)
     stan = {"zamknieta": False, "proby": False}
     z.zamknieta.connect(lambda: stan.update(zamknieta=True))
     z.za_duzo_prob.connect(lambda: stan.update(proby=True))

@@ -76,6 +76,9 @@ DOMYSLNE_USTAWIENIA = {
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
     "zaslona_odblokowanie": "spacje",   # dowolny | spacje | pin | spacje_pin | haslo (spacja, potem hasło)
     "tapeta_napis": "",                 # własny napis na tapecie (pod nazwą gabinetu)
+    "zaslona_napis": "",                # własny napis na zasłonie ekranu (pod zegarem i datą)
+    "aktualizacje_powiadom": "1",       # "1" = tylko powiadamiaj o aktualizacji (nie instaluj sama)
+    "ostatnio_powiadomiono_wersja": "", # ostatnia wersja, o której już powiadomiono (bez powtórek co 15 min)
     "piny": "",                         # PIN-y szybkiego odblokowania (JSON: konto -> sól i skrót Argon2id)
     "pin_bledy": "0",                   # błędne PIN-y od ostatniego logowania pełnym hasłem
     "aktualizacja_widziana": "",        # wersja|kiedy: strażnik aktualizacji (usługa ma ją zainstalować w 3 h)

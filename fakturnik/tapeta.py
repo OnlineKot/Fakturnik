@@ -18,7 +18,7 @@ WARIANTY = {
                "tekst": "#e8f3f5", "opis": "#86a6ac"},
     "srodek": {"nazwa": "Logo na środku", "tlo": "#0d1b1f", "logo": ("#e8f3f5", 0.92), "uklad": "srodek",
                "tekst": "#e8f3f5", "opis": "#7f9499"},
-    "grafit": {"nazwa": "Grafit", "tlo": "#17191b", "logo": ("#5fb3c2", 0.85), "uklad": "rog",
+    "grafit": {"nazwa": "Grafit", "tlo": "#17191b", "logo": ("#5fb3c2", 0.16), "uklad": "znak",
                "tekst": "#e6e8ea", "opis": "#8a9196"},
     "jasny": {"nazwa": "Jasny gabinet", "tlo": "#f2f5f6", "logo": ("#1e6b7b", 0.10), "uklad": "znak",
               "tekst": "#0f2c33", "opis": "#5b6670"},

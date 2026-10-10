@@ -300,7 +300,10 @@ class _Ekran(QWidget):
         czcionka_zegara = self._czcionka(self.font(), 96 * jednostka, QFont.Weight.Light)
         czcionka_daty = self._czcionka(self.font(), 24 * jednostka, QFont.Weight.Normal)
         czcionka_nazwy = self._czcionka(self.font(), 24 * jednostka, QFont.Weight.DemiBold)
+        czcionka_napisu = self._czcionka(self.font(), 19 * jednostka, QFont.Weight.Normal)
         teksty = [(czcionka_zegara, zegar), (czcionka_daty, data)] + ([(czcionka_nazwy, z.nazwa)] if z.nazwa else [])
+        if z.napis:
+            teksty.append((czcionka_napisu, z.napis))
         szer_bloku = szer_logo
         for f, tekst in teksty:
             szer = QFontMetricsF(f).horizontalAdvance(tekst)
@@ -311,8 +314,10 @@ class _Ekran(QWidget):
         wys_nazwy = QFontMetricsF(czcionka_nazwy).height() if z.nazwa else 0
         wys_zegara = QFontMetricsF(czcionka_zegara).height()
         wys_daty = QFontMetricsF(czcionka_daty).height()
+        wys_napisu = QFontMetricsF(czcionka_napisu).height() if z.napis else 0
         odstep = 18 * jednostka
-        wys_bloku = wys_nazwy + (odstep if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
+        wys_bloku = (wys_nazwy + (odstep if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
+                     + (wys_napisu + 6 * jednostka if z.napis else 0))
         if z.tryb in ("pin", "spacje_pin", "haslo"):
             wys_bloku += 24 * jednostka  # miejsce na kropki (stała wysokość: blok nie skacze)
         lewo = odbicie((teraz_m - z.start) * PREDKOSC * jednostka * 1000 + z.faza[0] * w, max(0.0, w - szer_bloku))
@@ -335,12 +340,17 @@ class _Ekran(QWidget):
         p.setFont(czcionka_daty)
         p.setPen(QColor("#7f9499"))
         p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
+        if z.napis:
+            p.setFont(czcionka_napisu)
+            p.setPen(QColor("#9aabaf"))
+            p.drawText(QRectF(lewo, y + wys_zegara + wys_daty + 6 * jednostka, szer_bloku, wys_napisu),
+                       Qt.AlignmentFlag.AlignCenter, z.napis)
         if (ile := z.liczba_kropek()):
             # dyskretnie: małe, przygaszone kropki tylko za wpisane znaki (bez pustych pól i napisów)
             r = 2.2 * jednostka
             odstep_k = 11 * jednostka
             x0 = srodek_x - (ile - 1) * odstep_k / 2
-            yk = y + wys_zegara + wys_daty + 18 * jednostka
+            yk = y + wys_zegara + wys_daty + (wys_napisu + 6 * jednostka if z.napis else 0) + 18 * jednostka
             kolor = QColor("#6e3a38") if time.monotonic() < z.blad_do else QColor("#4a5a5e")
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(kolor)
@@ -378,7 +388,7 @@ class Zaslona(QWidget):
     za_duzo_prob = Signal()
 
     def __init__(self, nazwa: str = "", gaszenie_min: float = 10, tryb: str = "spacje", sprawdz_pin=None,
-                 sprawdz_haslo=None):
+                 sprawdz_haslo=None, napis: str = ""):
         super().__init__()
         if tryb in ("pin", "spacje_pin") and not sprawdz_pin or tryb == "haslo" and not sprawdz_haslo:
             tryb = "spacje"  # bez sposobu sprawdzenia nikt nie mógłby zgasić zasłony
@@ -396,6 +406,7 @@ class Zaslona(QWidget):
         self._ostatnie_zrodlo = ""
         self.logo = QSvgRenderer(str(LOGO))
         self.nazwa = nazwa.strip()
+        self.napis = " ".join(napis.split())[:80]
         self.gaszenie_s = max(0.0, gaszenie_min) * 60
         self.faza = (random.random(), random.random())  # każda zasłona zaczyna w innym miejscu
         self.start = time.monotonic()
