@@ -33,7 +33,8 @@ def _logo(kolor: str) -> QSvgRenderer:
     return QSvgRenderer(QByteArray(svg.encode("utf-8")))
 
 
-def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str = "") -> QImage:
+def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str = "", napis: str = "") -> QImage:
+    """`napis`: własny tekst pod nazwą gabinetu (np. telefon, godziny, hasło Wi-Fi dla gości)."""
     w = WARIANTY.get(STARE_NAZWY.get(wariant, wariant), WARIANTY["morski"])
     obraz = QImage(szerokosc, wysokosc, QImage.Format.Format_RGB32)
     obraz.fill(QColor(w["tlo"]))
@@ -43,6 +44,7 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
     skala = min(szerokosc / 1920, wysokosc / 1080)
     logo = _logo(w["logo"][0])
     nazwa = nazwa_gabinetu or "Fakturnik"
+    napis = " ".join(napis.split())[:120]
 
     def tekst(t: str, px: float, waga, kolor: str, prostokat: QRectF, wyrownanie):
         f = QFont("Inter")
@@ -62,6 +64,10 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
         tekst(nazwa, 30 * skala, QFont.Weight.DemiBold, w["tekst"],
               QRectF(0, wysokosc - 170 * skala, szerokosc - 70 * skala, 40 * skala),
               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if napis:
+            tekst(napis, 20 * skala, QFont.Weight.Normal, w["opis"],
+                  QRectF(0, wysokosc - 126 * skala, szerokosc - 70 * skala, 32 * skala),
+                  Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     elif w["uklad"] == "srodek":
         # logo na środku, pod nim nazwa gabinetu (jak na zasłonie ekranu)
         wys = wysokosc * 0.26
@@ -71,6 +77,9 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
         p.setOpacity(1.0)
         tekst(nazwa, 34 * skala, QFont.Weight.DemiBold, w["tekst"],
               QRectF(0, wysokosc * 0.40 + wys / 2 + 30 * skala, szerokosc, 50 * skala), Qt.AlignmentFlag.AlignCenter)
+        if napis:
+            tekst(napis, 22 * skala, QFont.Weight.Normal, w["opis"],
+                  QRectF(0, wysokosc * 0.40 + wys / 2 + 84 * skala, szerokosc, 36 * skala), Qt.AlignmentFlag.AlignCenter)
     else:
         # małe logo z nazwą w prawym dolnym rogu, reszta pusta
         wys = 120 * skala
@@ -83,13 +92,18 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
         tekst(nazwa, 26 * skala, QFont.Weight.DemiBold, w["tekst"],
               QRectF(0, y + wys + 18 * skala, szerokosc - 90 * skala, 36 * skala),
               Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if napis:
+            tekst(napis, 18 * skala, QFont.Weight.Normal, w["opis"],
+                  QRectF(0, y + wys + 56 * skala, szerokosc - 90 * skala, 30 * skala),
+                  Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     p.end()
     return obraz
 
 
-def zapisz(wariant: str, katalog: Path, szerokosc: int, wysokosc: int, nazwa_gabinetu: str = "") -> Path:
+def zapisz(wariant: str, katalog: Path, szerokosc: int, wysokosc: int, nazwa_gabinetu: str = "",
+           napis: str = "") -> Path:
     katalog.mkdir(parents=True, exist_ok=True)
     plik = katalog / f"tapeta-{wariant}.png"
-    wygeneruj(wariant, szerokosc, wysokosc, nazwa_gabinetu).save(str(plik), "PNG")
+    wygeneruj(wariant, szerokosc, wysokosc, nazwa_gabinetu, napis).save(str(plik), "PNG")
     return plik

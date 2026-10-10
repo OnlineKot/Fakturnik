@@ -74,7 +74,8 @@ DOMYSLNE_USTAWIENIA = {
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
-    "zaslona_odblokowanie": "spacje",   # spacje | pin | spacje_pin (5 spacji, potem PIN)
+    "zaslona_odblokowanie": "spacje",   # dowolny | spacje | pin | spacje_pin | haslo (spacja, potem hasło)
+    "tapeta_napis": "",                 # własny napis na tapecie (pod nazwą gabinetu)
     "piny": "",                         # PIN-y szybkiego odblokowania (JSON: konto -> sól i skrót Argon2id)
     "pin_bledy": "0",                   # błędne PIN-y od ostatniego logowania pełnym hasłem
     "aktualizacja_widziana": "",        # wersja|kiedy: strażnik aktualizacji (usługa ma ją zainstalować w 3 h)

@@ -18,9 +18,9 @@ NAZWA_SERWERA = f"Fakturnik-{getpass.getuser()}"
 ROZSZERZENIA_MENU = ("pdf", "jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp")
 KLUCZ_AUTOSTARTU = r"Software\Microsoft\Windows\CurrentVersion\Run"
 NAZWA_WPISU = "Fakturnik"
-# Wybór użytkownika „nie uruchamiaj z Windows” (HKCU, odporny na aktualizację): wpis instalatora w HKLM
-# jest wspólny dla wszystkich kont i instalator odtwarza go przy każdej aktualizacji, więc program sam
-# kończy się po starcie z Windows, gdy użytkownik wyłączył autostart.
+# Autostart jest zawsze włączony w programie (Fakturnik pilnuje danych): przy każdym starcie program
+# przywraca swój wpis, jeśli zniknął. Wyłączenia w Menedżerze zadań Windows program nie nadpisuje.
+# Starszy zapisany wybór „nie uruchamiaj” jest kasowany.
 KLUCZ_PREFERENCJI = r"Software\Fakturnik\Preferencje"
 
 
@@ -110,8 +110,8 @@ def polecenie_z_argumentow(argumenty: list[str]) -> dict:
     if "--dodaj" in argumenty:
         i = argumenty.index("--dodaj")
         return {"akcja": "dodaj", "pliki": [str(Path(p).resolve()) for p in argumenty[i + 1:] if Path(p).is_file()]}
-    if "--w-tle" in argumenty:
-        return {"akcja": "w_tle"}
+    if "--w-tle" in argumenty:  # --straznik: ponowne uruchomienie przez strażnika (bez wyskakującego okna)
+        return {"akcja": "w_tle", "straznik": "--straznik" in argumenty}
     return {"akcja": "pokaz"}
 
 
@@ -122,21 +122,23 @@ def _rejestr():
     return winreg
 
 
-def autostart_wylaczony_przez_uzytkownika() -> bool:
-    if not integracja_dostepna():
-        return False
+def _usun_wartosc(galaz, klucz: str, nazwa: str) -> None:
     winreg = _rejestr()
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, KLUCZ_PREFERENCJI) as k:
-            return int(winreg.QueryValueEx(k, "autostart_wylaczony")[0]) == 1
-    except (OSError, ValueError):
-        return False
+        with winreg.OpenKey(galaz, klucz, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, nazwa)
+    except OSError:
+        pass
 
 
-def _zapamietaj_wybor_autostartu(wylaczony: bool) -> None:
+def zapewnij_autostart() -> None:
+    """Przy każdym starcie: wpis autostartu programu jest na miejscu."""
+    if not integracja_dostepna():
+        return
     winreg = _rejestr()
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, KLUCZ_PREFERENCJI) as k:
-        winreg.SetValueEx(k, "autostart_wylaczony", 0, winreg.REG_DWORD, int(wylaczony))
+    _usun_wartosc(winreg.HKEY_CURRENT_USER, KLUCZ_PREFERENCJI, "autostart_wylaczony")
+    if not autostart_wlaczony():
+        ustaw_autostart(True)
 
 
 def start_z_windows(argumenty: list[str]) -> bool:
@@ -145,7 +147,7 @@ def start_z_windows(argumenty: list[str]) -> bool:
 
 
 def autostart_wlaczony() -> bool:
-    if not integracja_dostepna() or autostart_wylaczony_przez_uzytkownika():
+    if not integracja_dostepna():
         return False
     winreg = _rejestr()
     for galaz in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):  # HKLM: wpis z instalatora (wszystkie konta)
@@ -163,7 +165,6 @@ def ustaw_autostart(wlacz: bool) -> bool:
     if not integracja_dostepna():
         return False
     winreg = _rejestr()
-    _zapamietaj_wybor_autostartu(not wlacz)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, KLUCZ_AUTOSTARTU) as k:
         if wlacz:
             winreg.SetValueEx(k, NAZWA_WPISU, 0, winreg.REG_SZ, f'"{sciezka_programu()}" --w-tle')

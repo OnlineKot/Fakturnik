@@ -1,8 +1,9 @@
 """Zasłona ekranu w stylu klasycznego wygaszacza: czarne tło, a na nim logo gabinetu, nazwa gabinetu,
 zegar i data, które wolno jeżdżą po ekranie i odbijają się od krawędzi. Bez napisów-instrukcji.
 
-Sposób odblokowania do wyboru: 5 spacji (domyślnie), PIN (cyfry i Enter) albo 5 spacji, a potem PIN.
-Po pięciu błędnych PIN-ach zasłona zgłasza to programowi, który blokuje Windows i siebie.
+Sposób odblokowania do wyboru: dowolny klawisz (jak zwykły wygaszacz), 5 spacji (domyślnie), PIN
+(cyfry i Enter), 5 spacji, a potem PIN, albo spacja, a potem pełne hasło i Enter. Po pięciu błędnych
+PIN-ach lub hasłach zasłona zgłasza to programowi, który blokuje Windows i siebie.
 
 Spacjami znika tylko po DOKŁADNIE pięciu naciśnięciach i krótkiej pauzie. Sześć i więcej spacji,
 przytrzymana spacja albo inny klawisz w serii nic nie dają. Spacje są odbierane przez hak klawiatury
@@ -78,7 +79,7 @@ class HakKlawiatury:
     """
 
     def __init__(self, obsluga):
-        self.obsluga = obsluga  # obsluga(vk, powtorzenie)
+        self.obsluga = obsluga  # obsluga(vk, powtorzenie, znak)
         self._hak = None
         self._funkcja = None
         self._wcisniete: set[int] = set()
@@ -108,6 +109,26 @@ class HakKlawiatury:
             kernel32.GetModuleHandleW.restype = wintypes.HMODULE
             WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
             LLKHF_INJECTED = 0x10
+            user32.ToUnicodeEx.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_char_p, wintypes.LPWSTR,
+                                           ctypes.c_int, wintypes.UINT, ctypes.c_void_p]
+            user32.GetKeyboardLayout.restype = ctypes.c_void_p
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+            def znak(vk: int, skan: int) -> str:
+                """Znak klawisza w układzie klawiatury użytkownika (z Shiftem, AltGr i Caps Lockiem) — do hasła."""
+                stan = (ctypes.c_char * 256)()
+                for k in self._wcisniete:
+                    if 0 <= k < 256:
+                        stan[k] = 0x80
+                for ogolny, szczegolowe in ((0x10, (0xA0, 0xA1)), (0x11, (0xA2, 0xA3)), (0x12, (0xA4, 0xA5))):
+                    if any(k in self._wcisniete for k in szczegolowe):
+                        stan[ogolny] = 0x80
+                stan[0x14] = user32.GetKeyState(0x14) & 1  # Caps Lock włączony
+                uklad = user32.GetKeyboardLayout(user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None))
+                bufor = ctypes.create_unicode_buffer(8)
+                ile = user32.ToUnicodeEx(vk, skan, ctypes.cast(stan, ctypes.c_char_p), bufor, 8, 0x4, uklad)
+                return bufor.value[:ile] if ile > 0 else ""
 
             def funkcja(kod, wparam, lparam):
                 try:
@@ -118,7 +139,11 @@ class HakKlawiatury:
                             if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN):
                                 powtorzenie = vk in self._wcisniete
                                 self._wcisniete.add(vk)
-                                self.obsluga(vk, powtorzenie)
+                                try:
+                                    tekst = znak(vk, int(dane.scanCode))
+                                except Exception:  # noqa: BLE001
+                                    tekst = ""
+                                self.obsluga(vk, powtorzenie, tekst)
                             elif wparam in (WM_KEYUP, WM_SYSKEYUP):
                                 self._wcisniete.discard(vk)
                             return 1  # klawisz nie trafia do innych programów
@@ -154,6 +179,8 @@ VK_QT = {0x0D: Qt.Key.Key_Return, 0x08: Qt.Key.Key_Backspace, 0x1B: Qt.Key.Key_E
 VK_QT.update({0x30 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # cyfry nad literami
 VK_QT.update({0x60 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # klawiatura numeryczna
 PROBY_PIN = 5
+TRYBY = ("dowolny", "spacje", "pin", "spacje_pin", "haslo")
+MAX_HASLO = 128
 CZAS_PIN = 20.0      # tyle sekund bez klawisza i wpisywany PIN się kasuje (w trybie spacje+PIN: znów spacje)
 MAX_PIN = 8
 
@@ -268,8 +295,8 @@ class _Ekran(QWidget):
         wys_daty = QFontMetricsF(czcionka_daty).height()
         odstep = 18 * jednostka
         wys_bloku = wys_nazwy + (odstep if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
-        if z.tryb != "spacje":
-            wys_bloku += 34 * jednostka  # miejsce na kropki PIN-u (stała wysokość: blok nie skacze)
+        if z.tryb in ("pin", "spacje_pin", "haslo"):
+            wys_bloku += 24 * jednostka  # miejsce na kropki (stała wysokość: blok nie skacze)
         lewo = odbicie((teraz_m - z.start) * PREDKOSC * jednostka * 1000 + z.faza[0] * w, max(0.0, w - szer_bloku))
         gora = odbicie((teraz_m - z.start) * PREDKOSC * 0.77 * jednostka * 1000 + z.faza[1] * h,
                        max(0.0, h - wys_bloku))
@@ -290,29 +317,31 @@ class _Ekran(QWidget):
         p.setFont(czcionka_daty)
         p.setPen(QColor("#7f9499"))
         p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
-        if z.pokaz_kropki():
-            # wpisywany PIN: kropki pod datą (bez napisów); czerwone przez chwilę po błędnym PIN-ie
-            r = 5 * jednostka
-            ile = max(4, len(z.pin))
-            odstep_k = 22 * jednostka
+        if (ile := z.liczba_kropek()):
+            # dyskretnie: małe, przygaszone kropki tylko za wpisane znaki (bez pustych pól i napisów)
+            r = 2.2 * jednostka
+            odstep_k = 11 * jednostka
             x0 = srodek_x - (ile - 1) * odstep_k / 2
-            yk = y + wys_zegara + wys_daty + 24 * jednostka
-            kolor = QColor("#c0504d") if time.monotonic() < z.blad_do else QColor("#d9e1e3")
+            yk = y + wys_zegara + wys_daty + 18 * jednostka
+            kolor = QColor("#6e3a38") if time.monotonic() < z.blad_do else QColor("#4a5a5e")
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(kolor)
             for i in range(ile):
-                p.setPen(kolor)
-                p.setBrush(kolor if i < len(z.pin) else Qt.BrushStyle.NoBrush)
                 p.drawEllipse(QRectF(x0 + i * odstep_k - r, yk - r, 2 * r, 2 * r))
         p.end()
 
     def keyPressEvent(self, e):
         if not self.zaslona.hak.wlaczony:
-            self.zaslona.klawisz(e.key(), e.isAutoRepeat())
+            self.zaslona.klawisz(e.key(), e.isAutoRepeat(), e.text())
 
     def mouseMoveEvent(self, _):
         self.zaslona.obudz()
 
     def mousePressEvent(self, _):
         """Kliknięcie zawsze oddaje klawiaturę zasłonie (Windows na to pozwala), potem działają spacje."""
+        if self.zaslona.tryb == "dowolny":
+            self.zaslona.zamknij()
+            return
         self.zaslona.obudz()
         self.zaslona._przejmij_klawiature()
 
@@ -328,10 +357,15 @@ class Zaslona(QWidget):
     zamknieta = Signal()
     za_duzo_prob = Signal()
 
-    def __init__(self, nazwa: str = "", gaszenie_min: float = 10, tryb: str = "spacje", sprawdz_pin=None):
+    def __init__(self, nazwa: str = "", gaszenie_min: float = 10, tryb: str = "spacje", sprawdz_pin=None,
+                 sprawdz_haslo=None):
         super().__init__()
-        self.tryb = tryb if (tryb in ("pin", "spacje_pin") and sprawdz_pin) else "spacje"
+        if tryb in ("pin", "spacje_pin") and not sprawdz_pin or tryb == "haslo" and not sprawdz_haslo:
+            tryb = "spacje"  # bez sposobu sprawdzenia nikt nie mógłby zgasić zasłony
+        self.tryb = tryb if tryb in TRYBY else "spacje"
         self.sprawdz_pin = sprawdz_pin
+        self.sprawdz_haslo = sprawdz_haslo
+        self.haslo = ""
         self.pin = ""
         self.faza_pin = self.tryb == "pin"
         self.ostatni_pin = 0.0
@@ -389,12 +423,18 @@ class Zaslona(QWidget):
         if not self._animacja.isActive() and not self.zamykanie:
             self._animacja.start()
 
-    def pokaz_kropki(self) -> bool:
-        return self.faza_pin and (self.tryb == "spacje_pin" or bool(self.pin) or time.monotonic() < self.blad_do)
+    def liczba_kropek(self) -> int:
+        if not self.faza_pin:
+            return 0
+        wpisane = len(self.haslo) if self.tryb == "haslo" else len(self.pin)
+        if not wpisane and time.monotonic() < self.blad_do:
+            return 4  # chwilowy sygnał błędu
+        return min(wpisane, 16)
 
     def _spacje_gotowe(self, teraz: float) -> bool:
         """Pięć spacji: w trybie spacji zasłona znika, w trybie spacje+PIN zaczyna się wpisywanie PIN-u."""
-        if self.zamykanie or self.tryb == "pin" or self.faza_pin or not self.licznik.odblokowac(teraz):
+        if self.zamykanie or self.tryb not in ("spacje", "spacje_pin") or self.faza_pin \
+                or not self.licznik.odblokowac(teraz):
             return False
         if self.tryb == "spacje":
             self.zamknij()
@@ -405,9 +445,9 @@ class Zaslona(QWidget):
 
     def _pilnuj_pinu(self, teraz: float) -> None:
         if self.faza_pin and teraz - self.ostatni_pin > CZAS_PIN:
-            self.pin = ""
-            if self.tryb == "spacje_pin":
-                self.faza_pin = False  # nikt nie wpisał PIN-u: znów potrzebne spacje
+            self.pin = self.haslo = ""
+            if self.tryb in ("spacje_pin", "haslo"):
+                self.faza_pin = False  # nikt nie wpisał PIN-u ani hasła: znów potrzebne spacje
 
     def _klatka(self):
         teraz = time.monotonic()
@@ -440,6 +480,10 @@ class Zaslona(QWidget):
         """Inne okno (np. okno hasła) nie przykryje zasłony ani nie przejmie klawiatury."""
         if self.zamykanie:
             return
+        self._tyk = getattr(self, "_tyk", 0) + 1
+        if self._tyk % 30 == 0 and self.hak.wlaczony:  # co pół minuty hak od nowa (gdyby Windows go zdjął)
+            self.hak.wylacz()
+            self.hak.wlacz()
         if not self._animacja.isActive():
             self._pilnuj_pinu(time.monotonic())
             if self._spacje_gotowe(time.monotonic()):
@@ -449,21 +493,29 @@ class Zaslona(QWidget):
         if self.ekrany and not self.ekrany[0].isActiveWindow():
             self._przejmij_klawiature(alt=False)
 
-    def _klawisz_windows(self, vk: int, powtorzenie: bool):
+    def _klawisz_windows(self, vk: int, powtorzenie: bool, tekst: str = ""):
         if vk in VK_MODYFIKATORY:
             self.obudz()
             return
-        self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie)
+        self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie, tekst)
 
-    def klawisz(self, klawisz: int, powtorzenie: bool = False):
+    def klawisz(self, klawisz: int, powtorzenie: bool = False, tekst: str = ""):
         if self.zamykanie:
+            return
+        modyfikator = klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta,
+                                  Qt.Key.Key_AltGr)
+        if self.tryb == "dowolny" and not modyfikator:
+            self.zamknij()  # jak zwykły wygaszacz: każdy klawisz (także przy zgaszonym ekranie)
             return
         ciemno = self._monitor_wylaczony or jasnosc_po_czasie(time.monotonic() - self.aktywnosc, self.gaszenie_s) < 1
         self.obudz()
         if ciemno:
             return  # klawisz tylko budzi zgaszony ekran i nie liczy się do serii
-        if klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
+        if modyfikator:
             return  # same klawisze modyfikujące (także sztuczny Alt przy przejmowaniu klawiatury) nie psują serii
+        if self.tryb == "haslo":
+            self._klawisz_hasla(klawisz, powtorzenie, tekst)
+            return
         if self.faza_pin:
             self._klawisz_pin(klawisz, powtorzenie)
             return
@@ -492,13 +544,42 @@ class Zaslona(QWidget):
         for e in self.ekrany:
             e.update()
 
+    def _klawisz_hasla(self, klawisz, powtorzenie: bool, tekst: str):
+        """Tryb hasła: spacja zaczyna wpisywanie, potem pełne hasło (dowolne znaki) i Enter."""
+        teraz = time.monotonic()
+        if not self.faza_pin:
+            if klawisz == Qt.Key.Key_Space and not powtorzenie:
+                self.faza_pin, self.haslo, self.ostatni_pin = True, "", teraz
+            return
+        self.ostatni_pin = teraz
+        if klawisz in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self.haslo:
+                wpisane, self.haslo = self.haslo, ""
+                QTimer.singleShot(0, self, lambda w=wpisane: self._sprawdz(self.sprawdz_haslo, w))
+        elif klawisz == Qt.Key.Key_Backspace:
+            self.haslo = self.haslo[:-1]
+        elif klawisz == Qt.Key.Key_Escape:
+            self.haslo, self.faza_pin = "", False
+        elif tekst and tekst.isprintable() and len(self.haslo) < MAX_HASLO:
+            self.haslo += tekst
+        for e in self.ekrany:
+            e.update()
+
     def _sprawdz_pin(self, pin: str):
+        self._sprawdz(self.sprawdz_pin, pin)
+
+    def _sprawdz(self, funkcja, wpisane: str):
         if self.zamykanie:
             return
+        # sprawdzenie trwa chwilę (Argon2id): na ten czas hak jest zdjęty, żeby Windows go nie wyłączył
+        # za zbyt wolną odpowiedź; potem wraca
+        self.hak.wylacz()
         try:
-            ok = bool(self.sprawdz_pin and self.sprawdz_pin(pin))
+            ok = bool(funkcja and funkcja(wpisane))
         except Exception:  # noqa: BLE001
             ok = False
+        if not ok and not self.zamykanie:
+            self.hak.wlacz()
         if ok:
             self.zamknij()
             return

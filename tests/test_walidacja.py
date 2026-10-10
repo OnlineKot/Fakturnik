@@ -36,7 +36,8 @@ def test_polecenia_z_wiersza_polecen(tmp_path):
     plik = tmp_path / "faktura.pdf"
     plik.write_bytes(b"%PDF")
     assert polecenie_z_argumentow([]) == {"akcja": "pokaz"}
-    assert polecenie_z_argumentow(["--w-tle"]) == {"akcja": "w_tle"}
+    assert polecenie_z_argumentow(["--w-tle"]) == {"akcja": "w_tle", "straznik": False}
+    assert polecenie_z_argumentow(["--w-tle", "--straznik"])["straznik"] is True
     p = polecenie_z_argumentow(["--dodaj", str(plik), str(tmp_path / "nie-ma.pdf")])
     assert p["akcja"] == "dodaj" and p["pliki"] == [str(plik.resolve())]
 

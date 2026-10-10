@@ -37,9 +37,8 @@ from .baza import (
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
 from .system import (
-    JednaKopia, autostart_wlaczony, autostart_wylaczony_przez_uzytkownika, integracja_dostepna,
-    menu_kontekstowe_wlaczone, polecenie_z_argumentow, start_z_windows, ustaw_autostart, ustaw_menu_kontekstowe,
-    utworz_skrot_na_pulpicie,
+    JednaKopia, integracja_dostepna, menu_kontekstowe_wlaczone, polecenie_z_argumentow,
+    ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie, zapewnij_autostart,
 )
 from .szyfrowanie import BledneHaslo, WymaganeUrzadzenie
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny, opis_identyfikatora
@@ -3061,6 +3060,15 @@ class StronaNarzedzia(Strona):
             siatka.addLayout(kolumna, i // 3, i % 3)
             self._tapety_przyciski.append((b, klucz))
         ku.addLayout(siatka)
+        rzad_napisu = QHBoxLayout()
+        rzad_napisu.addWidget(QLabel("Własny napis", objectName="etykieta"))
+        self.napis_tapety = QLineEdit(placeholderText="np. Rejestracja: 600 100 200 · Wi-Fi dla gości: Gabinet2026",
+                                      maxLength=120)
+        self.napis_tapety.setText(self.okno.baza.ustawienia().get("tapeta_napis", ""))
+        self.napis_tapety.editingFinished.connect(self._zapisz_napis_tapety)
+        rzad_napisu.addWidget(self.napis_tapety, 1)
+        ku.addLayout(rzad_napisu)
+        ku.addWidget(QLabel("Napis pojawia się pod nazwą gabinetu. Kliknij tapetę, żeby ją ustawić.", objectName="drobny"))
         rzad = QHBoxLayout()
         rzad.addStretch()
         rzad.addWidget(przycisk("Przywróć poprzednią tapetę", "przywroc",
@@ -3068,13 +3076,21 @@ class StronaNarzedzia(Strona):
         ku.addLayout(rzad)
         return k
 
+    def _zapisz_napis_tapety(self):
+        napis = " ".join(self.napis_tapety.text().split())
+        if napis != self.okno.baza.ustawienia().get("tapeta_napis", ""):
+            self.okno.baza.zapisz_ustawienia({"tapeta_napis": napis})
+            self._tapety_gotowe = False
+            self._miniatury_tapet()
+
     def _miniatury_tapet(self):
         if getattr(self, "_tapety_gotowe", False):
             return
         from . import tapeta
-        nazwa = self.okno.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        u = self.okno.baza.ustawienia()
+        nazwa = u["nazwa"].split(",")[0].strip()
         for b, klucz in self._tapety_przyciski:
-            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 640, 360, nazwa).scaled(
+            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 640, 360, nazwa, u.get("tapeta_napis", "")).scaled(
                 176, 99, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))))
         self._tapety_gotowe = True
 
@@ -3911,9 +3927,11 @@ class StronaUstawienia(Strona):
         rzad_odbl = QHBoxLayout()
         rzad_odbl.addWidget(QLabel("Odblokowanie zasłony", objectName="etykieta"))
         self.zaslona_odblokowanie = QComboBox()
-        for opis, wartosc in (("5 spacji", "spacje"), ("PIN", "pin"), ("5 spacji, potem PIN", "spacje_pin")):
+        for opis, wartosc in (("Dowolny klawisz", "dowolny"), ("5 spacji", "spacje"), ("PIN", "pin"),
+                              ("5 spacji, potem PIN", "spacje_pin"), ("Spacja, potem hasło", "haslo")):
             self.zaslona_odblokowanie.addItem(opis, wartosc)
-        self.zaslona_odblokowanie.setToolTip("PIN: wpisz cyfry i Enter. Po 5 błędnych PIN-ach Windows się blokuje.")
+        self.zaslona_odblokowanie.setToolTip("PIN: cyfry i Enter. Hasło: spacja, potem hasło i Enter. "
+                                             "Po 5 błędach Windows się blokuje.")
         rzad_odbl.addWidget(self.zaslona_odblokowanie)
         rzad_odbl.addStretch()
         ku.addLayout(rzad_odbl)
@@ -3972,7 +3990,8 @@ class StronaUstawienia(Strona):
         self.tryb.addItem("Zaawansowany: wszystko w jednym oknie", "zaawansowany")
         f.addRow("Wystawianie", self.tryb)
         self.w_tle = QCheckBox("Działaj w tle: zamknięcie okna chowa program obok zegara")
-        self.autostart = QCheckBox("Uruchamiaj razem z Windows")
+        self.autostart = QCheckBox("Uruchamiaj razem z Windows (zawsze włączone: Fakturnik pilnuje danych)")
+        self.autostart.setEnabled(False)
         self.okno_startu = QCheckBox("Po uruchomieniu komputera pokaż okno programu (a nie tylko ikonę przy zegarze)")
         self.okno_startu.setChecked(okno_przy_starcie())
         self.okno_startu.toggled.connect(lambda v: okno_przy_starcie(v))
@@ -4126,9 +4145,10 @@ class StronaUstawienia(Strona):
         if getattr(self, "_miniatury_gotowe", False):
             return
         from . import tapeta
-        nazwa = self.okno.baza.ustawienia()["nazwa"].split(",")[0].strip()
+        u = self.okno.baza.ustawienia()
+        nazwa = u["nazwa"].split(",")[0].strip()
         for b, klucz in self._miniatury_tapet:
-            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 480, 270, nazwa).scaled(
+            b.setIcon(QIcon(QPixmap.fromImage(tapeta.wygeneruj(klucz, 480, 270, nazwa, u.get("tapeta_napis", "")).scaled(
                 300, 168, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))))
         self._miniatury_gotowe = True
 
@@ -4143,7 +4163,8 @@ class StronaUstawienia(Strona):
         try:
             u = self.okno.baza.ustawienia()
             plik = tapeta.zapisz(wariant, self.okno.baza.sciezka.parent, max(1280, rozmiar.width()),
-                                 max(720, rozmiar.height()), u["nazwa"].split(",")[0].strip())
+                                 max(720, rozmiar.height()), u["nazwa"].split(",")[0].strip(),
+                                 u.get("tapeta_napis", ""))
             obecna = windows.obecna_tapeta()
             if obecna and "tapeta-" not in Path(obecna).name and not u["poprzednia_tapeta"]:
                 self.okno.baza.zapisz_ustawienia({"poprzednia_tapeta": obecna})
@@ -4334,7 +4355,7 @@ class StronaUstawienia(Strona):
         self.zaslona_gaszenie.setValue(int(liczba(u["zaslona_gaszenie_min"]) or 0))
         self.zaslona_gaszenie.setEnabled(u["zaslona"] == "1")
         self.w_tle.setChecked(u["w_tle"] == "1")
-        self.autostart.setChecked(autostart_wlaczony())
+        self.autostart.setChecked(True)
         self.menu_kontekstowe.setChecked(menu_kontekstowe_wlaczone())
         self.ustaw_logo(u["logo"])
         ma = self.okno.baza.ma_haslo
@@ -4475,13 +4496,17 @@ class StronaUstawienia(Strona):
         wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
         wartosci["zaslona_gaszenie_min"] = str(self.zaslona_gaszenie.value())
         odbl = self.zaslona_odblokowanie.currentData()
-        if odbl != "spacje" and not self.okno.baza.sa_piny:
+        if odbl in ("pin", "spacje_pin") and not self.okno.baza.sa_piny:
             QMessageBox.information(self, "Zasłona", "Odblokowanie PIN-em wymaga ustawionego PIN-u "
                                     "(Bezpieczeństwo → Ustaw PIN). Zostaje odblokowanie 5 spacjami.")
             odbl = "spacje"
+        elif odbl == "haslo" and not self.okno.baza.ma_haslo:
+            QMessageBox.information(self, "Zasłona", "Odblokowanie hasłem wymaga ustawionego hasła. "
+                                    "Zostaje odblokowanie 5 spacjami.")
+            odbl = "spacje"
         wartosci["zaslona_odblokowanie"] = odbl
         if integracja_dostepna():
-            ustaw_autostart(self.autostart.isChecked())
+            zapewnij_autostart()
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
         self.okno.baza.zapisz_ustawienia(wartosci)
         self.okno.komunikat("Zapisano ustawienia")
@@ -5841,10 +5866,13 @@ class OknoGlowne(QMainWindow):
         from .zaslona import Zaslona
         u = self.baza.ustawienia()
         tryb = u.get("zaslona_odblokowanie", "spacje")
-        if tryb != "spacje" and not (self.baza.ma_haslo and self.baza.sa_piny and not self.baza.piny_zablokowane):
-            tryb = "spacje"  # bez działającego PIN-u zasłona nie może zamknąć nikogo na stałe
+        if tryb in ("pin", "spacje_pin") and not (self.baza.ma_haslo and self.baza.sa_piny
+                                                  and not self.baza.piny_zablokowane):
+            tryb = "haslo" if self.baza.ma_haslo else "spacje"  # bez działającego PIN-u: pełne hasło
+        elif tryb == "haslo" and not self.baza.ma_haslo:
+            tryb = "spacje"
         self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0),
-                               tryb=tryb, sprawdz_pin=self._pin_zaslony)
+                               tryb=tryb, sprawdz_pin=self._pin_zaslony, sprawdz_haslo=self._haslo_zaslony)
         self.zaslona.zamknieta.connect(lambda: setattr(self, "zaslona", None))
         self.zaslona.za_duzo_prob.connect(self._zaslona_za_duzo_prob)
         self.zaslona.pokaz()
@@ -5861,9 +5889,28 @@ class OknoGlowne(QMainWindow):
         self.dziennik.zapisz("zasłona: odblokowanie PIN-em")
         return True
 
+    def _haslo_zaslony(self, haslo: str) -> bool:
+        """Pełne hasło na zasłonie: właściciel albo konto asystentki (bez okien: zasłona jest na wierzchu)."""
+        if self.baza.sprawdz_haslo(haslo):
+            self.baza.zaloguj_pelnym_haslem()
+            if not self.jest_wlascicielka:
+                self._ustaw_uzytkownika(self.wlascicielka())
+            self.dziennik.zapisz("zasłona: odblokowanie hasłem")
+            return True
+        wynik = konta.zaloguj(self.baza.sciezka.parent, haslo)
+        if wynik and self.baza.szyfr and hmac.compare_digest(wynik[1], self.baza.szyfr.klucz_hasla):
+            konto = self.baza.konto(wynik[0]["id"])
+            if konto and konto["rola"] != ROLA_RESETU and not godziny.odmowa(self.baza.ustawienia(), konto["rola"]):
+                self.baza.zaloguj_pelnym_haslem()
+                self._ustaw_uzytkownika(konto)
+                self.dziennik.zapisz("zasłona: odblokowanie hasłem")
+                return True
+        self.dziennik.zapisz("zasłona: błędne hasło")
+        return False
+
     def _zaslona_za_duzo_prob(self):
         """5 błędnych PIN-ów na zasłonie: blokada Windows i programu (dalej tylko pełne hasła)."""
-        self.dziennik.zapisz("zasłona: za dużo błędnych PIN-ów — blokada Windows i programu")
+        self.dziennik.zapisz("zasłona: za dużo błędnych prób — blokada Windows i programu")
         windows.zablokuj_windows()
         if self.zaslona:
             self.zaslona.zamknij(natychmiast=True)
@@ -6763,9 +6810,10 @@ def uruchom() -> int:
     windows.przygotuj_proces()
     app.installEventFilter(OCHRONA_EKRANU)
 
-    # użytkownik wyłączył uruchamianie z Windows: wpis instalatora (wspólny dla kont) zostaje, więc kończymy
-    if start_z_windows(sys.argv[1:]) and autostart_wylaczony_przez_uzytkownika():
-        return 0
+    try:
+        zapewnij_autostart()  # autostartu nie da się wyłączyć: program pilnuje danych
+    except Exception:  # noqa: BLE001
+        pass
     # tylko jedna kopia programu: kolejne uruchomienie przekazuje polecenie działającej i kończy się
     argumenty = aktualizacje.czekaj_na_poprzednia(sys.argv[1:])  # po aktualizacji: stara wersja musi się zamknąć
     aktualizacje.posprzataj()  # dopiero teraz stary plik programu jest wolny
@@ -7219,7 +7267,7 @@ def _zaproponuj_kopie(plik: Path, haslo: str | None, powod: str, dziennik: Dzien
 def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia,
             polecenie: dict) -> tuple[int, OknoGlowne | None]:
     w_tle = polecenie.get("akcja") == "w_tle" and QSystemTrayIcon.isSystemTrayAvailable()
-    if w_tle and okno_przy_starcie():
+    if w_tle and okno_przy_starcie() and not polecenie.get("straznik"):
         w_tle = False  # start z Windows: od razu widoczne okno (logowanie), a nie tylko ikona przy zegarze
     if w_tle and Baza.wymaga_hasla(plik):
         polecenie = _czekaj_w_zasobniku(app, plik, jedna, polecenie)
