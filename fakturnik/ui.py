@@ -496,6 +496,10 @@ class OknoHasla(QDialog):
         u.addWidget(self.pole)
         self.blad = QLabel(styleSheet=f"color: {CZERWONY}; font-size: 12px;")
         u.addWidget(self.blad)
+        self._odliczanie = QTimer(self, interval=250)
+        self._odliczanie.timeout.connect(self._pokaz_odliczanie)
+        self._odliczanie.start()
+        self._pokaz_odliczanie()
         rzad = QHBoxLayout()
         self.btn_zgoda = przycisk("Zgoda właściciela…", "klucz", "plaski", self._zgoda)
         self.btn_zgoda.hide()
@@ -524,10 +528,22 @@ class OknoHasla(QDialog):
     _blokada_do = 0.0
     _wczytano = False
 
+    def _pokaz_odliczanie(self):
+        """Na żywo pokazuje, ile sekund zostało do kolejnej próby, i blokuje pole na ten czas."""
+        pozostalo = OknoHasla._blokada_do - time.monotonic()
+        if pozostalo > 0:
+            self.blad.setText(f"Za dużo błędnych prób. Odblokowanie za {int(pozostalo) + 1} s.")
+            if self.pole.isEnabled():
+                self.pole.setEnabled(False)
+        elif not self.pole.isEnabled():
+            self.pole.setEnabled(True)
+            self.blad.clear()
+            self.pole.setFocus()
+
     def sprobuj(self):
         pozostalo = OknoHasla._blokada_do - time.monotonic()
         if pozostalo > 0:
-            self.blad.setText(f"Za dużo błędnych prób. Spróbuj ponownie za {int(pozostalo) + 1} s.")
+            self.blad.setText(f"Za dużo błędnych prób. Odblokowanie za {int(pozostalo) + 1} s.")
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -564,10 +580,9 @@ class OknoHasla(QDialog):
         OknoHasla._blokada_do = time.monotonic() + przerwa
         _zapisz_proby(OknoHasla._nieudane, time.time() + przerwa)
         tekst = str(ok) if isinstance(ok, BlednaProba) else "Nieprawidłowe hasło."
-        self.blad.setText(tekst + (f" Spróbuj ponownie za {przerwa} s." if przerwa else ""))
+        self.blad.setText(tekst + (f" Odblokowanie za {przerwa} s." if przerwa else ""))
         if przerwa:
-            self.setEnabled(False)
-            QTimer.singleShot(przerwa * 1000, lambda: (self.setEnabled(True), self.pole.setFocus()))
+            self.pole.setEnabled(False)  # licznik _pokaz_odliczanie odblokuje pole, gdy czas minie
 
 
 class OknoNowegoHasla(QDialog):

@@ -187,6 +187,22 @@ MAX_PIN = 6          # PIN odblokowania: 4–6 cyfr
 CZAS_PIN = 20.0      # tyle sekund bez klawisza i wpisywany PIN się kasuje (w trybie spacje+PIN: znów spacje)
 
 
+def _klawiatura_windows() -> bool:
+    import sys
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        ctypes.windll.user32.GetAsyncKeyState  # noqa: B018
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# klawisze obserwowane przy odczycie stanu (spacja, cyfry, Enter, Backspace, Esc)
+VK_OBSERWOWANE = {VK_SPACJA, 0x0D, 0x08, 0x1B} | {0x30 + i for i in range(10)} | {0x60 + i for i in range(10)}
+
+
 def cyfra(klawisz) -> str | None:
     k = int(klawisz)
     return str(k - int(Qt.Key.Key_0)) if int(Qt.Key.Key_0) <= k <= int(Qt.Key.Key_9) else None
@@ -333,9 +349,10 @@ class _Ekran(QWidget):
         p.end()
 
     def keyPressEvent(self, e):
-        # hak (Windows) łyka klawisze zanim dotrą do okna, więc zwykle to się nie uruchamia;
-        # gdy haka nie ma albo Windows go zdjął, spacje i tak działają przez to zdarzenie
-        self.zaslona.klawisz(e.key(), e.isAutoRepeat(), e.text(), zrodlo="qt")
+        # gdy działa odczyt stanu klawiszy (Windows), liczy tylko on — tu nic nie robimy, żeby nie liczyć 2x;
+        # poza Windowsem (i w trybie hasła) klawisze idą tędy
+        if not self.zaslona._poll_aktywny or self.zaslona.tryb == "haslo":
+            self.zaslona.klawisz(e.key(), e.isAutoRepeat(), e.text(), zrodlo="qt")
 
     def mouseMoveEvent(self, _):
         self.zaslona.obudz()
@@ -388,10 +405,15 @@ class Zaslona(QWidget):
         self.zamykanie = False
         self.licznik = LicznikSpacji()
         self.hak = HakKlawiatury(self._klawisz_windows, lambda: self.tryb == "haslo")
+        self._down_poll: set[int] = set()
+        self._poll_pierwszy = True
+        self._poll_aktywny = _klawiatura_windows()  # odczyt stanu klawiszy wprost (bez fokusu i bez haka)
         self._animacje: list[QPropertyAnimation] = []
         self.ekrany = [_Ekran(self, e) for e in QGuiApplication.screens()]
         self._animacja = QTimer(self, interval=KLATKI_MS)
         self._animacja.timeout.connect(self._klatka)
+        self._poll = QTimer(self, interval=40)  # 25x/s: spacje i PIN działają niezależnie od fokusu i haka
+        self._poll.timeout.connect(self._poll_klawiszy)
         self._pilnuj = QTimer(self, interval=1000)
         self._pilnuj.timeout.connect(self._na_wierzch)
 
@@ -417,6 +439,8 @@ class Zaslona(QWidget):
             self._przejmij_klawiature()
             QTimer.singleShot(300, self, lambda: self._przejmij_klawiature(alt=False))  # okno dopiero się pojawia
         self._animacja.start()
+        if self._poll_aktywny:
+            self._poll.start()
         self._pilnuj.start()
 
     def obudz(self):
@@ -503,7 +527,39 @@ class Zaslona(QWidget):
         if vk in VK_MODYFIKATORY:
             self.obudz()
             return
-        self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie, tekst)
+        # gdy działa odczyt stanu klawiszy, liczy go tylko on (poza trybem hasła, który potrzebuje znaków z haka);
+        # hak i tak łyka klawisze (nie wpadają do programu pod spodem)
+        if self._poll_aktywny and self.tryb != "haslo":
+            self.obudz()
+            return
+        self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie, tekst, zrodlo="hak")
+
+    def _poll_klawiszy(self):
+        """Czyta fizyczny stan klawiszy (GetAsyncKeyState). Działa nawet, gdy okno nie ma fokusu i gdy
+        Windows zdejmie hak — dzięki temu spacje i PIN zawsze gaszą zasłonę."""
+        if self.zamykanie or self.tryb == "haslo":
+            return
+        try:
+            import ctypes
+            stan = ctypes.windll.user32.GetAsyncKeyState
+            teraz_down = set()
+            if self.tryb == "dowolny":
+                for vk in range(0x08, 0xFF):
+                    if vk not in VK_MODYFIKATORY and stan(vk) & 0x8000:
+                        teraz_down.add(vk)
+            else:
+                for vk in VK_OBSERWOWANE:
+                    if stan(vk) & 0x8000:
+                        teraz_down.add(vk)
+        except Exception:  # noqa: BLE001
+            return
+        nowe = teraz_down - self._down_poll
+        self._down_poll = teraz_down
+        if self._poll_pierwszy:
+            self._poll_pierwszy = False  # klawisze trzymane w chwili pojawienia się zasłony nie liczą się
+            return
+        for vk in nowe:
+            self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), False, "", zrodlo="poll")
 
     def klawisz(self, klawisz: int, powtorzenie: bool = False, tekst: str = "", zrodlo: str = "hak"):
         if self.zamykanie:
@@ -608,6 +664,7 @@ class Zaslona(QWidget):
             return
         self.zamykanie = True
         self.hak.wylacz()
+        self._poll.stop()
         self._pilnuj.stop()
         for e in self.ekrany:
             e.releaseKeyboard()
