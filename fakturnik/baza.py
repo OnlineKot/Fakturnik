@@ -327,7 +327,7 @@ WERSJA_DANYCH = max(MIGRACJE)
 
 # PIN: szybkie odblokowanie, gdy program już działa (blokada, zasłona). Nie szyfruje danych — po starcie
 # komputera zawsze potrzebne jest pełne hasło. Po PROBY_PIN błędach PIN-y nie działają do logowania hasłem.
-MIN_PIN, MAX_PIN = 4, 8
+MIN_PIN, MAX_PIN = 4, 6
 MIN_PIN_RESETU, MAX_PIN_RESETU = 6, 12
 PROBY_PIN = 5
 ARGON2_PIN = (32768, 2, 1)

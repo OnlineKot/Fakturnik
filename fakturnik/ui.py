@@ -4382,7 +4382,7 @@ class StronaUstawienia(Strona):
             self.stan_pinu.setText(
                 ("PIN: ustawiony — odblokowuje program i zasłonę, gdy program działa (po starcie komputera "
                  "zawsze pełne hasło; 5 błędnych PIN-ów = tylko hasło). " if moj else
-                 "PIN (4–8 cyfr) pozwala szybko odblokować program i zasłonę. ") +
+                 "PIN (4–6 cyfr) pozwala szybko odblokować program i zasłonę. ") +
                 ("Hasło do resetu: ustawione — pozwala ustawić nowe hasło, gdy zapomnisz obecnego."
                  if b.ma_haslo_resetu else
                  "Hasło do resetu (albo PIN z min. 6 cyfr) pozwala ustawić nowe hasło, gdy zapomnisz obecnego. "

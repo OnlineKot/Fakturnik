@@ -6,9 +6,8 @@ Sposób odblokowania do wyboru: dowolny klawisz (jak zwykły wygaszacz), 5 spacj
 PIN-ach lub hasłach zasłona zgłasza to programowi, który blokuje Windows i siebie.
 
 Spacjami znika tylko po DOKŁADNIE pięciu naciśnięciach i krótkiej pauzie. Sześć i więcej spacji,
-przytrzymana spacja albo inny klawisz w serii nic nie dają. Spacje są odbierane przez hak klawiatury
-Windows, więc działają zawsze, nawet gdy Windows nie oddał zasłonie fokusu, i nie trafiają do programu
-pod zasłoną. Nie czyści schowka i nie wylogowuje:
+przytrzymana spacja albo inny klawisz w serii nic nie dają. Spacje odbiera okno zasłony, a na Windowsie dodatkowo hak klawiatury (działają też bez fokusu i nie
+trafiają do programu pod zasłoną); gdyby Windows zdjął hak, spacje nadal działają przez samo okno. Nie czyści schowka i nie wylogowuje:
 to szybka zasłona przed wzrokiem pacjentów. Blokada hasłem działa niezależnie od niej.
 
 Ochrona ekranu przed wypaleniem: blok cały czas się przesuwa (żaden piksel nie świeci długo w jednym
@@ -78,8 +77,9 @@ class HakKlawiatury:
     Ctrl+Alt+Del i Win+L działają zawsze (systemu nie da się zablokować i tak ma być).
     """
 
-    def __init__(self, obsluga):
-        self.obsluga = obsluga  # obsluga(vk, powtorzenie, znak)
+    def __init__(self, obsluga, czy_znaki=lambda: False):
+        self.obsluga = obsluga      # obsluga(vk, powtorzenie, znak)
+        self.czy_znaki = czy_znaki  # True tylko w trybie hasła: wtedy liczymy znak klawisza
         self._hak = None
         self._funkcja = None
         self._wcisniete: set[int] = set()
@@ -139,10 +139,12 @@ class HakKlawiatury:
                             if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN):
                                 powtorzenie = vk in self._wcisniete
                                 self._wcisniete.add(vk)
-                                try:
-                                    tekst = znak(vk, int(dane.scanCode))
-                                except Exception:  # noqa: BLE001
-                                    tekst = ""
+                                tekst = ""
+                                if self.czy_znaki():  # tylko hasło; inaczej callback musi być błyskawiczny
+                                    try:
+                                        tekst = znak(vk, int(dane.scanCode))
+                                    except Exception:  # noqa: BLE001
+                                        tekst = ""
                                 self.obsluga(vk, powtorzenie, tekst)
                             elif wparam in (WM_KEYUP, WM_SYSKEYUP):
                                 self._wcisniete.discard(vk)
@@ -181,8 +183,8 @@ VK_QT.update({0x60 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # klawia
 PROBY_PIN = 5
 TRYBY = ("dowolny", "spacje", "pin", "spacje_pin", "haslo")
 MAX_HASLO = 128
+MAX_PIN = 6          # PIN odblokowania: 4–6 cyfr
 CZAS_PIN = 20.0      # tyle sekund bez klawisza i wpisywany PIN się kasuje (w trybie spacje+PIN: znów spacje)
-MAX_PIN = 8
 
 
 def cyfra(klawisz) -> str | None:
@@ -331,8 +333,9 @@ class _Ekran(QWidget):
         p.end()
 
     def keyPressEvent(self, e):
-        if not self.zaslona.hak.wlaczony:
-            self.zaslona.klawisz(e.key(), e.isAutoRepeat(), e.text())
+        # hak (Windows) łyka klawisze zanim dotrą do okna, więc zwykle to się nie uruchamia;
+        # gdy haka nie ma albo Windows go zdjął, spacje i tak działają przez to zdarzenie
+        self.zaslona.klawisz(e.key(), e.isAutoRepeat(), e.text(), zrodlo="qt")
 
     def mouseMoveEvent(self, _):
         self.zaslona.obudz()
@@ -371,6 +374,9 @@ class Zaslona(QWidget):
         self.ostatni_pin = 0.0
         self.bledy_pin = 0
         self.blad_do = 0.0
+        self._ostatni_klawisz = None
+        self._ostatni_klawisz_czas = 0.0
+        self._ostatnie_zrodlo = ""
         self.logo = QSvgRenderer(str(LOGO))
         self.nazwa = nazwa.strip()
         self.gaszenie_s = max(0.0, gaszenie_min) * 60
@@ -381,7 +387,7 @@ class Zaslona(QWidget):
         self.ostatnia_spacja = 0.0
         self.zamykanie = False
         self.licznik = LicznikSpacji()
-        self.hak = HakKlawiatury(self._klawisz_windows)
+        self.hak = HakKlawiatury(self._klawisz_windows, lambda: self.tryb == "haslo")
         self._animacje: list[QPropertyAnimation] = []
         self.ekrany = [_Ekran(self, e) for e in QGuiApplication.screens()]
         self._animacja = QTimer(self, interval=KLATKI_MS)
@@ -499,9 +505,17 @@ class Zaslona(QWidget):
             return
         self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie, tekst)
 
-    def klawisz(self, klawisz: int, powtorzenie: bool = False, tekst: str = ""):
+    def klawisz(self, klawisz: int, powtorzenie: bool = False, tekst: str = "", zrodlo: str = "hak"):
         if self.zamykanie:
             return
+        # klawisz może przyjść i z haka (Windows), i z okna (Qt). Gdy hak działa, łyka klawisze, więc Qt
+        # ich nie dostaje; gdy haka nie ma, działa tylko Qt. Na wypadek obu źródeł naraz: ten sam klawisz
+        # z drugiego źródła w ciągu 40 ms liczymy tylko raz (bez gubienia prawdziwych, szybkich powtórzeń).
+        teraz_k = time.monotonic()
+        if (zrodlo != self._ostatnie_zrodlo and klawisz == self._ostatni_klawisz
+                and teraz_k - self._ostatni_klawisz_czas < 0.04):
+            return
+        self._ostatni_klawisz, self._ostatni_klawisz_czas, self._ostatnie_zrodlo = klawisz, teraz_k, zrodlo
         modyfikator = klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta,
                                   Qt.Key.Key_AltGr)
         if self.tryb == "dowolny" and not modyfikator:
