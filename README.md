@@ -26,15 +26,31 @@ podpisany certyfikatem): „Więcej informacji” → „Uruchom mimo to”.
 ### Norton i inne antywirusy
 
 Program jest zbudowany tak, żeby nie wyglądał podejrzanie dla antywirusów: plik ma wpisanego
-wydawcę i wersję, nie jest kompresowany UPX-em, nie instaluje sterowników ani haków klawiatury,
-nie uruchamia skryptów przy aktualizacji, a zmiany w rejestrze dotyczą tylko bieżącego
-użytkownika. Mimo to nowe, niepodpisane programy bywają przez Nortona oznaczane z ostrożności
-(„mała liczba użytkowników”). Wtedy:
-1. Norton → Bezpieczeństwo → Historia → wybierz Fakturnik → **Przywróć i wyklucz ten plik**,
-   albo Ustawienia → Antywirus → Skanowania i zagrożenia → **Elementy do wykluczenia** →
-   dodaj folder `%LOCALAPPDATA%\Programs\Fakturnik`.
-2. Zgłoś fałszywy alarm na https://submit.norton.com (Norton zwykle zdejmuje oznaczenie w ciągu
-   kilku dni, co pomaga wszystkim użytkownikom).
+wydawcę i wersję, nie jest kompresowany UPX-em i nie instaluje sterowników. Niskopoziomowy hak
+klawiatury zakłada tylko na czas pokazanej zasłony ekranu (do odczytu spacji lub PIN-u) i zdejmuje
+go zaraz po jej zamknięciu. Mimo to nowe, niepodpisane programy bywają przez Nortona oznaczane
+z ostrożności („mała liczba użytkowników”, SONAR/heurystyka). Żeby Norton przestał zwracać uwagę
+na Fakturnika:
+
+1. **Przywróć plik, jeśli już go schował:** Norton → **Bezpieczeństwo** → **Historia** → z listy
+   wybierz „Kwarantanna” lub „SONAR”, zaznacz Fakturnik → **Opcje** → **Przywróć i wyklucz ten plik**.
+2. **Dodaj wykluczenie na stałe:** Norton → **Ustawienia** (ikona koła zębatego) → **Antywirus** →
+   zakładka **Skanowania i zagrożenia** →
+   - **Elementy wykluczane ze skanowania** → *Konfiguruj* → **Dodaj foldery** → dodaj:
+     - `C:\Program Files\Fakturnik`
+     - `C:\ProgramData\Fakturnik`
+   - **Elementy wykluczane z wykrywania Auto-Protect, SONAR i Pobierania** → *Konfiguruj* →
+     **Dodaj foldery** → dodaj te same dwa foldery (to wyłącza też ostrzeżenia heurystyczne SONAR
+     i przy pobieraniu aktualizacji).
+   Zatwierdź **Zastosuj**. Wyklucz całe foldery, a nie pojedynczy plik — przy aktualizacji powstaje
+   nowy `Fakturnik.exe`, więc wykluczenie samego pliku przestałoby działać.
+3. **Zgłoś fałszywy alarm** na https://submit.norton.com (wybierz „Dispute / false positive”).
+   Norton zwykle zdejmuje oznaczenie w ciągu kilku dni, co pomaga wszystkim użytkownikom i działa
+   lepiej niż samo wykluczenie na jednym komputerze.
+
+Inne antywirusy mają to samo pod inną nazwą: Microsoft Defender → **Zabezpieczenia Windows** →
+**Ochrona przed wirusami i zagrożeniami** → *Zarządzaj ustawieniami* → **Wykluczenia** → dodaj te
+dwa foldery. Bitdefender/ESET/Avast: szukaj „Wyjątki” lub „Wykluczenia”.
 
 Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Code Signing
 (płatny, np. Certum, albo darmowy dla otwartych projektów przez SignPath).
