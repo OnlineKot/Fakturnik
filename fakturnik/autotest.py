@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 
 MODULY = ["aktualizacje", "autotest", "baza", "druk", "godziny", "gtd", "kalkulator", "konta", "kontrola", "mf",
-          "narzedzia", "ochrona", "skaner", "slownie", "system", "szyfrowanie", "tapeta", "urzadzenie", "usluga",
+          "narzedzia", "ochrona", "prywatnosc", "skaner", "slownie", "system", "szyfrowanie", "tapeta", "urzadzenie", "usluga",
           "walidacja", "windows", "zaslona", "ui"]
 
 

@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .szyfrowanie import ARGON2, klucz_argon2, klucz_pbkdf2
 
 PLIK_KONT = "konta.json"
+ARGON2_RESETU = (262144, 4, 4)  # klucz do resetu hasła (może być PIN-em): wolniejsze zgadywanie
 ROLE = {"wlascicielka": "właściciel", "asystentka": "asystentka"}
 
 
@@ -56,20 +57,23 @@ def _klucz(wpis: dict, haslo: str) -> bytes:
     return klucz_pbkdf2(haslo, _z_b64(wpis["sol"]))
 
 
-def _wpis(id_: str, nazwa: str, rola: str, haslo: str, klucz_konta: bytes, klucz_danych: bytes) -> dict:
+def _wpis(id_: str, nazwa: str, rola: str, haslo: str, klucz_konta: bytes, klucz_danych: bytes,
+          parametry: tuple[int, int, int] | None = None) -> dict:
+    parametry = tuple(parametry or ARGON2)
     sol, n1, n2 = os.urandom(16), os.urandom(12), os.urandom(12)
-    k = klucz_argon2(haslo, sol, ARGON2)
-    return {"id": id_, "nazwa": nazwa, "rola": rola, "kdf": "argon2id", "argon2": list(ARGON2),
+    k = klucz_argon2(haslo, sol, parametry)
+    return {"id": id_, "nazwa": nazwa, "rola": rola, "kdf": "argon2id", "argon2": list(parametry),
             "sol": _b64(sol), "n1": _b64(n1),
             "klucz": _b64(AESGCM(k).encrypt(n1, klucz_konta, f"konto:{id_}".encode())),
             "n2": _b64(n2), "dane": _b64(AESGCM(klucz_konta).encrypt(n2, klucz_danych, f"dane:{id_}".encode()))}
 
 
-def nowe_konto(nazwa: str, haslo: str, rola: str, klucz_danych: bytes) -> tuple[dict, bytes]:
+def nowe_konto(nazwa: str, haslo: str, rola: str, klucz_danych: bytes,
+               parametry: tuple[int, int, int] | None = None) -> tuple[dict, bytes]:
     """Zwraca (wpis do pliku kont, klucz konta do zapamiętania w zaszyfrowanych danych)."""
     id_ = uuid.uuid4().hex[:12]
     klucz_konta = os.urandom(32)
-    return _wpis(id_, nazwa, rola, haslo, klucz_konta, klucz_danych), klucz_konta
+    return _wpis(id_, nazwa, rola, haslo, klucz_konta, klucz_danych, parametry), klucz_konta
 
 
 def nowe_haslo(wpis: dict, haslo: str, klucz_konta: bytes, klucz_danych: bytes) -> dict:

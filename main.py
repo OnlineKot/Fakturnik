@@ -33,6 +33,9 @@ if __name__ == "__main__":
         from fakturnik.autotest import uruchom as autotest
         i = sys.argv.index("--autotest")
         sys.exit(autotest(sys.argv[i + 1] if len(sys.argv) > i + 1 else "autotest.txt"))
+    if "--prywatnosc" in sys.argv:  # zasady prywatności Windows dla całego komputera (uruchamiane z UAC)
+        from fakturnik.prywatnosc import tryb_administratora
+        sys.exit(tryb_administratora(sys.argv[1:]))
     if "--odinstaluj" in sys.argv:  # pytanie o hasło z deinstalatora
         from fakturnik.ui import potwierdz_odinstalowanie
         sys.exit(potwierdz_odinstalowanie())

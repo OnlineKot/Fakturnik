@@ -1,7 +1,10 @@
 """Zasłona ekranu w stylu klasycznego wygaszacza: czarne tło, a na nim logo gabinetu, nazwa gabinetu,
 zegar i data, które wolno jeżdżą po ekranie i odbijają się od krawędzi. Bez napisów-instrukcji.
 
-Znika tylko po DOKŁADNIE pięciu naciśnięciach spacji i krótkiej pauzie. Sześć i więcej spacji,
+Sposób odblokowania do wyboru: 5 spacji (domyślnie), PIN (cyfry i Enter) albo 5 spacji, a potem PIN.
+Po pięciu błędnych PIN-ach zasłona zgłasza to programowi, który blokuje Windows i siebie.
+
+Spacjami znika tylko po DOKŁADNIE pięciu naciśnięciach i krótkiej pauzie. Sześć i więcej spacji,
 przytrzymana spacja albo inny klawisz w serii nic nie dają. Spacje są odbierane przez hak klawiatury
 Windows, więc działają zawsze, nawet gdy Windows nie oddał zasłonie fokusu, i nie trafiają do programu
 pod zasłoną. Nie czyści schowka i nie wylogowuje:
@@ -147,6 +150,17 @@ class HakKlawiatury:
 # kody klawiszy Windows: spacja i same klawisze modyfikujące (nie psują serii)
 VK_SPACJA = 0x20
 VK_MODYFIKATORY = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C}
+VK_QT = {0x0D: Qt.Key.Key_Return, 0x08: Qt.Key.Key_Backspace, 0x1B: Qt.Key.Key_Escape, VK_SPACJA: Qt.Key.Key_Space}
+VK_QT.update({0x30 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # cyfry nad literami
+VK_QT.update({0x60 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # klawiatura numeryczna
+PROBY_PIN = 5
+CZAS_PIN = 20.0      # tyle sekund bez klawisza i wpisywany PIN się kasuje (w trybie spacje+PIN: znów spacje)
+MAX_PIN = 8
+
+
+def cyfra(klawisz) -> str | None:
+    k = int(klawisz)
+    return str(k - int(Qt.Key.Key_0)) if int(Qt.Key.Key_0) <= k <= int(Qt.Key.Key_9) else None
 
 
 def odbicie(droga: float, zakres: float) -> float:
@@ -254,6 +268,8 @@ class _Ekran(QWidget):
         wys_daty = QFontMetricsF(czcionka_daty).height()
         odstep = 18 * jednostka
         wys_bloku = wys_nazwy + (odstep if z.nazwa else 0) + wys_logo + odstep + wys_zegara + wys_daty
+        if z.tryb != "spacje":
+            wys_bloku += 34 * jednostka  # miejsce na kropki PIN-u (stała wysokość: blok nie skacze)
         lewo = odbicie((teraz_m - z.start) * PREDKOSC * jednostka * 1000 + z.faza[0] * w, max(0.0, w - szer_bloku))
         gora = odbicie((teraz_m - z.start) * PREDKOSC * 0.77 * jednostka * 1000 + z.faza[1] * h,
                        max(0.0, h - wys_bloku))
@@ -274,6 +290,18 @@ class _Ekran(QWidget):
         p.setFont(czcionka_daty)
         p.setPen(QColor("#7f9499"))
         p.drawText(QRectF(lewo, y + wys_zegara, szer_bloku, wys_daty), Qt.AlignmentFlag.AlignCenter, data)
+        if z.pokaz_kropki():
+            # wpisywany PIN: kropki pod datą (bez napisów); czerwone przez chwilę po błędnym PIN-ie
+            r = 5 * jednostka
+            ile = max(4, len(z.pin))
+            odstep_k = 22 * jednostka
+            x0 = srodek_x - (ile - 1) * odstep_k / 2
+            yk = y + wys_zegara + wys_daty + 24 * jednostka
+            kolor = QColor("#c0504d") if time.monotonic() < z.blad_do else QColor("#d9e1e3")
+            for i in range(ile):
+                p.setPen(kolor)
+                p.setBrush(kolor if i < len(z.pin) else Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QRectF(x0 + i * odstep_k - r, yk - r, 2 * r, 2 * r))
         p.end()
 
     def keyPressEvent(self, e):
@@ -298,9 +326,17 @@ class _Ekran(QWidget):
 class Zaslona(QWidget):
     """Zarządza zasłonami wszystkich monitorów."""
     zamknieta = Signal()
+    za_duzo_prob = Signal()
 
-    def __init__(self, nazwa: str = "", gaszenie_min: float = 10):
+    def __init__(self, nazwa: str = "", gaszenie_min: float = 10, tryb: str = "spacje", sprawdz_pin=None):
         super().__init__()
+        self.tryb = tryb if (tryb in ("pin", "spacje_pin") and sprawdz_pin) else "spacje"
+        self.sprawdz_pin = sprawdz_pin
+        self.pin = ""
+        self.faza_pin = self.tryb == "pin"
+        self.ostatni_pin = 0.0
+        self.bledy_pin = 0
+        self.blad_do = 0.0
         self.logo = QSvgRenderer(str(LOGO))
         self.nazwa = nazwa.strip()
         self.gaszenie_s = max(0.0, gaszenie_min) * 60
@@ -353,10 +389,30 @@ class Zaslona(QWidget):
         if not self._animacja.isActive() and not self.zamykanie:
             self._animacja.start()
 
+    def pokaz_kropki(self) -> bool:
+        return self.faza_pin and (self.tryb == "spacje_pin" or bool(self.pin) or time.monotonic() < self.blad_do)
+
+    def _spacje_gotowe(self, teraz: float) -> bool:
+        """Pięć spacji: w trybie spacji zasłona znika, w trybie spacje+PIN zaczyna się wpisywanie PIN-u."""
+        if self.zamykanie or self.tryb == "pin" or self.faza_pin or not self.licznik.odblokowac(teraz):
+            return False
+        if self.tryb == "spacje":
+            self.zamknij()
+            return True
+        self.licznik = LicznikSpacji()
+        self.faza_pin, self.pin, self.ostatni_pin = True, "", teraz
+        return False
+
+    def _pilnuj_pinu(self, teraz: float) -> None:
+        if self.faza_pin and teraz - self.ostatni_pin > CZAS_PIN:
+            self.pin = ""
+            if self.tryb == "spacje_pin":
+                self.faza_pin = False  # nikt nie wpisał PIN-u: znów potrzebne spacje
+
     def _klatka(self):
         teraz = time.monotonic()
-        if not self.zamykanie and self.licznik.odblokowac(teraz):
-            self.zamknij()
+        self._pilnuj_pinu(teraz)
+        if self._spacje_gotowe(teraz):
             return
         if jasnosc_po_czasie(teraz - self.aktywnosc, self.gaszenie_s) <= 0:
             for e in self.ekrany:
@@ -384,9 +440,10 @@ class Zaslona(QWidget):
         """Inne okno (np. okno hasła) nie przykryje zasłony ani nie przejmie klawiatury."""
         if self.zamykanie:
             return
-        if not self._animacja.isActive() and self.licznik.odblokowac(time.monotonic()):
-            self.zamknij()  # pięć spacji w czerni też działa
-            return
+        if not self._animacja.isActive():
+            self._pilnuj_pinu(time.monotonic())
+            if self._spacje_gotowe(time.monotonic()):
+                return  # pięć spacji w czerni też działa
         for e in self.ekrany:
             e.raise_()
         if self.ekrany and not self.ekrany[0].isActiveWindow():
@@ -396,7 +453,7 @@ class Zaslona(QWidget):
         if vk in VK_MODYFIKATORY:
             self.obudz()
             return
-        self.klawisz(Qt.Key.Key_Space if vk == VK_SPACJA else Qt.Key.Key_unknown, powtorzenie)
+        self.klawisz(VK_QT.get(vk, Qt.Key.Key_unknown), powtorzenie)
 
     def klawisz(self, klawisz: int, powtorzenie: bool = False):
         if self.zamykanie:
@@ -407,10 +464,49 @@ class Zaslona(QWidget):
             return  # klawisz tylko budzi zgaszony ekran i nie liczy się do serii
         if klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
             return  # same klawisze modyfikujące (także sztuczny Alt przy przejmowaniu klawiatury) nie psują serii
+        if self.faza_pin:
+            self._klawisz_pin(klawisz, powtorzenie)
+            return
         spacja = klawisz == Qt.Key.Key_Space
         if spacja and not powtorzenie:
             self.ostatnia_spacja = time.monotonic()
         self.licznik.nacisniecie(spacja, time.monotonic(), powtorzenie)
+
+    def _klawisz_pin(self, klawisz, powtorzenie: bool):
+        teraz = time.monotonic()
+        self.ostatni_pin = teraz
+        if powtorzenie:
+            return
+        if (c := cyfra(klawisz)) is not None:
+            if len(self.pin) < MAX_PIN:
+                self.pin += c
+        elif klawisz == Qt.Key.Key_Backspace:
+            self.pin = self.pin[:-1]
+        elif klawisz in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self.pin:
+                wpisany, self.pin = self.pin, ""
+                # sprawdzenie poza hakiem klawiatury (Windows wyłącza hak, który odpowiada zbyt wolno)
+                QTimer.singleShot(0, self, lambda w=wpisany: self._sprawdz_pin(w))
+        else:
+            self.pin = ""  # Esc albo inny klawisz kasuje wpisywanie
+        for e in self.ekrany:
+            e.update()
+
+    def _sprawdz_pin(self, pin: str):
+        if self.zamykanie:
+            return
+        try:
+            ok = bool(self.sprawdz_pin and self.sprawdz_pin(pin))
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
+            self.zamknij()
+            return
+        self.bledy_pin += 1
+        self.blad_do = time.monotonic() + 0.8
+        self.obudz()
+        if self.bledy_pin >= PROBY_PIN:
+            self.za_duzo_prob.emit()
 
     def zamknij(self, natychmiast: bool = False):
         if self.zamykanie:

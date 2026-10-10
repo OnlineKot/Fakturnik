@@ -159,3 +159,14 @@ def bezczynnosc_sekund() -> float | None:
         return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000
     except Exception:  # noqa: BLE001
         return None
+
+
+def zablokuj_windows() -> bool:
+    """Blokuje komputer (jak Win+L): dalej tylko hasło lub PIN Windows."""
+    if not na_windows():
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.LockWorkStation())
+    except Exception:  # noqa: BLE001
+        return False

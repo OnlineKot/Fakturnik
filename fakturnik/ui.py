@@ -30,7 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from . import aktualizacje, druk, godziny, gtd, konta, kontrola, mf, narzedzia, urzadzenie, windows
-from .baza import KATEGORIE_PLIKOW, Baza, Dokument, NowszaBaza, Plik, PlikZajety, Pozycja, podsumuj
+from .baza import (
+    KATEGORIE_PLIKOW, MAX_PIN, MIN_PIN, MIN_PIN_RESETU, ROLA_RESETU, Baza, Dokument, NowszaBaza, Plik, PlikZajety,
+    Pozycja, blad_hasla_resetu, jest_pin, podsumuj,
+)
 from .ikony import ikona, pixmapa
 from .ochrona import BlokadaPliku, Dziennik, katalog_kopii, kopia_automatyczna, lista_kopii, odtworz_z_kopii
 from .system import (
@@ -417,6 +420,28 @@ class Watek(QThread):
 
 # ---------------------------------------------------------------- hasło
 
+def _wczytaj_proby() -> tuple[int, float]:
+    """Licznik błędnych haseł przetrwa zamknięcie programu (inaczej restart zerowałby przerwy)."""
+    try:
+        u = QSettings("Fakturnik", "Fakturnik")
+        return int(u.value("bledne_hasla", 0) or 0), float(u.value("blokada_hasla_do", 0) or 0)
+    except (TypeError, ValueError):
+        return 0, 0.0
+
+
+def _zapisz_proby(ile: int, do: float) -> None:
+    try:
+        u = QSettings("Fakturnik", "Fakturnik")
+        u.setValue("bledne_hasla", int(ile))
+        u.setValue("blokada_hasla_do", float(do))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class BlednaProba(str):
+    """Wynik sprawdzenia hasła: błędna próba (liczona do blokady) z własnym komunikatem."""
+
+
 class OknoHasla(QDialog):
     """Pyta o hasło; `sprawdz` zwraca True, gdy hasło jest poprawne."""
 
@@ -429,6 +454,11 @@ class OknoHasla(QDialog):
         super().__init__(parent)
         self.sprawdz, self.dziennik, self.cel, self.zgoda = sprawdz, dziennik, cel, zgoda
         self.proby = 0
+        if not OknoHasla._wczytano:  # po ponownym uruchomieniu: licznik i przerwa z poprzedniej sesji
+            OknoHasla._wczytano = True
+            ile, do = _wczytaj_proby()
+            OknoHasla._nieudane = max(OknoHasla._nieudane, ile)
+            OknoHasla._blokada_do = time.monotonic() + min(max(0.0, do - time.time()), 300.0)
         self.setWindowTitle(tytul)
         self.setFixedWidth(440 if ekran_blokady else 400)
         u = QVBoxLayout(self)
@@ -492,6 +522,7 @@ class OknoHasla(QDialog):
     # wspólne dla wszystkich okien hasła: zamknięcie i ponowne otwarcie okna nie zeruje licznika prób
     _nieudane = 0
     _blokada_do = 0.0
+    _wczytano = False
 
     def sprobuj(self):
         pozostalo = OknoHasla._blokada_do - time.monotonic()
@@ -503,7 +534,7 @@ class OknoHasla(QDialog):
             ok = self.sprawdz(self.pole.text())
         finally:
             QApplication.restoreOverrideCursor()
-        if isinstance(ok, str):  # hasło dobre, ale dostęp odmówiony (np. poza godzinami pracy)
+        if isinstance(ok, str) and not isinstance(ok, BlednaProba):  # hasło dobre, ale dostęp odmówiony
             if self.dziennik:
                 self.dziennik.zapisz(f"{self.cel}: ODMOWA ({ok})")
             self.pole.clear()
@@ -512,8 +543,9 @@ class OknoHasla(QDialog):
             return
         if self.dziennik:
             self.dziennik.zapisz(f"{self.cel}: {'udane' if ok else 'NIEUDANE (złe hasło)'}")
-        if ok:
+        if ok and not isinstance(ok, BlednaProba):
             OknoHasla._nieudane = 0
+            _zapisz_proby(0, 0.0)
             self.accept()
             return
         OknoHasla._nieudane += 1
@@ -521,16 +553,22 @@ class OknoHasla(QDialog):
         # po kolejnych błędach coraz dłuższa przerwa (do 5 min), żeby utrudnić zgadywanie
         przerwa = min(2 ** OknoHasla._nieudane, 300) if OknoHasla._nieudane >= 3 else 0
         OknoHasla._blokada_do = time.monotonic() + przerwa
-        self.blad.setText("Nieprawidłowe hasło." + (f" Spróbuj ponownie za {przerwa} s." if przerwa else ""))
+        _zapisz_proby(OknoHasla._nieudane, time.time() + przerwa)
+        tekst = str(ok) if isinstance(ok, BlednaProba) else "Nieprawidłowe hasło."
+        self.blad.setText(tekst + (f" Spróbuj ponownie za {przerwa} s." if przerwa else ""))
         if przerwa:
             self.setEnabled(False)
             QTimer.singleShot(przerwa * 1000, lambda: (self.setEnabled(True), self.pole.setFocus()))
 
 
 class OknoNowegoHasla(QDialog):
+    """Nowe hasło (domyślnie) albo PIN / hasło do resetu, gdy podano `walidacja` (zwraca opis błędu albo None)."""
+
     def __init__(self, parent=None, tytul: str = "Ustaw hasło",
-                 opis: str = "Hasło szyfruje wszystkie dane (Argon2id, AES-256-GCM i ChaCha20-Poly1305)."):
+                 opis: str = "Hasło szyfruje wszystkie dane (Argon2id, AES-256-GCM i ChaCha20-Poly1305).",
+                 walidacja=None, zasady: str | None = None, etykieta: str = "hasło"):
         super().__init__(parent)
+        self.walidacja = walidacja
         self.setWindowTitle("Hasło")
         self.setFixedWidth(420)
         u = QVBoxLayout(self)
@@ -539,13 +577,14 @@ class OknoNowegoHasla(QDialog):
         t = QLabel(tytul)
         t.setStyleSheet("font-size: 16px; font-weight: 600;")
         u.addWidget(t)
-        info = QLabel(f"{opis} Minimum {MIN_DLUGOSC_HASLA} znaków. Zapomnianego hasła nie da się odzyskać.",
-                      objectName="podtytul", wordWrap=True)
+        if zasady is None:
+            zasady = f"Minimum {MIN_DLUGOSC_HASLA} znaków. Zapomnianego hasła nie da się odzyskać bez hasła do resetu."
+        info = QLabel(f"{opis} {zasady}", objectName="podtytul", wordWrap=True)
         u.addWidget(info)
         self.haslo = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
         self.powtorz = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
-        u.addLayout(pole("Nowe hasło", self.haslo))
-        u.addLayout(pole("Powtórz hasło", self.powtorz))
+        u.addLayout(pole(f"Nowe {etykieta}", self.haslo))
+        u.addLayout(pole(f"Powtórz {etykieta}", self.powtorz))
         self.blad = QLabel(styleSheet=f"color: {CZERWONY}; font-size: 12px;")
         u.addWidget(self.blad)
         rzad = QHBoxLayout()
@@ -555,10 +594,15 @@ class OknoNowegoHasla(QDialog):
         u.addLayout(rzad)
 
     def zatwierdz(self):
-        if len(self.haslo.text()) < MIN_DLUGOSC_HASLA:
-            self.blad.setText(f"Hasło musi mieć co najmniej {MIN_DLUGOSC_HASLA} znaków.")
+        if self.walidacja is not None:
+            blad = self.walidacja(self.haslo.text())
+        else:
+            blad = (f"Hasło musi mieć co najmniej {MIN_DLUGOSC_HASLA} znaków."
+                    if len(self.haslo.text()) < MIN_DLUGOSC_HASLA else None)
+        if blad:
+            self.blad.setText(blad)
         elif self.haslo.text() != self.powtorz.text():
-            self.blad.setText("Hasła nie są takie same.")
+            self.blad.setText("Wpisane wartości nie są takie same.")
         else:
             self.accept()
 
@@ -2215,6 +2259,7 @@ class StronaNarzedzia(Strona):
         ("skaner", "Skaner plików", "tarcza"),
         ("qr", "Kod QR do strony", "qr"),
         ("tapety", "Tapety pulpitu", "pulpit"),
+        ("prywatnosc", "Prywatność Windows", "oko_przekreslone"),
     ]
 
     def __init__(self, okno: "OknoGlowne"):
@@ -2266,7 +2311,7 @@ class StronaNarzedzia(Strona):
                   "minutnik": self._karta_minutnika, "daty": self._karta_dat, "rabat": self._karta_rabatu,
                   "firma": self._karta_firmy, "numer": self._karta_numeru, "slownie": self._karta_slownie,
                   "hasla": self._karta_hasel, "skaner": self._karta_skanera,
-                  "qr": self._karta_qr, "tapety": self._karta_tapet}
+                  "qr": self._karta_qr, "tapety": self._karta_tapet, "prywatnosc": self._karta_prywatnosci}
         self.widoki: dict[str, int] = {}
         for klucz, _, _ in self.NARZEDZIA:
             w = budowa[klucz]()
@@ -2310,6 +2355,8 @@ class StronaNarzedzia(Strona):
             self.tekst_przyp.setFocus()
         elif klucz == "tapety":
             self._miniatury_tapet()
+        elif klucz == "prywatnosc":
+            self._stan_prywatnosci()
 
     def _odswiez_kafelki(self):
         try:
@@ -3135,6 +3182,99 @@ class StronaNarzedzia(Strona):
         ku.addStretch()
         return k
 
+    def _karta_prywatnosci(self) -> QFrame:
+        k, ku = karta()
+        opis = QLabel("Windows domyślnie wysyła dane diagnostyczne do Microsoftu, a Copilot i Recall mogą analizować "
+                      "to, co jest na ekranie — także dane pacjentów. Tu wyłączysz to jednym kliknięciem "
+                      "(standardowe zasady grupy, do cofnięcia przyciskiem „Przywróć”). Sam Fakturnik nie ma żadnej "
+                      "analityki: łączy się tylko z GitHubem (aktualizacje) i z białą listą VAT (sprawdzenie NIP).",
+                      wordWrap=True, objectName="drobny")
+        ku.addWidget(opis)
+        self.stan_prywatnosci = QLabel(wordWrap=True, textFormat=Qt.TextFormat.RichText)
+        ku.addWidget(self.stan_prywatnosci)
+        rzad = QHBoxLayout()
+        rzad.addWidget(przycisk("Wyłącz analitykę i Copilota", "tarcza", "glowny", self._wylacz_sledzenie))
+        rzad.addWidget(przycisk("Odinstaluj aplikację Copilot", "kosz", akcja=self._usun_copilota))
+        rzad.addWidget(przycisk("Przywróć", "przywroc", "plaski", self._przywroc_sledzenie))
+        rzad.addStretch()
+        ku.addLayout(rzad)
+        reczne = QLabel("<b>Ręcznie:</b> Ustawienia Windows → Prywatność i zabezpieczenia → Diagnostyka i opinie "
+                        "(wyłącz „Wysyłaj opcjonalne dane diagnostyczne” i „Dostosowane środowiska”), → Ogólne "
+                        "(wyłącz wszystkie przełączniki reklam), → Historia aktywności (wyłącz), → Odzyskiwanie i "
+                        "migawki / Recall (wyłącz). Copilot: Ustawienia → Personalizacja → Pasek zadań (wyłącz "
+                        "Copilota), aplikację Copilot odinstaluj w Ustawienia → Aplikacje. W Edge: Ustawienia → "
+                        "Prywatność (wyłącz dane diagnostyczne) i Copilot (wyłącz).",
+                        wordWrap=True, objectName="drobny", textFormat=Qt.TextFormat.RichText)
+        ku.addWidget(reczne)
+        ku.addStretch()
+        return k
+
+    def _stan_prywatnosci(self):
+        from . import prywatnosc
+        if not prywatnosc.dostepne():
+            self.stan_prywatnosci.setText("Dostępne tylko w Windows.")
+            return
+        try:
+            stan = prywatnosc.stan()
+        except Exception as e:  # noqa: BLE001
+            self.stan_prywatnosci.setText(html_escape(str(e)))
+            return
+        wiersze = []
+        for g in stan.values():
+            if g["wylaczone"]:
+                znak, kolor, dopisek = "✓", ZIELONY, "wyłączone"
+            elif g["ustawione"]:
+                znak, kolor, dopisek = "•", "#b26a00", f"częściowo ({g['ustawione']}/{g['wszystkie']})"
+            else:
+                znak, kolor, dopisek = "✗", CZERWONY, "włączone"
+            wiersze.append(f"<span style='color:{kolor}; font-weight:600'>{znak}</span> {html_escape(g['nazwa'])}: "
+                           f"<span style='color:{kolor}'>{dopisek}</span>")
+        self.stan_prywatnosci.setText("<br>".join(wiersze))
+
+    def _wylacz_sledzenie(self):
+        from . import prywatnosc
+        if not prywatnosc.dostepne():
+            return
+        bledy = prywatnosc.zastosuj({prywatnosc.HKCU})
+        self.okno.dziennik.zapisz("prywatność Windows: wyłączenie analityki i Copilota (użytkownik)")
+        if QMessageBox.question(self, "Prywatność Windows",
+                                "Ustawienia tego konta Windows są już zmienione.\n\nWyłączyć też analitykę, "
+                                "Copilota i Recall dla całego komputera (w tym usługę telemetrii)? Windows zapyta "
+                                "o zgodę administratora.") == QMessageBox.StandardButton.Yes:
+            if aktualizacje.czy_spakowany():
+                uruchom_jako_administrator(Path(sys.executable), "--prywatnosc wylacz", 0)
+            else:
+                QMessageBox.information(self, "Prywatność Windows", "Ustawienia komputera zmienia wersja .exe.")
+        if bledy:
+            QMessageBox.warning(self, "Prywatność Windows", "Nie wszystko udało się zmienić:\n" + "\n".join(bledy[:5]))
+        self._stan_prywatnosci()
+        for opoznienie in (4000, 12000):  # zmiany administratora dochodzą po chwili
+            QTimer.singleShot(opoznienie, self._stan_prywatnosci)
+
+    def _przywroc_sledzenie(self):
+        from . import prywatnosc
+        if not prywatnosc.dostepne() or QMessageBox.question(
+                self, "Prywatność Windows", "Przywrócić domyślne ustawienia Windows (analityka, Copilot, Recall, "
+                "reklamy)?") != QMessageBox.StandardButton.Yes:
+            return
+        prywatnosc.przywroc({prywatnosc.HKCU})
+        if aktualizacje.czy_spakowany():
+            uruchom_jako_administrator(Path(sys.executable), "--prywatnosc przywroc", 0)
+        self.okno.dziennik.zapisz("prywatność Windows: przywrócenie ustawień domyślnych")
+        self._stan_prywatnosci()
+        QTimer.singleShot(6000, self._stan_prywatnosci)
+
+    def _usun_copilota(self):
+        from . import prywatnosc
+        if not prywatnosc.dostepne() or QMessageBox.question(
+                self, "Copilot", "Odinstalować aplikację Copilot dla tego konta Windows? Można ją później "
+                "zainstalować ponownie ze sklepu Microsoft Store.") != QMessageBox.StandardButton.Yes:
+            return
+        w = Watek(prywatnosc.usun_aplikacje_copilot)
+        w.gotowe.connect(lambda ok: self.okno.komunikat("Aplikacja Copilot odinstalowana" if ok else
+                                                        "Nie udało się odinstalować aplikacji Copilot", blad=not ok))
+        self.okno._w_tle(w)
+
     def _skanuj_wybrane(self):
         sciezki, _ = QFileDialog.getOpenFileNames(self, "Pliki do sprawdzenia", str(katalog_pobranych()))
         if sciezki:
@@ -3606,6 +3746,18 @@ class StronaUstawienia(Strona):
         rzad.addWidget(przycisk("Dziennik logowań", "lista", akcja=self.pokaz_dziennik))
         rzad.addStretch()
         ku.addLayout(rzad)
+        self.stan_pinu = QLabel(objectName="drobny", wordWrap=True)
+        ku.addWidget(self.stan_pinu)
+        rzad = QHBoxLayout()
+        self.btn_pin = przycisk("Ustaw PIN…", "klucz", akcja=lambda: (self.okno.ustaw_moj_pin(), self._pokaz_pin()))
+        self.btn_usun_pin = przycisk("Usuń PIN", "zamknij", "plaski",
+                                     lambda: (self.okno.usun_moj_pin(), self._pokaz_pin()))
+        self.btn_reset = przycisk("Hasło do resetu…", "klodka", akcja=self.ustaw_haslo_resetu)
+        self.btn_usun_reset = przycisk("Usuń hasło do resetu", "zamknij", "plaski", self.usun_haslo_resetu)
+        for b in (self.btn_pin, self.btn_usun_pin, self.btn_reset, self.btn_usun_reset):
+            rzad.addWidget(b)
+        rzad.addStretch()
+        ku.addLayout(rzad)
         ku.addWidget(separator())
         rzad = QHBoxLayout()
         rzad.addWidget(przycisk("Szyfrowana kopia…", "archiwum", akcja=self.kopia_zapasowa))
@@ -3756,6 +3908,15 @@ class StronaUstawienia(Strona):
         rzad_gaszenia.addWidget(self.zaslona_gaszenie)
         rzad_gaszenia.addStretch()
         ku.addLayout(rzad_gaszenia)
+        rzad_odbl = QHBoxLayout()
+        rzad_odbl.addWidget(QLabel("Odblokowanie zasłony", objectName="etykieta"))
+        self.zaslona_odblokowanie = QComboBox()
+        for opis, wartosc in (("5 spacji", "spacje"), ("PIN", "pin"), ("5 spacji, potem PIN", "spacje_pin")):
+            self.zaslona_odblokowanie.addItem(opis, wartosc)
+        self.zaslona_odblokowanie.setToolTip("PIN: wpisz cyfry i Enter. Po 5 błędnych PIN-ach Windows się blokuje.")
+        rzad_odbl.addWidget(self.zaslona_odblokowanie)
+        rzad_odbl.addStretch()
+        ku.addLayout(rzad_odbl)
         prawa.addWidget(k)
         prawa.addSpacing(10)
 
@@ -4183,6 +4344,60 @@ class StronaUstawienia(Strona):
             if ma else "Dane nie są zaszyfrowane. Ustaw hasło, żeby chronić dane pacjentów.")
         self.btn_haslo.setText("Zmień hasło" if ma else "Ustaw hasło")
         self.btn_usun_haslo.setVisible(ma)
+        self.zaslona_odblokowanie.setCurrentIndex(max(self.zaslona_odblokowanie.findData(u["zaslona_odblokowanie"]), 0))
+        self._pokaz_pin()
+
+    def _pokaz_pin(self):
+        b = self.okno.baza
+        ma = b.ma_haslo
+        for w in (self.btn_pin, self.btn_reset, self.stan_pinu):
+            w.setVisible(ma)
+        moj = ma and b.ma_pin(self.okno.uzytkownik.get("id", ""))
+        self.btn_pin.setText("Zmień PIN…" if moj else "Ustaw PIN…")
+        self.btn_usun_pin.setVisible(moj)
+        self.btn_reset.setText("Zmień hasło do resetu…" if ma and b.ma_haslo_resetu else "Hasło do resetu…")
+        self.btn_usun_reset.setVisible(ma and b.ma_haslo_resetu)
+        if ma:
+            self.stan_pinu.setText(
+                ("PIN: ustawiony — odblokowuje program i zasłonę, gdy program działa (po starcie komputera "
+                 "zawsze pełne hasło; 5 błędnych PIN-ów = tylko hasło). " if moj else
+                 "PIN (4–8 cyfr) pozwala szybko odblokować program i zasłonę. ") +
+                ("Hasło do resetu: ustawione — pozwala ustawić nowe hasło, gdy zapomnisz obecnego."
+                 if b.ma_haslo_resetu else
+                 "Hasło do resetu (albo PIN z min. 6 cyfr) pozwala ustawić nowe hasło, gdy zapomnisz obecnego. "
+                 "Zapisz je w bezpiecznym miejscu."))
+
+    def ustaw_haslo_resetu(self):
+        if not self._potwierdz_obecne():
+            return
+        okno = OknoNowegoHasla(self, "Hasło do resetu",
+                               "Osobne hasło albo PIN, którym ustawisz nowe hasło, gdy zapomnisz obecnego "
+                               "(wpisujesz je w oknie logowania zamiast hasła).",
+                               walidacja=blad_hasla_resetu,
+                               zasady=f"Hasło min. 8 znaków albo PIN z {MIN_PIN_RESETU}–12 cyfr. Musi być inne niż "
+                                      "hasło logowania. Zapisz je i schowaj, np. w sejfie.",
+                               etykieta="hasło lub PIN")
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.okno.baza.ustaw_haslo_resetu(okno.haslo.text())
+        except (ValueError, PermissionError) as e:
+            QMessageBox.warning(self, "Hasło do resetu", str(e))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.okno.dziennik.zapisz("ustawienie hasła do resetu")
+        self.okno.komunikat("Ustawiono hasło do resetu")
+        self._pokaz_pin()
+
+    def usun_haslo_resetu(self):
+        if not self._potwierdz_obecne():
+            return
+        self.okno.baza.usun_haslo_resetu()
+        self.okno.dziennik.zapisz("usunięcie hasła do resetu")
+        self.okno.komunikat("Usunięto hasło do resetu")
+        self._pokaz_pin()
 
     def zapisz(self):
         wartosci = {}
@@ -4259,6 +4474,12 @@ class StronaUstawienia(Strona):
         wartosci["dokumenty_do_plikow"] = "1" if self.dokumenty_do_plikow.isChecked() else "0"
         wartosci["zaslona_sekund"] = str(self.zaslona_sekund.value())
         wartosci["zaslona_gaszenie_min"] = str(self.zaslona_gaszenie.value())
+        odbl = self.zaslona_odblokowanie.currentData()
+        if odbl != "spacje" and not self.okno.baza.sa_piny:
+            QMessageBox.information(self, "Zasłona", "Odblokowanie PIN-em wymaga ustawionego PIN-u "
+                                    "(Bezpieczeństwo → Ustaw PIN). Zostaje odblokowanie 5 spacjami.")
+            odbl = "spacje"
+        wartosci["zaslona_odblokowanie"] = odbl
         if integracja_dostepna():
             ustaw_autostart(self.autostart.isChecked())
             ustaw_menu_kontekstowe(self.menu_kontekstowe.isChecked())
@@ -5509,6 +5730,7 @@ class OknoGlowne(QMainWindow):
                       lambda: self.przelacz_wygaszacz(not wlaczony)))
         if self.baza.ma_haslo:
             wynik.append(("Zablokuj program", "Działanie", "klodka", self.zablokuj))
+            wynik.append(("Ustaw mój PIN", "Szybkie odblokowanie", "klucz", self.ustaw_moj_pin))
         if self.jest_wlascicielka:
             wynik.append(("Przenieś dane na inny komputer", "Pakiet migracji", "pobierz", self.strona_ustawienia.migracja))
             wynik += [("Przychody", "Ekran", "wzrost", lambda: self.przejdz(STRONA_PRZYCHODY)),
@@ -5618,9 +5840,77 @@ class OknoGlowne(QMainWindow):
             return
         from .zaslona import Zaslona
         u = self.baza.ustawienia()
-        self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0))
+        tryb = u.get("zaslona_odblokowanie", "spacje")
+        if tryb != "spacje" and not (self.baza.ma_haslo and self.baza.sa_piny and not self.baza.piny_zablokowane):
+            tryb = "spacje"  # bez działającego PIN-u zasłona nie może zamknąć nikogo na stałe
+        self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0),
+                               tryb=tryb, sprawdz_pin=self._pin_zaslony)
         self.zaslona.zamknieta.connect(lambda: setattr(self, "zaslona", None))
+        self.zaslona.za_duzo_prob.connect(self._zaslona_za_duzo_prob)
         self.zaslona.pokaz()
+
+    def _pin_zaslony(self, pin: str) -> bool:
+        id_konta = self.baza.sprawdz_pin(pin)
+        if id_konta is None:
+            self.dziennik.zapisz("zasłona: błędny PIN")
+            return False
+        if id_konta and (konto := self.baza.konto(id_konta)) and konto["nazwa"] != self.uzytkownik.get("nazwa"):
+            self._ustaw_uzytkownika(konto)  # PIN innej osoby: dalej pracuje ona
+        elif id_konta == "" and not self.jest_wlascicielka:
+            self._ustaw_uzytkownika(self.wlascicielka())
+        self.dziennik.zapisz("zasłona: odblokowanie PIN-em")
+        return True
+
+    def _zaslona_za_duzo_prob(self):
+        """5 błędnych PIN-ów na zasłonie: blokada Windows i programu (dalej tylko pełne hasła)."""
+        self.dziennik.zapisz("zasłona: za dużo błędnych PIN-ów — blokada Windows i programu")
+        windows.zablokuj_windows()
+        if self.zaslona:
+            self.zaslona.zamknij(natychmiast=True)
+        QTimer.singleShot(200, self.zablokuj)
+
+    def _potwierdz_siebie(self) -> bool:
+        """Pełne hasło zalogowanej osoby (właściciel albo asystentka) przed zmianą jej PIN-u."""
+        if self.jest_wlascicielka:
+            sprawdz = self.baza.sprawdz_haslo
+        else:
+            moje_id = self.uzytkownik.get("id")
+
+            def sprawdz(haslo: str) -> bool:
+                wynik = konta.zaloguj(self.baza.sciezka.parent, haslo)
+                return bool(wynik and wynik[0]["id"] == moje_id)
+        return OknoHasla(sprawdz, "Potwierdź hasło", self, self.dziennik, "potwierdzenie przed zmianą PIN-u",
+                         "Podaj swoje pełne hasło.").exec() == QDialog.DialogCode.Accepted
+
+    def ustaw_moj_pin(self):
+        if not self.baza.ma_haslo:
+            QMessageBox.information(self, "PIN", "PIN działa, gdy dane są chronione hasłem (Ustawienia → Ustaw hasło).")
+            return
+        if not self._potwierdz_siebie():
+            return
+        okno = OknoNowegoHasla(self, "PIN", "PIN szybko odblokowuje program i zasłonę ekranu, gdy program działa. "
+                               "Po uruchomieniu komputera zawsze potrzebne jest pełne hasło.",
+                               walidacja=lambda t: None if jest_pin(t) else f"PIN musi mieć od {MIN_PIN} do {MAX_PIN} cyfr.",
+                               zasady=f"Od {MIN_PIN} do {MAX_PIN} cyfr; po 5 błędnych PIN-ach działa tylko hasło.",
+                               etykieta="PIN")
+        okno.haslo.setMaxLength(MAX_PIN)
+        okno.powtorz.setMaxLength(MAX_PIN)
+        if okno.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.baza.ustaw_pin(self.uzytkownik.get("id", ""), okno.haslo.text())
+        except (ValueError, PermissionError) as e:
+            QMessageBox.warning(self, "PIN", str(e))
+            return
+        self.dziennik.zapisz("ustawienie PIN-u")
+        self.komunikat("Ustawiono PIN")
+
+    def usun_moj_pin(self):
+        if not self.baza.ma_pin(self.uzytkownik.get("id", "")) or not self._potwierdz_siebie():
+            return
+        self.baza.usun_pin(self.uzytkownik.get("id", ""))
+        self.dziennik.zapisz("usunięcie PIN-u")
+        self.komunikat("Usunięto PIN")
 
     def ustaw_czas_blokady(self):
         minuty = int(liczba(self.baza.ustawienia()["blokada_minut"]) or 10)
@@ -6214,20 +6504,55 @@ class OknoGlowne(QMainWindow):
             self.przejdz(STRONA_NOWY)
 
     def zaloguj_haslem(self, haslo: str):
-        """Hasło właściciela albo konta asystentki; asystentka poza godzinami pracy tylko za zgodą."""
+        """Hasło właściciela, konta asystentki, hasło do resetu albo PIN (szybkie odblokowanie, gdy program
+        działa); asystentka poza godzinami pracy tylko za zgodą."""
         if self.baza.sprawdz_haslo(haslo):
+            self.baza.zaloguj_pelnym_haslem()
             self._ustaw_uzytkownika(self.wlascicielka())
             return True
         wynik = konta.zaloguj(self.baza.sciezka.parent, haslo)
-        if not wynik or not self.baza.szyfr:
+        if wynik and self.baza.szyfr:
+            wpis, klucz = wynik
+            konto = self.baza.konto(wpis["id"])
+            if hmac.compare_digest(klucz, self.baza.szyfr.klucz_hasla) and konto:
+                if konto["rola"] == ROLA_RESETU:
+                    return self._reset_hasla(self) or "Reset hasła przerwany. Hasło się nie zmieniło."
+                if powod := godziny.odmowa(self.baza.ustawienia(), konto["rola"]):
+                    return powod
+                self.baza.zaloguj_pelnym_haslem()
+                self._ustaw_uzytkownika(konto)
+                return True
+        if jest_pin(haslo) and self.baza.sa_piny:
+            if self.baza.piny_zablokowane:
+                return BlednaProba("Za dużo błędnych PIN-ów. Zaloguj się pełnym hasłem.")
+            id_konta = self.baza.sprawdz_pin(haslo)
+            uzytkownik = None
+            if id_konta == "":
+                uzytkownik = self.wlascicielka()
+            elif id_konta:
+                uzytkownik = self.baza.konto(id_konta)
+            if uzytkownik:
+                if powod := godziny.odmowa(self.baza.ustawienia(), uzytkownik["rola"]):
+                    return powod
+                self.dziennik.zapisz("odblokowanie PIN-em")
+                self._ustaw_uzytkownika(uzytkownik)
+                return True
+            if self.baza.piny_zablokowane:
+                self.dziennik.zapisz("PIN-y zablokowane po 5 błędach (potrzebne pełne hasło)")
+                return BlednaProba("Za dużo błędnych PIN-ów. Zaloguj się pełnym hasłem.")
+        return False
+
+    def _reset_hasla(self, rodzic) -> bool:
+        """Zalogowano hasłem do resetu: od razu nowe hasło właściciela (stare przestaje działać)."""
+        okno = OknoNowegoHasla(rodzic, "Reset hasła", "Podano hasło do resetu. Ustaw nowe hasło właściciela; "
+                               "dotychczasowe przestanie działać, a hasło do resetu zostaje.")
+        if okno.exec() != QDialog.DialogCode.Accepted:
             return False
-        wpis, klucz = wynik
-        konto = self.baza.konto(wpis["id"])
-        if not hmac.compare_digest(klucz, self.baza.szyfr.klucz_hasla) or not konto:
-            return False
-        if powod := godziny.odmowa(self.baza.ustawienia(), konto["rola"]):
-            return powod
-        self._ustaw_uzytkownika(konto)
+        self.baza.ustaw_haslo(okno.haslo.text())
+        self.baza.zaloguj_pelnym_haslem()
+        znacznik_szyfrowania(True)
+        self.dziennik.zapisz("RESET HASŁA właściciela (hasłem do resetu)")
+        self._ustaw_uzytkownika(self.wlascicielka())
         return True
 
     def udziel_zgody(self) -> bool:
@@ -6663,12 +6988,12 @@ class OknoAwaryjne(QDialog):
                                 "Fakturnik i na pierwszym ekranie wybierz „Przenieś dane z innego komputera”.")
 
 
-def uruchom_jako_administrator(sciezka: Path) -> bool:
+def uruchom_jako_administrator(sciezka: Path, parametry: str | None = None, pokaz: int = 1) -> bool:
     """Uruchamia program zawsze z prośbą o zgodę administratora (UAC, polecenie „runas”)."""
     if sys.platform != "win32":
         return QDesktopServices.openUrl(QUrl.fromLocalFile(str(sciezka)))
     import ctypes
-    wynik = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(sciezka), None, str(sciezka.parent), 1)
+    wynik = ctypes.windll.shell32.ShellExecuteW(None, "runas", str(sciezka), parametry, str(sciezka.parent), pokaz)
     return int(wynik) > 32  # >32 = uruchomiono; 5 = odmowa zgody administratora
 
 
@@ -6750,7 +7075,7 @@ def _zaloguj_konto(plik: Path, haslo: str, sekret: bytes | None, wynik: dict):
     if not (dane_konta := baza.konto(wpis["id"])):
         baza.zamknij()
         return None
-    if powod := godziny.odmowa(baza.ustawienia(), dane_konta["rola"]):
+    if dane_konta["rola"] != ROLA_RESETU and (powod := godziny.odmowa(baza.ustawienia(), dane_konta["rola"])):
         baza.zamknij()
         return powod
     wynik["baza"] = baza
@@ -6948,6 +7273,17 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
         if "blad" in wynik:
             raise wynik["blad"]
         baza = wynik["baza"]
+        if (wynik.get("uzytkownik") or {}).get("rola") == ROLA_RESETU:
+            okno_resetu = OknoNowegoHasla(None, "Reset hasła", "Podano hasło do resetu. Ustaw nowe hasło "
+                                          "właściciela; dotychczasowe przestanie działać, a hasło do resetu zostaje.")
+            if okno_resetu.exec() != QDialog.DialogCode.Accepted:
+                baza.zamknij()
+                return 0, None
+            baza.ustaw_haslo(okno_resetu.haslo.text())
+            dziennik.zapisz("RESET HASŁA właściciela (hasłem do resetu)")
+            wynik["uzytkownik"] = None  # dalej jako właściciel
+        if baza.ma_haslo and (wynik.get("uzytkownik") or {}).get("rola") != ROLA_RESETU:
+            baza.zaloguj_pelnym_haslem()
     else:
         if plik.exists() and znacznik_szyfrowania():
             dziennik.zapisz("STRAŻNIK: plik danych bez szyfrowania zamiast zaszyfrowanego (podmiana)")

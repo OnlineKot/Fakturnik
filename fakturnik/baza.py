@@ -21,7 +21,7 @@ from .ochrona import BlokadaPliku, tylko_do_odczytu
 from . import konta
 from .szyfrowanie import (
     BledneHaslo, Szyfr, WymaganeUrzadzenie, czy_kopia_szyfrowana, czy_powiazane_z_urzadzeniem, czy_zaszyfrowane, nowy_klucz, odszyfruj_kopie, odszyfruj_plik, zaszyfruj_kopie,
-    sprawdz_weryfikator, weryfikator, zaszyfruj_plik,
+    klucz_argon2, sprawdz_weryfikator, weryfikator, zaszyfruj_plik,
 )
 
 PLIK_WERYFIKATORA = "weryfikator.json"  # do sprawdzenia hasła przez deinstalator
@@ -74,6 +74,9 @@ DOMYSLNE_USTAWIENIA = {
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
+    "zaslona_odblokowanie": "spacje",   # spacje | pin | spacje_pin (5 spacji, potem PIN)
+    "piny": "",                         # PIN-y szybkiego odblokowania (JSON: konto -> sól i skrót Argon2id)
+    "pin_bledy": "0",                   # błędne PIN-y od ostatniego logowania pełnym hasłem
     "aktualizacja_widziana": "",        # wersja|kiedy: strażnik aktualizacji (usługa ma ją zainstalować w 3 h)
     "dokumenty_do_plikow": "1",         # "1" = PDF każdego wystawionego dokumentu trafia do Plików
     "pliki_edycja": "0",                # "1" = pliki można opisywać i usuwać (ustawienia deweloperskie)
@@ -321,6 +324,32 @@ MIGRACJE: dict[int, str] = {
 WERSJA_DANYCH = max(MIGRACJE)
 
 
+# PIN: szybkie odblokowanie, gdy program już działa (blokada, zasłona). Nie szyfruje danych — po starcie
+# komputera zawsze potrzebne jest pełne hasło. Po PROBY_PIN błędach PIN-y nie działają do logowania hasłem.
+MIN_PIN, MAX_PIN = 4, 8
+MIN_PIN_RESETU, MAX_PIN_RESETU = 6, 12
+PROBY_PIN = 5
+ARGON2_PIN = (32768, 2, 1)
+ROLA_RESETU = "reset"  # osobne hasło lub PIN do resetu zapomnianego hasła właściciela
+
+
+def jest_pin(tekst: str, minimum: int = MIN_PIN, maksimum: int = MAX_PIN) -> bool:
+    return bool(re.fullmatch(r"[0-9]+", tekst or "")) and minimum <= len(tekst) <= maksimum
+
+
+def blad_hasla_resetu(tekst: str) -> str | None:
+    """Hasło do resetu: zwykłe hasło (min. 8 znaków) albo PIN z co najmniej 6 cyfr."""
+    if re.fullmatch(r"[0-9]+", tekst or ""):
+        if not jest_pin(tekst, MIN_PIN_RESETU, MAX_PIN_RESETU):
+            return f"PIN do resetu musi mieć od {MIN_PIN_RESETU} do {MAX_PIN_RESETU} cyfr."
+        if len(set(tekst)) == 1 or tekst in "01234567890123" or tekst in "98765432109876":
+            return "Ten PIN jest zbyt łatwy do zgadnięcia (np. 111111, 123456)."
+        return None
+    if len(tekst or "") < 8:
+        return "Hasło do resetu musi mieć co najmniej 8 znaków (albo być PIN-em z 6 cyfr)."
+    return None
+
+
 def wersja_danych(db: sqlite3.Connection) -> int:
     return db.execute("PRAGMA user_version").fetchone()[0]
 
@@ -458,8 +487,8 @@ class Baza:
         self._zapisz_weryfikator()
         if self.szyfr:
             self._odnow_konta()
-        else:  # bez hasła nie ma szyfrowania, więc i kont asystentek
-            self.db.execute("DELETE FROM ustawienia WHERE klucz = 'konta_klucze'")
+        else:  # bez hasła nie ma szyfrowania, więc i kont asystentek, PIN-ów ani hasła do resetu
+            self.db.execute("DELETE FROM ustawienia WHERE klucz IN ('konta_klucze', 'piny')")
             self._utrwal()
             konta.zapisz(self.sciezka.parent, [])
 
@@ -472,7 +501,8 @@ class Baza:
 
     def konta(self) -> list[dict]:
         """Aktywne konta: [{id, nazwa, rola}] (z zaszyfrowanych danych, nie z pliku kont)."""
-        return [{"id": i, "nazwa": k["nazwa"], "rola": k["rola"]} for i, k in self._klucze_kont().items()]
+        return [{"id": i, "nazwa": k["nazwa"], "rola": k["rola"]} for i, k in self._klucze_kont().items()
+                if k["rola"] != ROLA_RESETU]
 
     def konto_aktywne(self, id_: str) -> bool:
         return id_ in self._klucze_kont()
@@ -490,7 +520,9 @@ class Baza:
             raise ValueError("Podaj inną nazwę konta (np. imię asystentki).")
         if any(konta.sprawdz_haslo(w, haslo) for w in konta.wczytaj(self.sciezka.parent)):
             raise ValueError("To hasło ma już inne konto. Każde konto musi mieć własne hasło.")
-        wpis, klucz_konta = konta.nowe_konto(nazwa, haslo, rola, self.szyfr.klucz_hasla)
+        # hasło do resetu może być PIN-em, więc jego klucz jest wyliczany dużo wolniej (256 MiB, 4 przebiegi)
+        parametry = konta.ARGON2_RESETU if rola == ROLA_RESETU else None
+        wpis, klucz_konta = konta.nowe_konto(nazwa, haslo, rola, self.szyfr.klucz_hasla, parametry)
         klucze = self._klucze_kont()
         klucze[wpis["id"]] = {"nazwa": nazwa, "rola": rola, "klucz": base64.b64encode(klucz_konta).decode("ascii")}
         self.zapisz_ustawienia({"konta_klucze": json.dumps(klucze)})
@@ -500,7 +532,9 @@ class Baza:
     def usun_konto(self, id_: str) -> None:
         klucze = self._klucze_kont()
         klucze.pop(id_, None)
-        self.zapisz_ustawienia({"konta_klucze": json.dumps(klucze)})
+        piny = self._piny()
+        piny.pop(id_, None)
+        self.zapisz_ustawienia({"konta_klucze": json.dumps(klucze), "piny": json.dumps(piny)})
         konta.zapisz(self.sciezka.parent, [w for w in konta.wczytaj(self.sciezka.parent) if w["id"] != id_])
 
     def ustaw_haslo_konta(self, id_: str, haslo: str) -> None:
@@ -515,6 +549,94 @@ class Baza:
                      {"id": id_, "nazwa": klucze[id_]["nazwa"], "rola": klucze[id_]["rola"]})
         nowy = konta.nowe_haslo(stary, haslo, klucz_konta, self.szyfr.klucz_hasla)
         konta.zapisz(self.sciezka.parent, [w for w in wpisy if w["id"] != id_] + [nowy])
+
+    # ---------- hasło (lub PIN) do resetu zapomnianego hasła ----------
+    @property
+    def ma_haslo_resetu(self) -> bool:
+        return any(k["rola"] == ROLA_RESETU for k in self._klucze_kont().values())
+
+    def ustaw_haslo_resetu(self, haslo: str) -> None:
+        """Osobny klucz dostępu (jak konto) tylko do ustawienia nowego hasła właściciela."""
+        if (blad := blad_hasla_resetu(haslo)):
+            raise ValueError(blad)
+        if self.sprawdz_haslo(haslo):
+            raise ValueError("Hasło do resetu musi być inne niż hasło właściciela.")
+        self.usun_haslo_resetu()
+        self.dodaj_konto("Reset hasła", haslo, ROLA_RESETU)
+
+    def usun_haslo_resetu(self) -> None:
+        for id_, k in list(self._klucze_kont().items()):
+            if k["rola"] == ROLA_RESETU:
+                self.usun_konto(id_)
+
+    # ---------- PIN szybkiego odblokowania ----------
+    def _piny(self) -> dict:
+        try:
+            return json.loads(self.ustawienia().get("piny") or "{}")
+        except ValueError:
+            return {}
+
+    def ma_pin(self, id_konta: str) -> bool:
+        return id_konta in self._piny()
+
+    @property
+    def sa_piny(self) -> bool:
+        return bool(self._piny())
+
+    def ustaw_pin(self, id_konta: str, pin: str) -> None:
+        if not self.szyfr:
+            raise PermissionError("PIN działa tylko przy danych chronionych hasłem.")
+        if not jest_pin(pin):
+            raise ValueError(f"PIN musi mieć od {MIN_PIN} do {MAX_PIN} cyfr.")
+        if len(set(pin)) == 1 or pin in "01234567890123" or pin in "98765432109876":
+            raise ValueError("Ten PIN jest zbyt łatwy do zgadnięcia (np. 1111, 1234).")
+        piny = self._piny()
+        for inne, w in piny.items():
+            if inne != id_konta and hmac.compare_digest(
+                    klucz_argon2(pin, base64.b64decode(w["sol"]), ARGON2_PIN), base64.b64decode(w["skrot"])):
+                raise ValueError("Ten PIN ma już inne konto. Każde konto musi mieć własny PIN.")
+        sol = os.urandom(16)
+        piny[id_konta] = {"sol": base64.b64encode(sol).decode("ascii"),
+                          "skrot": base64.b64encode(klucz_argon2(pin, sol, ARGON2_PIN)).decode("ascii")}
+        self.zapisz_ustawienia({"piny": json.dumps(piny), "pin_bledy": "0"})
+
+    def usun_pin(self, id_konta: str) -> None:
+        piny = self._piny()
+        if piny.pop(id_konta, None) is not None:
+            self.zapisz_ustawienia({"piny": json.dumps(piny)})
+
+    @property
+    def piny_zablokowane(self) -> bool:
+        try:
+            return int(self.ustawienia().get("pin_bledy") or 0) >= PROBY_PIN
+        except ValueError:
+            return True
+
+    def sprawdz_pin(self, pin: str) -> str | None:
+        """Id konta, do którego pasuje PIN (właściciel: ""), albo None. Liczy błędy; po PROBY_PIN
+        błędach PIN-y nie działają, dopóki ktoś nie zaloguje się pełnym hasłem."""
+        piny = self._piny()
+        if not piny or not jest_pin(pin) or self.piny_zablokowane:
+            return None
+        for id_konta, w in piny.items():
+            if id_konta and not self.konto_aktywne(id_konta):
+                continue
+            try:
+                if hmac.compare_digest(klucz_argon2(pin, base64.b64decode(w["sol"]), ARGON2_PIN),
+                                       base64.b64decode(w["skrot"])):
+                    if self.ustawienia().get("pin_bledy") != "0":
+                        self.zapisz_ustawienia({"pin_bledy": "0"})
+                    return id_konta
+            except (KeyError, ValueError):
+                continue
+        bledy = int(self.ustawienia().get("pin_bledy") or 0) + 1
+        self.zapisz_ustawienia({"pin_bledy": str(bledy)})
+        return None
+
+    def zaloguj_pelnym_haslem(self) -> None:
+        """Po zalogowaniu hasłem licznik błędnych PIN-ów się zeruje."""
+        if self.ustawienia().get("pin_bledy") not in ("0", ""):
+            self.zapisz_ustawienia({"pin_bledy": "0"})
 
     def _odnow_konta(self) -> None:
         """Po zmianie hasła właściciela: klucze danych wszystkich kont na nowo (bez haseł asystentek)."""
