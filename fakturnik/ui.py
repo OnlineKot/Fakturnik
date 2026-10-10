@@ -519,6 +519,7 @@ class OknoHasla(QDialog):
             self.pole.setFocus()
 
     # wspólne dla wszystkich okien hasła: zamknięcie i ponowne otwarcie okna nie zeruje licznika prób
+    PROBY_BLOKADA = 10  # po tylu błędnych hasłach komputer jest blokowany (Windows)
     _nieudane = 0
     _blokada_do = 0.0
     _wczytano = False
@@ -549,6 +550,15 @@ class OknoHasla(QDialog):
             return
         OknoHasla._nieudane += 1
         self.pole.clear()
+        if OknoHasla._nieudane >= OknoHasla.PROBY_BLOKADA:
+            if self.dziennik:
+                self.dziennik.zapisz(f"{self.cel}: BLOKADA po {OknoHasla._nieudane} błędnych próbach hasła")
+            _zapisz_proby(OknoHasla._nieudane, time.time() + 300)
+            self.blad.setText("Za dużo błędnych prób. Komputer zostanie zablokowany.")
+            from . import windows as _w
+            _w.zablokuj_windows()
+            QTimer.singleShot(400, self.reject)  # zamyka okno; program zostaje zablokowany/schowany
+            return
         # po kolejnych błędach coraz dłuższa przerwa (do 5 min), żeby utrudnić zgadywanie
         przerwa = min(2 ** OknoHasla._nieudane, 300) if OknoHasla._nieudane >= 3 else 0
         OknoHasla._blokada_do = time.monotonic() + przerwa
@@ -4383,7 +4393,7 @@ class StronaUstawienia(Strona):
         if ma:
             self.stan_pinu.setText(
                 ("PIN: ustawiony — odblokowuje program i zasłonę, gdy program działa (po starcie komputera "
-                 "zawsze pełne hasło; 5 błędnych PIN-ów = tylko hasło). " if moj else
+                 "zawsze pełne hasło; 10 błędnych PIN-ów = tylko hasło). " if moj else
                  "PIN (4–6 cyfr) pozwala szybko odblokować program i zasłonę. ") +
                 ("Hasło do resetu: ustawione — pozwala ustawić nowe hasło, gdy zapomnisz obecnego."
                  if b.ma_haslo_resetu else
@@ -5923,7 +5933,7 @@ class OknoGlowne(QMainWindow):
         return False
 
     def _zaslona_za_duzo_prob(self):
-        """5 błędnych PIN-ów na zasłonie: blokada Windows i programu (dalej tylko pełne hasła)."""
+        """10 błędnych PIN-ów na zasłonie: blokada Windows i programu (dalej tylko pełne hasła)."""
         self.dziennik.zapisz("zasłona: za dużo błędnych prób — blokada Windows i programu")
         windows.zablokuj_windows()
         if self.zaslona:
@@ -5952,7 +5962,7 @@ class OknoGlowne(QMainWindow):
         okno = OknoNowegoHasla(self, "PIN", "PIN szybko odblokowuje program i zasłonę ekranu, gdy program działa. "
                                "Po uruchomieniu komputera zawsze potrzebne jest pełne hasło.",
                                walidacja=lambda t: None if jest_pin(t) else f"PIN musi mieć od {MIN_PIN} do {MAX_PIN} cyfr.",
-                               zasady=f"Od {MIN_PIN} do {MAX_PIN} cyfr; po 5 błędnych PIN-ach działa tylko hasło.",
+                               zasady=f"Od {MIN_PIN} do {MAX_PIN} cyfr; po 10 błędnych PIN-ach działa tylko hasło.",
                                etykieta="PIN")
         okno.haslo.setMaxLength(MAX_PIN)
         okno.powtorz.setMaxLength(MAX_PIN)
@@ -6599,7 +6609,7 @@ class OknoGlowne(QMainWindow):
                 self._ustaw_uzytkownika(uzytkownik)
                 return True
             if self.baza.piny_zablokowane:
-                self.dziennik.zapisz("PIN-y zablokowane po 5 błędach (potrzebne pełne hasło)")
+                self.dziennik.zapisz("PIN-y zablokowane po 10 błędach (potrzebne pełne hasło)")
                 return BlednaProba("Za dużo błędnych PIN-ów. Zaloguj się pełnym hasłem.")
         return False
 

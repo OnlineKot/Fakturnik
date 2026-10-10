@@ -45,10 +45,11 @@ def test_haslo_po_spacji(app):
     assert z.zamykanie
 
 
-def test_piec_blednych_hasel_blokuje(app):
+def test_blokada_po_wielu_blednych_haslach(app):
+    from fakturnik.zaslona import PROBY_PIN
     z, stan = zaslona("haslo")
-    klawisze(app, z, ([(0x20, " "), (0x41, "x"), (0x0D, "\r")]) * 5)
-    assert stan["proby"] and not z.zamykanie
+    klawisze(app, z, ([(0x20, " "), (0x41, "x"), (0x0D, "\r")]) * PROBY_PIN)
+    assert PROBY_PIN == 10 and stan["proby"] and not z.zamykanie
 
 
 def test_pin_i_bez_sposobu_sprawdzenia(app):

@@ -180,7 +180,7 @@ VK_MODYFIKATORY = {0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0
 VK_QT = {0x0D: Qt.Key.Key_Return, 0x08: Qt.Key.Key_Backspace, 0x1B: Qt.Key.Key_Escape, VK_SPACJA: Qt.Key.Key_Space}
 VK_QT.update({0x30 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # cyfry nad literami
 VK_QT.update({0x60 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # klawiatura numeryczna
-PROBY_PIN = 5
+PROBY_PIN = 10
 TRYBY = ("dowolny", "spacje", "pin", "spacje_pin", "haslo")
 MAX_HASLO = 128
 MAX_PIN = 6          # PIN odblokowania: 4–6 cyfr
