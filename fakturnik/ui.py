@@ -452,11 +452,12 @@ class OknoHasla(QDialog):
         `zgoda`: funkcja wywoływana przyciskiem „Zgoda właściciela” (praca po godzinach)."""
         super().__init__(parent)
         self.sprawdz, self.dziennik, self.cel, self.zgoda = sprawdz, dziennik, cel, zgoda
+        self._ekran_blokady = ekran_blokady is not None  # ekran blokady/logowania: Esc nie zamyka programu
         self.proby = 0
-        if not OknoHasla._wczytano:  # po ponownym uruchomieniu: licznik i przerwa z poprzedniej sesji
+        if not OknoHasla._wczytano:  # po ponownym uruchomieniu: tylko resztka przerwy (nie zliczamy błędów w nieskończoność)
             OknoHasla._wczytano = True
-            ile, do = _wczytaj_proby()
-            OknoHasla._nieudane = max(OknoHasla._nieudane, ile)
+            _, do = _wczytaj_proby()
+            OknoHasla._nieudane = 0  # licznik błędów zawsze startuje od zera — pomyłka nie zamknie programu
             OknoHasla._blokada_do = time.monotonic() + min(max(0.0, do - time.time()), 300.0)
         self.setWindowTitle(tytul)
         self.setFixedWidth(440 if ekran_blokady else 400)
@@ -511,6 +512,13 @@ class OknoHasla(QDialog):
         rzad.addWidget(self.ok)
         u.addLayout(rzad)
 
+    def keyPressEvent(self, e):
+        # na ekranie blokady/logowania Esc nie zamyka programu (tylko przycisk „Anuluj” kończy świadomie)
+        if self._ekran_blokady and e.key() == Qt.Key.Key_Escape:
+            e.ignore()
+            return
+        super().keyPressEvent(e)
+
     def _tykaj(self):
         teraz = datetime.now()
         self.zegar_ekranu.setText(f"{teraz:%H:%M}")
@@ -548,6 +556,11 @@ class OknoHasla(QDialog):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             ok = self.sprawdz(self.pole.text())
+        except Exception as e:  # noqa: BLE001 - błąd sprawdzania nigdy nie zamyka okna ani programu
+            if self.dziennik:
+                self.dziennik.zapisz(f"{self.cel}: błąd sprawdzania hasła ({e})")
+            self.blad.setText("Nie udało się sprawdzić hasła. Spróbuj ponownie.")
+            return
         finally:
             QApplication.restoreOverrideCursor()
         if isinstance(ok, str) and not isinstance(ok, BlednaProba):  # hasło dobre, ale dostęp odmówiony
@@ -567,13 +580,16 @@ class OknoHasla(QDialog):
         OknoHasla._nieudane += 1
         self.pole.clear()
         if OknoHasla._nieudane >= OknoHasla.PROBY_BLOKADA:
+            # po 10 błędach blokujemy KOMPUTER (Windows), ale okno hasła zostaje otwarte — program się nie zamyka.
             if self.dziennik:
-                self.dziennik.zapisz(f"{self.cel}: BLOKADA po {OknoHasla._nieudane} błędnych próbach hasła")
-            _zapisz_proby(OknoHasla._nieudane, time.time() + 300)
-            self.blad.setText("Za dużo błędnych prób. Komputer zostanie zablokowany.")
+                self.dziennik.zapisz(f"{self.cel}: BLOKADA komputera po {OknoHasla._nieudane} błędnych próbach")
+            OknoHasla._nieudane = 0  # liczymy od nowa, żeby po odblokowaniu Windows dało się znów próbować
+            OknoHasla._blokada_do = time.monotonic() + 60
+            _zapisz_proby(0, time.time() + 60)
+            self.blad.setText("Za dużo błędnych prób — komputer zablokowany. Spróbuj ponownie za 60 s.")
+            self.pole.setEnabled(False)
             from . import windows as _w
             _w.zablokuj_windows()
-            QTimer.singleShot(400, self.reject)  # zamyka okno; program zostaje zablokowany/schowany
             return
         # po kolejnych błędach coraz dłuższa przerwa (do 5 min), żeby utrudnić zgadywanie
         przerwa = min(2 ** OknoHasla._nieudane, 300) if OknoHasla._nieudane >= 3 else 0
