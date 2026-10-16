@@ -505,12 +505,26 @@ class OknoHasla(QDialog):
         self.btn_zgoda = przycisk("Zgoda właściciela…", "klucz", "plaski", self._zgoda)
         self.btn_zgoda.hide()
         rzad.addWidget(self.btn_zgoda)
+        rzad.addWidget(przycisk("Nie pamiętam hasła", "klucz", "plaski", self._pomoc_haslo))
         rzad.addStretch()
         rzad.addWidget(przycisk("Anuluj", akcja=self.reject))
         self.ok = przycisk("Otwórz", styl="glowny", akcja=self.sprobuj)
         self.ok.setDefault(True)
         rzad.addWidget(self.ok)
         u.addLayout(rzad)
+
+    def _pomoc_haslo(self):
+        QMessageBox.information(
+            self, "Nie pamiętam hasła",
+            "Hasło szyfruje wszystkie dane — bez niego nie da się ich odczytać (to chroni dane pacjentów).\n\n"
+            "Jak wrócić do programu:\n"
+            "1. Jeśli masz HASŁO DO RESETU (albo PIN do resetu, np. 6 cyfr), wpisz je w to samo pole zamiast "
+            "hasła i naciśnij Otwórz — program pozwoli ustawić nowe hasło.\n"
+            "2. Jeśli masz konto asystentki z własnym hasłem, zaloguj się nim — otworzysz dane.\n"
+            "3. Spokojnie próbuj kolejne hasła — przerwa po błędach jest krótka (do 30 s), a po zamknięciu "
+            "i ponownym otwarciu programu licznik startuje od zera.\n\n"
+            "Jeśli nie masz hasła do resetu ani konta asystentki, danych nie da się odzyskać — zostaje tylko "
+            "zacząć od nowa (dane zostają na dysku zaszyfrowane).")
 
     def keyPressEvent(self, e):
         # na ekranie blokady/logowania Esc nie zamyka programu (tylko przycisk „Anuluj” kończy świadomie)
@@ -591,8 +605,8 @@ class OknoHasla(QDialog):
             from . import windows as _w
             _w.zablokuj_windows()
             return
-        # po kolejnych błędach coraz dłuższa przerwa (do 5 min), żeby utrudnić zgadywanie
-        przerwa = min(2 ** OknoHasla._nieudane, 300) if OknoHasla._nieudane >= 3 else 0
+        # po kolejnych błędach krótka przerwa (łagodnie, maks. 30 s), żeby właściciel mógł spokojnie próbować
+        przerwa = min(5 * (OknoHasla._nieudane - 4), 30) if OknoHasla._nieudane >= 5 else 0
         OknoHasla._blokada_do = time.monotonic() + przerwa
         _zapisz_proby(OknoHasla._nieudane, time.time() + przerwa)
         tekst = str(ok) if isinstance(ok, BlednaProba) else "Nieprawidłowe hasło."
