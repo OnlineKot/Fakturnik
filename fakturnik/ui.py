@@ -24,7 +24,7 @@ from PySide6.QtGui import (
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog,
-    QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
+    QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSpinBox, QStackedWidget, QStyledItemDelegate, QTimeEdit, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
@@ -224,6 +224,26 @@ def zaladuj_czcionki() -> None:
 def sciezka_danych() -> Path:
     katalog = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
     return Path(katalog) / "fakturnik.db"
+
+
+def plynne_pojawienie(widget, ms: int = 160) -> None:
+    """Delikatne pojawienie się elementu (przejście krycia 0→1). Efekt jest zdejmowany po animacji,
+    więc nie spowalnia dalszego rysowania. Ciche nie-działanie, gdyby cokolwiek zawiodło."""
+    try:
+        efekt = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(efekt)
+        a = QPropertyAnimation(efekt, b"opacity", widget)
+        a.setDuration(ms)
+        a.setStartValue(0.0)
+        a.setEndValue(1.0)
+        a.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a.finished.connect(lambda: widget.setGraphicsEffect(None))
+        a.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+    except Exception:  # noqa: BLE001
+        try:
+            widget.setGraphicsEffect(None)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def archiwizuj_dane(plik: Path) -> Path | None:
@@ -5943,6 +5963,8 @@ class OknoGlowne(QMainWindow):
         self.strony.setCurrentIndex(i)
         if odswiez:
             self.strony.currentWidget().odswiez()
+        if self.isVisible():
+            plynne_pojawienie(self.strony.currentWidget(), 150)
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
         self._ustaw_nazwe_gabinetu()
 
@@ -6884,6 +6906,7 @@ class OknoGlowne(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.timer.start()
+        plynne_pojawienie(self.strony, 180)
 
     def _nowy_z_zasobnika(self, rodzaj: str):
         self.pokaz_okno()
@@ -7482,7 +7505,7 @@ def okno_przy_starcie(ustaw: bool | None = None) -> bool:
     ustawienia = QSettings("Fakturnik", "Fakturnik")
     if ustaw is not None:
         ustawienia.setValue("okno_przy_starcie", int(ustaw))
-    return str(ustawienia.value("okno_przy_starcie", 1)) == "1"
+    return str(ustawienia.value("okno_przy_starcie", 0)) == "1"  # domyślnie: po starcie cicho w tle
 
 
 def katalog_pobranych() -> Path:
