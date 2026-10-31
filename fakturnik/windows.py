@@ -142,6 +142,73 @@ def ustaw_tapete(sciezka: str) -> bool:
                                                            SPIF_UPDATEINIFILE_SENDCHANGE))
 
 
+def monitory_per_wallpaper(generuj) -> bool:
+    """Ustawia OSOBNĄ tapetę na każdym monitorze (Windows 8+), dopasowaną do jego rozdzielczości i
+    orientacji — dzięki temu pionowy monitor nie dostaje obciętej, poziomej tapety.
+
+    `generuj(szer, wys)` ma zwrócić ścieżkę do pliku PNG w danym rozmiarze. Zwraca True, gdy się udało;
+    False — gdy nie (wtedy program użyje zwykłej, jednej tapety dla wszystkich ekranów)."""
+    if not na_windows():
+        return False
+    try:
+        import ctypes
+        from ctypes import POINTER, byref, c_uint, c_void_p, c_wchar_p
+        from ctypes import wintypes
+
+        ole32 = ctypes.windll.ole32
+        ole32.CoInitialize(None)
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("Data1", c_uint), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+            def __init__(self, tekst):
+                super().__init__()
+                ole32.CLSIDFromString(tekst, byref(self))
+
+        CLSID = GUID("{C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD}")
+        IID = GUID("{B92B56A9-8B55-4E14-9A89-0199BBB6F93B}")
+        wsk = c_void_p()
+        if ole32.CoCreateInstance(byref(CLSID), None, 1, byref(IID), byref(wsk)):  # CLSCTX_INPROC_SERVER
+            return False
+        vtbl = ctypes.cast(wsk, POINTER(c_void_p))[0]
+        tabela = ctypes.cast(vtbl, POINTER(c_void_p * 20)).contents
+
+        def metoda(indeks, zwrot, *argi):
+            return ctypes.WINFUNCTYPE(zwrot, c_void_p, *argi)(tabela[indeks])
+
+        SetWallpaper = metoda(3, ctypes.c_long, c_wchar_p, c_wchar_p)
+        GetMonitorDevicePathAt = metoda(5, ctypes.c_long, c_uint, POINTER(c_wchar_p))
+        GetMonitorDevicePathCount = metoda(6, ctypes.c_long, POINTER(c_uint))
+        GetMonitorRECT = metoda(7, ctypes.c_long, c_wchar_p, POINTER(wintypes.RECT))
+        SetPosition = metoda(10, ctypes.c_long, ctypes.c_int)
+
+        ile = c_uint(0)
+        if GetMonitorDevicePathCount(wsk, byref(ile)) or ile.value == 0:
+            return False
+        SetPosition(wsk, 4)  # DWPOS_FILL — obraz jest już w proporcjach monitora, więc wypełnia bez zniekształceń
+        udane = 0
+        for i in range(ile.value):
+            idm = c_wchar_p()
+            if GetMonitorDevicePathAt(wsk, i, byref(idm)) or not idm.value:
+                continue
+            prost = wintypes.RECT()
+            if GetMonitorRECT(wsk, idm.value, byref(prost)):
+                ole32.CoTaskMemFree(idm)
+                continue
+            szer, wys = prost.right - prost.left, prost.bottom - prost.top
+            try:
+                plik = generuj(max(1, szer), max(1, wys))
+                if plik and SetWallpaper(wsk, idm.value, str(plik)) == 0:
+                    udane += 1
+            except Exception:  # noqa: BLE001
+                pass
+            ole32.CoTaskMemFree(idm)
+        return udane > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def bezczynnosc_sekund() -> float | None:
     """Ile sekund minęło od ostatniego ruchu myszy lub klawisza w całym systemie (nie tylko w programie)."""
     if not na_windows():

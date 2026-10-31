@@ -4331,15 +4331,28 @@ class StronaUstawienia(Strona):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             u = self.okno.baza.ustawienia()
-            # zachowaj rzeczywistą orientację ekranu (pionowy monitor: wysokość > szerokość)
-            szer = max(800, int(rozmiar.width()) or 1920)
-            wys = max(600, int(rozmiar.height()) or 1080)
-            plik = tapeta.zapisz(wariant, self.okno.baza.sciezka.parent, szer, wys,
-                                 u["nazwa"].split(",")[0].strip(), u.get("tapeta_napis", ""))
+            nazwa_g = u["nazwa"].split(",")[0].strip()
+            napis = u.get("tapeta_napis", "")
+            katalog = self.okno.baza.sciezka.parent
             obecna = windows.obecna_tapeta()
             if obecna and "tapeta-" not in Path(obecna).name and not u["poprzednia_tapeta"]:
                 self.okno.baza.zapisz_ustawienia({"poprzednia_tapeta": obecna})
-            ok = windows.ustaw_tapete(str(plik))
+
+            licznik = [0]
+
+            def generuj(szer, wys):
+                # osobny plik na każdy monitor, dopasowany do jego rozmiaru i orientacji
+                licznik[0] += 1
+                return tapeta.zapisz(f"{wariant}-{szer}x{wys}", katalog, max(800, szer), max(600, wys),
+                                     nazwa_g, napis)
+
+            # najpierw: każdy monitor dostaje własną, dopasowaną tapetę (pionowy nie będzie obcięty)
+            ok = windows.monitory_per_wallpaper(generuj)
+            if not ok:  # starszy Windows albo jeden ekran: jedna tapeta dla wszystkich
+                szer = max(800, int(rozmiar.width()) or 1920)
+                wys = max(600, int(rozmiar.height()) or 1080)
+                plik = tapeta.zapisz(wariant, katalog, szer, wys, nazwa_g, napis)
+                ok = windows.ustaw_tapete(str(plik))
         finally:
             QApplication.restoreOverrideCursor()
         self.okno.komunikat(f"Ustawiono tapetę: {tapeta.WARIANTY[wariant]['nazwa']}" if ok

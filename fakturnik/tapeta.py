@@ -48,9 +48,13 @@ def wygeneruj(wariant: str, szerokosc: int, wysokosc: int, nazwa_gabinetu: str =
     napis = " ".join(napis.split())[:120]
 
     def tekst(t: str, px: float, waga, kolor: str, prostokat: QRectF, wyrownanie):
+        from PySide6.QtGui import QFontMetricsF
         f = QFont("Inter")
         f.setPixelSize(max(10, int(px)))
         f.setWeight(waga)
+        szer_dost = prostokat.width()
+        if szer_dost > 0 and QFontMetricsF(f).horizontalAdvance(t) > szer_dost:  # długa nazwa: zmniejsz, by się zmieściła
+            f.setPixelSize(max(10, int(px * szer_dost / QFontMetricsF(f).horizontalAdvance(t))))
         p.setFont(f)
         p.setPen(QColor(kolor))
         p.drawText(prostokat, wyrownanie, t)
