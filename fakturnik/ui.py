@@ -4107,10 +4107,12 @@ class StronaUstawienia(Strona):
         rzad_odbl = QHBoxLayout()
         rzad_odbl.addWidget(QLabel("Odblokowanie zasłony", objectName="etykieta"))
         self.zaslona_odblokowanie = QComboBox()
-        for opis, wartosc in (("Dowolny klawisz", "dowolny"), ("5 spacji", "spacje"), ("PIN", "pin"),
+        for opis, wartosc in (("Jedna spacja (zalecane)", "spacja"), ("Dowolny klawisz", "dowolny"),
+                              ("5 spacji", "spacje"), ("PIN", "pin"),
                               ("5 spacji, potem PIN", "spacje_pin"), ("Spacja, potem hasło", "haslo")):
             self.zaslona_odblokowanie.addItem(opis, wartosc)
-        self.zaslona_odblokowanie.setToolTip("PIN: cyfry i Enter. Hasło: spacja, potem hasło i Enter. "
+        self.zaslona_odblokowanie.setToolTip("Jedna spacja: najprościej — jedno naciśnięcie spacji chowa zasłonę. "
+                                             "PIN: cyfry i Enter. Hasło: spacja, potem hasło i Enter. "
                                              "Po 10 błędach Windows się blokuje.")
         rzad_odbl.addWidget(self.zaslona_odblokowanie)
         rzad_odbl.addStretch()
@@ -6097,12 +6099,12 @@ class OknoGlowne(QMainWindow):
             return
         from .zaslona import Zaslona
         u = self.baza.ustawienia()
-        tryb = u.get("zaslona_odblokowanie", "spacje")
+        tryb = u.get("zaslona_odblokowanie", "spacja")
         if tryb in ("pin", "spacje_pin") and not (self.baza.ma_haslo and self.baza.sa_piny
                                                   and not self.baza.piny_zablokowane):
-            tryb = "haslo" if self.baza.ma_haslo else "spacje"  # bez działającego PIN-u: pełne hasło
+            tryb = "haslo" if self.baza.ma_haslo else "spacja"  # bez działającego PIN-u: pełne hasło
         elif tryb == "haslo" and not self.baza.ma_haslo:
-            tryb = "spacje"
+            tryb = "spacja"
         self.zaslona = Zaslona(u["nazwa"].split(",")[0].strip(), float(liczba(u.get("zaslona_gaszenie_min")) or 0),
                                tryb=tryb, sprawdz_pin=self._pin_zaslony, sprawdz_haslo=self._haslo_zaslony,
                                napis=u.get("zaslona_napis", ""))

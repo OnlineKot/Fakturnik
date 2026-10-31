@@ -74,7 +74,7 @@ DOMYSLNE_USTAWIENIA = {
     "schowek_sekund": "30",             # po ilu sekundach czyścić schowek ze skopiowanym hasłem
     "ostatnie_powitanie": "",           # data ostatniego powitania (raz dziennie)
     "skaner_pobrane": "1",              # "1" = sprawdzaj nowe pliki w folderze Pobrane
-    "zaslona_odblokowanie": "spacje",   # dowolny | spacje | pin | spacje_pin | haslo (spacja, potem hasło)
+    "zaslona_odblokowanie": "spacja",   # spacja | dowolny | spacje | pin | spacje_pin | haslo (spacja, potem hasło)
     "tapeta_napis": "",                 # własny napis na tapecie (pod nazwą gabinetu)
     "zaslona_napis": "",                # własny napis na zasłonie ekranu (pod zegarem i datą)
     "aktualizacje_powiadom": "0",       # "1" = tylko powiadamiaj (nie instaluj sama); "0" = usługa instaluje autonomicznie

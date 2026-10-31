@@ -181,7 +181,7 @@ VK_QT = {0x0D: Qt.Key.Key_Return, 0x08: Qt.Key.Key_Backspace, 0x1B: Qt.Key.Key_E
 VK_QT.update({0x30 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # cyfry nad literami
 VK_QT.update({0x60 + i: Qt.Key(Qt.Key.Key_0 + i) for i in range(10)})   # klawiatura numeryczna
 PROBY_PIN = 10
-TRYBY = ("dowolny", "spacje", "pin", "spacje_pin", "haslo")
+TRYBY = ("spacja", "dowolny", "spacje", "pin", "spacje_pin", "haslo")
 MAX_HASLO = 128
 MAX_PIN = 6          # PIN odblokowania: 4–6 cyfr
 CZAS_PIN = 20.0      # tyle sekund bez klawisza i wpisywany PIN się kasuje (w trybie spacje+PIN: znów spacje)
@@ -374,6 +374,14 @@ class _Ekran(QWidget):
             return
         self.zaslona.obudz()
         self.zaslona._przejmij_klawiature()
+
+    def mouseDoubleClickEvent(self, _):
+        # awaryjne wyjście: podwójne kliknięcie chowa zasłonę (poza trybami z PIN-em/hasłem),
+        # żeby nigdy nie dało się w niej utknąć
+        if self.zaslona.tryb not in ("pin", "spacje_pin", "haslo"):
+            self.zaslona.zamknij()
+        else:
+            self.zaslona.obudz()
 
     def closeEvent(self, e):
         if not self.zaslona.zamykanie:
@@ -585,6 +593,11 @@ class Zaslona(QWidget):
         self._ostatni_klawisz, self._ostatni_klawisz_czas, self._ostatnie_zrodlo = klawisz, teraz_k, zrodlo
         modyfikator = klawisz in (Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Meta,
                                   Qt.Key.Key_AltGr)
+        if self.tryb == "spacja":
+            self.obudz()  # każdy klawisz budzi zgaszony ekran
+            if klawisz == Qt.Key.Key_Space and not modyfikator and not powtorzenie:
+                self.zamknij()  # jedna spacja zawsze zamyka zasłonę (także przy zgaszonym ekranie)
+            return
         if self.tryb == "dowolny" and not modyfikator:
             self.zamknij()  # jak zwykły wygaszacz: każdy klawisz (także przy zgaszonym ekranie)
             return

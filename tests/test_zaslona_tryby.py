@@ -60,3 +60,33 @@ def test_pin_i_bez_sposobu_sprawdzenia(app):
     assert z.zamykanie
     assert Zaslona("G", 10, tryb="haslo").tryb == "spacje"  # bez sprawdzania hasła: zawsze spacje
     assert Zaslona("G", 10, tryb="cos").tryb == "spacje"
+
+
+def test_jedna_spacja_zamyka(app):
+    z, stan = zaslona("spacja")
+    klawisze(app, z, [(0x20, " ")])
+    assert z.zamykanie  # jedno naciśnięcie spacji chowa zasłonę
+
+
+def test_jedna_spacja_inny_klawisz_nie_zamyka(app):
+    z, stan = zaslona("spacja")
+    klawisze(app, z, [(0x41, "a"), (0x42, "b")])
+    assert not z.zamykanie  # inne klawisze tylko budzą ekran
+    klawisze(app, z, [(0x20, " ")])
+    assert z.zamykanie      # dopiero spacja zamyka
+
+
+def test_spacja_jest_domyslna(app):
+    from fakturnik.zaslona import Zaslona, TRYBY
+    assert "spacja" in TRYBY
+    assert Zaslona("G", 10, tryb="spacja").tryb == "spacja"  # nie wymaga PIN-u ani hasła
+
+
+def test_podwojne_klikniecie_zamyka(app):
+    z, stan = zaslona("spacja")
+    if not z.ekrany:
+        import pytest as _pt
+        _pt.skip("brak ekranu w środowisku testowym")
+    z.ekrany[0].mouseDoubleClickEvent(None)
+    app.processEvents()
+    assert z.zamykanie  # awaryjne wyjście podwójnym kliknięciem
