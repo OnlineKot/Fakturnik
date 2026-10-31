@@ -122,14 +122,14 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
   po nazwisku, z wyszukiwaniem po nazwisku, imieniu lub PESEL; dane pacjenta wpisują się same.
 - **Sprawdzanie numerów**: PESEL i NIP nabywcy oraz NIP i numer konta gabinetu są sprawdzane
   sumą kontrolną, więc literówka nie trafi na dokument.
-- **Cennik usług** edytowany w tabeli (dodawanie, usuwanie, kolejność).
+- **Lista usług** (same nazwy, bez cen) edytowana w tabeli (dodawanie, usuwanie, kolejność).
 - **Przychody na osobnej karcie**, domyślnie zasłonięte (pacjent przy biurku nie widzi zarobków):
   kwoty, wykres 12 miesięcy i ostatnie dokumenty pokazują się po kliknięciu i haśle,
   a po wyjściu z zakładki znów się chowają.
 - **Dwa tryby wystawiania**: prowadzący (krok po kroku: pacjent, usługi, sprawdź i drukuj)
   i zaawansowany (wszystko w jednym oknie); przełącznik jest zawsze widoczny nad formularzem.
 - **Kreator pierwszego uruchomienia**: dane gabinetu (ze sprawdzaniem NIP i konta), hasło
-  (obowiązkowe, ze wskaźnikiem siły), cennik, tryb pracy i integracja z Windows.
+  (obowiązkowe, ze wskaźnikiem siły), lista usług, tryb pracy i integracja z Windows.
   Program startuje bez żadnych wpisanych danych.
 - **Działanie w tle**: ikona obok zegara, zamknięcie okna chowa program, start razem z Windows,
   jedna działająca kopia (kolejne uruchomienie otwiera okno). Wyłączenie programu wymaga hasła.
@@ -242,7 +242,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Autostart zawsze włączony**: w Ustawieniach nie da się go wyłączyć (Fakturnik pilnuje danych), a program przy każdym starcie przywraca swój wpis, jeśli zniknął. Wyłączenia w Menedżerze zadań Windows program sam nie nadpisuje: Kontrola komputera pokazuje wtedy ostrzeżenie „Uruchamianie z Windows: wyłączone”, a przycisk „Włącz ponownie” przywraca autostart dla tego konta (wpis w dzienniku).
 - **Własny napis na tapecie** (Narzędzia → Tapety pulpitu) i **osobny własny napis na zasłonie ekranu** (Ustawienia → Wygaszacz ekranu): np. telefon rejestracji albo „Gabinet zamknięty do 8:00”. Napis tapety jest pod nazwą gabinetu, napis zasłony pod zegarem i datą; są niezależne.
 - **Hasło do resetu** (Ustawienia → Bezpieczeństwo): osobne hasło (min. 8 znaków) albo PIN (6–12 cyfr), które wpisane w oknie logowania pozwala ustawić nowe hasło właściciela, gdy zapomni się obecnego. Działa jak osobny klucz do danych (Argon2id 256 MiB, 4 przebiegi — zgadywanie PIN-u jest bardzo wolne) i przetrwa zmianę hasła; przy włączonej weryfikacji urządzenia działa tylko na tym komputerze. Reset jest zapisywany w dzienniku.
-- **Podpowiedzi usług i cena bez stałej ceny**: nazwy usług podpowiadają się przy wpisywaniu pozycji (z cennika i z wcześniejszych dokumentów). W cenniku cena jest opcjonalna — zostaw ją pustą, a cenę wpiszesz ręcznie przy każdym dokumencie.
+- **Lista usług bez wbudowanych cen**: program nie przechowuje żadnych stałych cen — na liście usług są wyłącznie nazwy. Kliknięcie usługi (albo wybór podpowiedzi przy wpisywaniu) dodaje tylko nazwę pozycji, a **cenę wpisujesz ręcznie przy każdym dokumencie**. Nazwy podpowiadają się z listy usług i z wcześniej wystawionych dokumentów.
 - **„Nie mogę się zalogować” i „Zacznij od nowa”**: w oknie logowania przycisk „Nie pamiętam hasła” tłumaczy drogi powrotu (PIN/hasło do resetu, konto asystentki), a gdy ich nie ma — pozwala zacząć od nowa: stary plik danych jest odkładany na bok (…-STARE-data.db, zaszyfrowany, nieusuwany), a program uruchamia się ponownie jak przy pierwszym starcie. Okno logowania pojawia się z delikatną animacją.
 - **„Nie pamiętam hasła”**: przycisk w oknie logowania tłumaczy, jak wrócić do programu (hasło/PIN do resetu, konto asystentki), a przerwa po błędach jest krótka (maksymalnie 30 s) i zaczyna się dopiero po kilku pomyłkach.
 - **Błędne hasło nigdy nie zamyka programu**: po pomyłce okno logowania zostaje otwarte z komunikatem i licznikiem do kolejnej próby. Licznik błędów startuje od zera przy każdym uruchomieniu (dawne pomyłki się nie sumują), Esc nie zamyka ekranu blokady (tylko przycisk „Anuluj”), a po 10 błędach blokuje się sam komputer (Windows) — program czeka otwarty, więc po odblokowaniu Windows można próbować dalej.

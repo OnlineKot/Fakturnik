@@ -17,7 +17,7 @@ from .system import (
     integracja_dostepna, ustaw_autostart, ustaw_menu_kontekstowe, utworz_skrot_na_pulpicie,
 )
 from .walidacja import formatuj_konto, konto_poprawne, nip_poprawny
-from .ui import MIN_DLUGOSC_HASLA, ZASOBY, liczba, liczba_dokumentow, pole, przycisk
+from .ui import MIN_DLUGOSC_HASLA, ZASOBY, liczba_dokumentow, pole, przycisk
 
 KROKI = ["Witaj", "Gabinet", "Hasło", "Cennik", "Tryb pracy", "Windows", "Gotowe"]
 
@@ -290,13 +290,13 @@ class Kreator(QDialog):
         self.sila.setStyleSheet(f"color: {kolor}; font-weight: 500;")
 
     def _cennik(self, u):
-        self._naglowek(u, "Cennik usług", "Usługi z cennika dodasz do rachunku jednym kliknięciem. "
-                                          "Możesz to też uzupełnić później w Ustawieniach.")
-        self.cennik = QTableWidget(0, 2)
-        self.cennik.setHorizontalHeaderLabels(["Usługa", "Cena (zł)"])
+        self._naglowek(u, "Lista usług", "Wpisz nazwy usług — program nie ma wbudowanych cen, cenę wpiszesz "
+                                         "ręcznie przy każdym dokumencie. Nazwę z listy dodasz jednym kliknięciem. "
+                                         "Możesz to uzupełnić później w Ustawieniach.")
+        self.cennik = QTableWidget(0, 1)
+        self.cennik.setHorizontalHeaderLabels(["Usługa"])
         self.cennik.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.cennik.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.cennik.setColumnWidth(1, 130)
         self.cennik.verticalHeader().setVisible(False)
         self.cennik.verticalHeader().setDefaultSectionSize(34)
         self.cennik.setShowGrid(False)
@@ -313,19 +313,16 @@ class Kreator(QDialog):
         ru.addLayout(rzad)
         u.addWidget(ramka, 1)
         for linia in self.baza.ustawienia()["uslugi"].splitlines():
-            nazwa, _, cena = linia.partition(";")
-            if nazwa.strip():
-                self._dodaj_usluge(nazwa.strip(), liczba(cena))
+            nazwa = linia.partition(";")[0].strip()  # stare dane mogły mieć „nazwa;cena” — cenę pomijamy
+            if nazwa:
+                self._dodaj_usluge(nazwa)
         if not self.cennik.rowCount():
             self._dodaj_usluge(edytuj=False)
 
-    def _dodaj_usluge(self, nazwa: str = "", cena: float = 0.0, edytuj: bool = True):
+    def _dodaj_usluge(self, nazwa: str = "", edytuj: bool = True):
         r = self.cennik.rowCount()
         self.cennik.insertRow(r)
         self.cennik.setItem(r, 0, QTableWidgetItem(nazwa))
-        c = QTableWidgetItem(druk.zl(cena) if cena else "")
-        c.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.cennik.setItem(r, 1, c)
         if not nazwa and edytuj:
             self.cennik.setCurrentCell(r, 0)
             self.cennik.editItem(self.cennik.item(r, 0))
@@ -396,7 +393,7 @@ class Kreator(QDialog):
             self.podsumowanie.setText(
                 f"<b>{escape(self.p_nazwa.text().strip())}</b><br>NIP {escape(self.p_nip.text().strip())}<br><br>"
                 f"Hasło: {'ustawione' if self.haslo_ustawione or self.h1.text() else 'brak'}<br>"
-                f"Usług w cenniku: {len(self._uslugi())}<br>"
+                f"Usług na liście: {len(self._uslugi())}<br>"
                 f"Tryb: {'prowadzący' if self.tryby.checkedId() == 0 else 'zaawansowany'}<br>"
                 f"Działanie w tle: {'tak' if self.o_tle.isChecked() else 'nie'}")
 
@@ -404,9 +401,8 @@ class Kreator(QDialog):
         wynik = []
         for r in range(self.cennik.rowCount()):
             n = (self.cennik.item(r, 0).text() if self.cennik.item(r, 0) else "").strip().replace(";", ",")
-            c = liczba(self.cennik.item(r, 1).text()) if self.cennik.item(r, 1) else 0
-            if n:
-                wynik.append(f"{n};{c:.2f}")
+            if n and n not in wynik:
+                wynik.append(n)  # tylko nazwy usług — bez cen
         return wynik
 
     def _sprawdz_krok(self) -> str:

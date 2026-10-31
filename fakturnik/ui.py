@@ -1259,7 +1259,7 @@ class StronaNowy(Strona):
         self.widok_prowadzony = QStackedWidget()
         self.kroki_uklady = []
         for tytul, opis in (("Komu wystawiasz dokument?", "Wpisz pacjenta albo wybierz go z listy (F2)."),
-                            ("Za jakie usługi?", "Kliknij usługę z cennika albo dodaj pozycję ręcznie."),
+                            ("Za jakie usługi?", "Kliknij usługę z listy (dopisze nazwę) i wpisz cenę, albo dodaj pozycję ręcznie."),
                             ("Sprawdź i wydrukuj", "Tak będzie wyglądał wydruk. Możesz jeszcze zmienić datę albo płatność.")):
             strona = QWidget()
             su = QVBoxLayout(strona)
@@ -1599,13 +1599,12 @@ class StronaNowy(Strona):
         wyczysc_uklad(self.przyciski_uslug)
         nazwy_cennika = []
         for linia in u["uslugi"].splitlines():
-            nazwa, _, cena = linia.partition(";")
-            if not nazwa.strip():
+            nazwa = linia.partition(";")[0].strip()  # tylko nazwa (bez wbudowanej ceny; stare dane mogły mieć „;cena”)
+            if not nazwa or nazwa in nazwy_cennika:
                 continue
-            nazwy_cennika.append(nazwa.strip())
-            tekst = nazwa.strip() + (f"   {druk.zl(liczba(cena))} zł" if liczba(cena) else "")
-            b = QPushButton(tekst, objectName="chip", cursor=Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _=False, n=nazwa.strip(), c=liczba(cena): self.dodaj_usluge(n, c))
+            nazwy_cennika.append(nazwa)
+            b = QPushButton(nazwa, objectName="chip", cursor=Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, n=nazwa: self.dodaj_usluge(n, 0.0))  # cenę wpisuje się ręcznie
             self.przyciski_uslug.addWidget(b)
         # podpowiedzi nazw usług przy wpisywaniu pozycji: najpierw cennik, potem wcześniej używane
         widziane, nazwy = set(nazwy_cennika), list(nazwy_cennika)
@@ -3888,17 +3887,16 @@ class StronaUstawienia(Strona):
         lewa.addSpacing(10)
 
         # --- usługi
-        prawa.addWidget(sekcja("Cennik usług"))
+        prawa.addWidget(sekcja("Lista usług"))
         k, ku = karta()
         ku.setContentsMargins(0, 8, 0, 12)
-        ku.addWidget(QLabel("Cena jest opcjonalna — zostaw ją pustą, a cenę wpiszesz ręcznie przy każdym "
-                            "dokumencie (bez stałej ceny). Nazwy usług podpowiadają się przy wpisywaniu pozycji.",
+        ku.addWidget(QLabel("Tu wpisujesz tylko NAZWY usług — program nie ma wbudowanych cen. Cenę wpisujesz "
+                            "ręcznie przy każdym dokumencie. Nazwy podpowiadają się przy wpisywaniu pozycji.",
                             objectName="drobny", wordWrap=True))
-        self.cennik = QTableWidget(0, 2)
-        self.cennik.setHorizontalHeaderLabels(["Usługa", "Cena (zł) — opcjonalnie"])
+        self.cennik = QTableWidget(0, 1)
+        self.cennik.setHorizontalHeaderLabels(["Usługa"])
         self.cennik.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.cennik.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.cennik.setColumnWidth(1, 140)
         self.cennik.verticalHeader().setVisible(False)
         self.cennik.verticalHeader().setDefaultSectionSize(36)
         self.cennik.setShowGrid(False)
@@ -4573,9 +4571,9 @@ class StronaUstawienia(Strona):
         self.rodo_lat.setValue(int(liczba(u["rodo_lat"]) or 5))
         self.cennik.setRowCount(0)
         for linia in u["uslugi"].splitlines():
-            nazwa, _, cena = linia.partition(";")
-            if nazwa.strip():
-                self._dodaj_do_cennika(nazwa.strip(), liczba(cena))
+            nazwa = linia.partition(";")[0].strip()  # stare dane mogły mieć „nazwa;cena” — cenę pomijamy
+            if nazwa:
+                self._dodaj_do_cennika(nazwa)
         self.kopia.setChecked(u["kopia"] == "1")
         self.auto_aktualizacje.setChecked(u["auto_aktualizacje"] == "1")
         self.aktualizacje_powiadom.setChecked(u.get("aktualizacje_powiadom", "1") == "1")
@@ -4785,13 +4783,10 @@ class StronaUstawienia(Strona):
         self.okno.dziennik.zapisz(f"RODO: zanonimizowano {zrobiono} dokumentów do roku {granica}")
         self.okno.komunikat(f"Usunięto dane osobowe z {zrobiono} dokumentów")
 
-    def _dodaj_do_cennika(self, nazwa: str = "", cena: float = 0.0):
+    def _dodaj_do_cennika(self, nazwa: str = ""):
         r = self.cennik.rowCount()
         self.cennik.insertRow(r)
         self.cennik.setItem(r, 0, QTableWidgetItem(nazwa))
-        cena_item = QTableWidgetItem(druk.zl(cena) if cena else "")
-        cena_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.cennik.setItem(r, 1, cena_item)
         if not nazwa:
             self.cennik.setCurrentCell(r, 0)
             self.cennik.editItem(self.cennik.item(r, 0))
@@ -4806,19 +4801,17 @@ class StronaUstawienia(Strona):
         cel = r + kierunek
         if r < 0 or not 0 <= cel < self.cennik.rowCount():
             return
-        for kol in range(2):
-            a, b = self.cennik.takeItem(r, kol), self.cennik.takeItem(cel, kol)
-            self.cennik.setItem(r, kol, b)
-            self.cennik.setItem(cel, kol, a)
+        a, b = self.cennik.takeItem(r, 0), self.cennik.takeItem(cel, 0)
+        self.cennik.setItem(r, 0, b)
+        self.cennik.setItem(cel, 0, a)
         self.cennik.setCurrentCell(cel, 0)
 
     def _tekst_cennika(self) -> str:
         wiersze = []
         for r in range(self.cennik.rowCount()):
             nazwa = (self.cennik.item(r, 0).text() if self.cennik.item(r, 0) else "").strip().replace(";", ",")
-            cena = liczba(self.cennik.item(r, 1).text()) if self.cennik.item(r, 1) else 0
-            if nazwa:
-                wiersze.append(f"{nazwa};{cena:.2f}")
+            if nazwa and nazwa not in wiersze:
+                wiersze.append(nazwa)  # tylko nazwy usług — bez cen
         return "\n".join(wiersze)
 
     def ustaw_logo(self, wartosc: str):
