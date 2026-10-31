@@ -226,19 +226,45 @@ def sciezka_danych() -> Path:
     return Path(katalog) / "fakturnik.db"
 
 
-def plynne_pojawienie(widget, ms: int = 160) -> None:
-    """Delikatne pojawienie się elementu (przejście krycia 0→1). Efekt jest zdejmowany po animacji,
-    więc nie spowalnia dalszego rysowania. Ciche nie-działanie, gdyby cokolwiek zawiodło."""
+def plynne_pojawienie(widget, ms: int = 230, przesuniecie: int = 14) -> None:
+    """Profesjonalne wejście elementu: płynne pojawienie (krycie 0→1) z subtelnym uniesieniem ku górze
+    (treść delikatnie „wjeżdża” na miejsce). Efekt krycia jest zdejmowany po animacji, więc nie spowalnia
+    dalszego rysowania. Ciche nie-działanie, gdyby cokolwiek zawiodło."""
     try:
         efekt = QGraphicsOpacityEffect(widget)
         widget.setGraphicsEffect(efekt)
-        a = QPropertyAnimation(efekt, b"opacity", widget)
-        a.setDuration(ms)
-        a.setStartValue(0.0)
-        a.setEndValue(1.0)
-        a.setEasingCurve(QEasingCurve.Type.OutCubic)
-        a.finished.connect(lambda: widget.setGraphicsEffect(None))
-        a.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        kryc = QPropertyAnimation(efekt, b"opacity", widget)
+        kryc.setDuration(ms)
+        kryc.setStartValue(0.0)
+        kryc.setEndValue(1.0)
+        kryc.setEasingCurve(QEasingCurve.Type.OutCubic)
+        kryc.finished.connect(lambda: widget.setGraphicsEffect(None))
+        kryc.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+        if przesuniecie:  # subtelne uniesienie treści na miejsce (bez skakania układu)
+            poprz = getattr(widget, "_anim_pos", None)
+            if poprz is not None:  # szybkie przełączanie: zatrzymaj poprzedni ruch i wróć do pozycji spoczynkowej,
+                poprz.stop()       # żeby kolejne wejścia nie przesuwały treści coraz niżej
+                spocz = getattr(widget, "_pos_spocz", None)
+                if spocz is not None:
+                    widget.move(spocz)
+            koniec = widget.pos()
+            widget._pos_spocz = koniec
+            ruch = QPropertyAnimation(widget, b"pos", widget)
+            ruch.setDuration(ms + 40)
+            ruch.setStartValue(koniec + QPoint(0, przesuniecie))
+            ruch.setEndValue(koniec)
+            ruch.setEasingCurve(QEasingCurve.Type.OutQuint)
+
+            def _koniec_ruchu():
+                try:
+                    widget.move(koniec)  # zawsze dokładnie na miejscu, choćby animacja została przerwana
+                    widget._anim_pos = None
+                except Exception:  # noqa: BLE001
+                    pass
+
+            ruch.finished.connect(_koniec_ruchu)
+            widget._anim_pos = ruch
+            ruch.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
     except Exception:  # noqa: BLE001
         try:
             widget.setGraphicsEffect(None)
@@ -5966,7 +5992,7 @@ class OknoGlowne(QMainWindow):
         if odswiez:
             self.strony.currentWidget().odswiez()
         if self.isVisible():
-            plynne_pojawienie(self.strony.currentWidget(), 150)
+            plynne_pojawienie(self.strony.currentWidget())
         self.btn_blokuj.setVisible(self.baza.ma_haslo)
         self._ustaw_nazwe_gabinetu()
 
@@ -6908,7 +6934,7 @@ class OknoGlowne(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.timer.start()
-        plynne_pojawienie(self.strony, 180)
+        plynne_pojawienie(self.strony)
 
     def _nowy_z_zasobnika(self, rodzaj: str):
         self.pokaz_okno()
