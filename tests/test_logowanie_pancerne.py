@@ -68,3 +68,14 @@ def test_blad_sprawdzania_nie_wywala_okna(app):
     d.accepted.connect(lambda: stan.update(accept=True))
     d.pole.setText("cokolwiek"); d.sprobuj()
     assert not stan["reject"] and not stan["accept"]
+
+
+def test_archiwizuj_dane_odklada_a_nie_usuwa(tmp_path):
+    from fakturnik.ui import archiwizuj_dane
+    plik = tmp_path / "fakturnik.db"
+    plik.write_bytes(b"FAKTURNIK-AES3\ndane")
+    arch = archiwizuj_dane(plik)
+    assert arch is not None and arch.exists() and not plik.exists()
+    assert arch.read_bytes().startswith(b"FAKTURNIK-AES3")  # stare dane zachowane
+    assert "STARE" in arch.name
+    assert archiwizuj_dane(tmp_path / "brak.db") is None  # brak pliku = nic do zrobienia

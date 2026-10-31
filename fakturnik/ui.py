@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer, QFileSystemWatcher, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt,
+    QBuffer, QEasingCurve, QFileSystemWatcher, QByteArray, QDate, QEvent, QEventLoop, QIODevice, QObject, QPoint, QPropertyAnimation, QRect, QRectF, QSettings, QSize, QStandardPaths, Qt,
     QThread,
     QTime, QTimer, QUrl, Signal,
 )
@@ -224,6 +224,18 @@ def zaladuj_czcionki() -> None:
 def sciezka_danych() -> Path:
     katalog = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
     return Path(katalog) / "fakturnik.db"
+
+
+def archiwizuj_dane(plik: Path) -> Path | None:
+    """Odkłada plik danych na bok (…-STARE-RRRRMMDD-GGMM.db), żeby program zaczął od pustego zbioru.
+    Starych danych nie usuwa — zostają zaszyfrowane, więc po przypomnieniu hasła da się do nich wrócić."""
+    plik = Path(plik)
+    if not plik.exists():
+        return None
+    from datetime import datetime
+    cel = plik.with_name(f"{plik.stem}-STARE-{datetime.now():%Y%m%d-%H%M%S}{plik.suffix}")
+    os.replace(plik, cel)
+    return cel
 
 
 def zapytanie_dozwolone(tekst: str) -> bool:
@@ -446,13 +458,16 @@ class OknoHasla(QDialog):
 
     def __init__(self, sprawdz, tytul="Fakturnik", parent=None, dziennik: Dziennik | None = None,
                  cel="logowanie", opis="Dane są chronione hasłem.", ekran_blokady: dict | None = None,
-                 zgoda=None):
+                 zgoda=None, moze_od_nowa: bool = False, plik: Path | None = None):
         """`sprawdz(haslo)` zwraca True, False albo tekst (odmowa z powodem, np. poza godzinami pracy).
         `ekran_blokady`: {"gabinet", "godziny"} pokazuje zegar i godziny pracy (ekran blokady programu).
         `zgoda`: funkcja wywoływana przyciskiem „Zgoda właściciela” (praca po godzinach)."""
         super().__init__(parent)
         self.sprawdz, self.dziennik, self.cel, self.zgoda = sprawdz, dziennik, cel, zgoda
         self._ekran_blokady = ekran_blokady is not None  # ekran blokady/logowania: Esc nie zamyka programu
+        self._moze_od_nowa = moze_od_nowa  # tylko przy starcie: można zacząć od nowa, gdy hasło przepadło
+        self._plik = plik
+        self._od_nowa = False
         self.proby = 0
         if not OknoHasla._wczytano:  # po ponownym uruchomieniu: tylko resztka przerwy (nie zliczamy błędów w nieskończoność)
             OknoHasla._wczytano = True
@@ -514,17 +529,49 @@ class OknoHasla(QDialog):
         u.addLayout(rzad)
 
     def _pomoc_haslo(self):
-        QMessageBox.information(
-            self, "Nie pamiętam hasła",
-            "Hasło szyfruje wszystkie dane — bez niego nie da się ich odczytać (to chroni dane pacjentów).\n\n"
-            "Jak wrócić do programu:\n"
-            "1. Jeśli masz HASŁO DO RESETU (albo PIN do resetu, np. 6 cyfr), wpisz je w to samo pole zamiast "
-            "hasła i naciśnij Otwórz — program pozwoli ustawić nowe hasło.\n"
-            "2. Jeśli masz konto asystentki z własnym hasłem, zaloguj się nim — otworzysz dane.\n"
-            "3. Spokojnie próbuj kolejne hasła — przerwa po błędach jest krótka (do 30 s), a po zamknięciu "
-            "i ponownym otwarciu programu licznik startuje od zera.\n\n"
-            "Jeśli nie masz hasła do resetu ani konta asystentki, danych nie da się odzyskać — zostaje tylko "
-            "zacząć od nowa (dane zostają na dysku zaszyfrowane).")
+        okno = QMessageBox(self)
+        okno.setIcon(QMessageBox.Icon.Information)
+        okno.setWindowTitle("Nie mogę się zalogować")
+        okno.setText("<b>Jak wrócić do programu</b>")
+        okno.setInformativeText(
+            "1. Masz <b>PIN do resetu</b> albo <b>hasło do resetu</b>? Wpisz je w to samo pole zamiast hasła "
+            "i naciśnij „Otwórz” — program pozwoli ustawić nowe hasło.<br>"
+            "2. Masz <b>konto asystentki</b> z własnym hasłem? Zaloguj się nim — otworzysz dane.<br>"
+            "3. Spróbuj przypomnieć sobie hasło — przerwa po błędach jest krótka (do 30 s).<br><br>"
+            "Hasło szyfruje wszystkie dane, więc bez niego (ani PIN-u/hasła do resetu, ani konta asystentki) "
+            "danych nie da się odczytać. Zostaje wtedy <b>zacząć od nowa</b> — stare dane zostają na dysku "
+            "zaszyfrowane, więc gdy przypomnisz sobie hasło, dałoby się do nich wrócić.")
+        okno.setTextFormat(Qt.TextFormat.RichText)
+        zamknij = okno.addButton("Spróbuję dalej", QMessageBox.ButtonRole.RejectRole)
+        od_nowa = okno.addButton("Zacznij od nowa…", QMessageBox.ButtonRole.DestructiveRole) \
+            if self._moze_od_nowa else None
+        okno.setDefaultButton(zamknij)
+        okno.exec()
+        if od_nowa is not None and okno.clickedButton() is od_nowa:
+            self._zacznij_od_nowa()
+
+    def _zacznij_od_nowa(self):
+        tekst, ok = QInputDialog.getText(
+            self, "Zacznij od nowa",
+            "To utworzy NOWY, pusty zbiór. Stare dane zostaną na dysku zaszyfrowane (nie znikną),\n"
+            "ale bez hasła ich nie otworzysz.\n\nAby potwierdzić, wpisz wielkimi literami:  OD NOWA")
+        if not ok or tekst.strip().upper().replace("  ", " ") != "OD NOWA":
+            if ok:
+                self.blad.setText("Nie potwierdzono — wpisz dokładnie: OD NOWA")
+            return
+        try:
+            archiwum = archiwizuj_dane(self._plik) if self._plik else None
+        except OSError as e:
+            QMessageBox.warning(self, "Zacznij od nowa", f"Nie udało się odłożyć starych danych: {e}")
+            return
+        if self.dziennik:
+            self.dziennik.zapisz("ZACZNIJ OD NOWA: stare dane zarchiwizowane" + (f" ({archiwum.name})" if archiwum else ""))
+        QMessageBox.information(self, "Zacznij od nowa",
+                               "Gotowe. Program uruchomi się ponownie i poprowadzi Cię jak przy pierwszym "
+                               "uruchomieniu — ustawisz nowe hasło." +
+                               (f"\n\nStare dane: {archiwum}" if archiwum else ""))
+        self._od_nowa = True
+        self.reject()  # uruchom() wykryje _od_nowa i uruchomi program ponownie
 
     def keyPressEvent(self, e):
         # na ekranie blokady/logowania Esc nie zamyka programu (tylko przycisk „Anuluj” kończy świadomie)
@@ -532,6 +579,17 @@ class OknoHasla(QDialog):
             e.ignore()
             return
         super().keyPressEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_pojawiono", False):  # delikatne pojawienie się okna (raz)
+            self._pojawiono = True
+            a = QPropertyAnimation(self, b"windowOpacity", self)
+            a.setDuration(220)
+            a.setStartValue(0.0)
+            a.setEndValue(1.0)
+            a.setEasingCurve(QEasingCurve.Type.OutCubic)
+            a.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _tykaj(self):
         teraz = datetime.now()
@@ -7012,6 +7070,10 @@ def uruchom() -> int:
     dziennik = Dziennik(plik.parent / "dziennik.log")
     try:
         kod, okno = _otworz(app, plik, dziennik, jedna, polecenie)
+        if kod == "od_nowa":  # wybrano „Zacznij od nowa”: stare dane odłożone, uruchom program świeżo
+            jedna.zamknij()
+            aktualizacje.uruchom_nowa_wersje(Path(sys.executable))  # nowy proces trafi na pierwsze uruchomienie
+            return 0
     except PlikZajety as e:
         QMessageBox.warning(None, "Fakturnik", str(e))
         return 1
@@ -7498,9 +7560,12 @@ def _otworz(app: QApplication, plik: Path, dziennik: Dziennik, jedna: JednaKopia
             dziennik.zapisz("zgoda właściciela na pracę po godzinach (do końca dnia)")
             return True
 
-        if OknoHasla(sprawdz, dziennik=dziennik, opis="Podaj swoje hasło, aby otworzyć program.",
-                     ekran_blokady={"gabinet": "", "godziny": ""},
-                     zgoda=zgoda if konta.wczytaj(plik.parent) else None).exec() != QDialog.DialogCode.Accepted:
+        logowanie = OknoHasla(sprawdz, dziennik=dziennik, opis="Podaj swoje hasło, aby otworzyć program.",
+                              ekran_blokady={"gabinet": "", "godziny": ""}, moze_od_nowa=True, plik=plik,
+                              zgoda=zgoda if konta.wczytaj(plik.parent) else None)
+        if logowanie.exec() != QDialog.DialogCode.Accepted:
+            if logowanie._od_nowa:  # użytkownik wybrał „Zacznij od nowa”: stare dane odłożone, startujemy świeżo
+                return "od_nowa", None
             return 0, None
         if "blad" in wynik:
             raise wynik["blad"]
