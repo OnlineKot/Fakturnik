@@ -237,3 +237,33 @@ def zablokuj_windows() -> bool:
         return bool(ctypes.windll.user32.LockWorkStation())
     except Exception:  # noqa: BLE001
         return False
+
+
+def dodaj_wyjatek_defendera(sciezki) -> bool | None:
+    """Prosi Microsoft Defender, żeby NIE skanował wskazanych folderów Fakturnika (Add-MpPreference
+    -ExclusionPath). Nie wyłącza ochrony w czasie rzeczywistym ani niczego innego — dodaje tylko wyjątek
+    dla znanych, własnych folderów programu, żeby Defender nie blokował instalacji i uruchamiania.
+
+    Uruchamia PowerShell z podniesieniem uprawnień (okno UAC — użytkownik musi kliknąć „Tak”).
+    Zwraca True, gdy udało się uruchomić polecenie z podniesieniem; False, gdy użytkownik odmówił w UAC;
+    None poza Windows lub przy błędzie. Dodanie wyjątku i tak wymaga uprawnień administratora."""
+    if not na_windows():
+        return None
+    foldery = []
+    for s in sciezki:
+        s = str(s).strip()
+        if s and s not in foldery:
+            foldery.append(s)
+    if not foldery:
+        return None
+    try:
+        import ctypes
+        # każdy folder w cudzysłowie pojedynczym (apostrofy w ścieżce podwajamy — zasada PowerShell)
+        lista = ", ".join("'" + f.replace("'", "''") + "'" for f in foldery)
+        polecenie = f"Add-MpPreference -ExclusionPath {lista}"
+        parametry = f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "{polecenie}"'
+        # „runas” pokazuje okno UAC i uruchamia PowerShell jako administrator; 0 = okno ukryte
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", parametry, None, 0)
+        return int(rc) > 32  # >32 = uruchomiono; <=32 (np. 5) = użytkownik odmówił w UAC
+    except Exception:  # noqa: BLE001
+        return None

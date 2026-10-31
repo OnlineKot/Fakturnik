@@ -48,9 +48,38 @@ na Fakturnika:
    Norton zwykle zdejmuje oznaczenie w ciągu kilku dni, co pomaga wszystkim użytkownikom i działa
    lepiej niż samo wykluczenie na jednym komputerze.
 
-Inne antywirusy mają to samo pod inną nazwą: Microsoft Defender → **Zabezpieczenia Windows** →
-**Ochrona przed wirusami i zagrożeniami** → *Zarządzaj ustawieniami* → **Wykluczenia** → dodaj te
-dwa foldery. Bitdefender/ESET/Avast: szukaj „Wyjątki” lub „Wykluczenia”.
+#### Microsoft Defender (wbudowany w Windows) — żeby nie blokował instalacji ani Fakturnika
+
+Najprościej z samego programu: **Kontrola komputera** (menu ikony przy zegarze → „Kontrola
+komputera…”) → przycisk **„Wyjątek w Defenderze”**. Program doda foldery Fakturnika (program i dane)
+do wykluczeń Microsoft Defender — pojawi się tylko okno Windows „Kontrola konta użytkownika”, w którym
+trzeba kliknąć **Tak**. To **nie wyłącza** ochrony komputera: Defender dalej sprawdza wszystko inne,
+jedynie przestaje blokować własne foldery Fakturnika.
+
+Ręcznie (to samo): **Zabezpieczenia Windows** → **Ochrona przed wirusami i zagrożeniami** →
+*Zarządzaj ustawieniami* → **Wykluczenia** → **Dodaj wykluczenie** → **Folder** → dodaj:
+   - folder programu (np. `C:\Program Files\Fakturnik`),
+   - folder danych: wpisz w pasku adresu `%AppData%\Fakturnik` i zatwierdź.
+
+Gdyby Defender zablokował sam instalator przy pobieraniu: **Zabezpieczenia Windows** →
+**Ochrona przed wirusami i zagrożeniami** → **Historia ochrony** → zaznacz `FakturnikSetup.exe` →
+**Akcje** → **Zezwalaj**. Bitdefender/ESET/Avast: szukaj „Wyjątki” lub „Wykluczenia”.
+
+#### Całkowite usunięcie Nortona (jeśli i tak przeszkadza)
+
+Norton to osobny program — Fakturnik go nie instaluje i nie może go sam odinstalować. Żeby usunąć go
+w całości:
+
+1. **Windows** → **Ustawienia** → **Aplikacje** → **Zainstalowane aplikacje** → znajdź „Norton”
+   (np. „Norton 360”, „Norton Security”) → **…** → **Odinstaluj** i potwierdź.
+2. Norton często zostawia resztki — po restarcie komputera pobierz i uruchom oficjalne narzędzie
+   **Norton Remove and Reinstall** ze strony producenta (support.norton.com → „Norton Remove and
+   Reinstall tool”), wybierz **Remove only** i uruchom ponownie komputer.
+3. Po usunięciu Nortona ochronę automatycznie przejmuje wbudowany **Microsoft Defender** (nie trzeba
+   nic instalować) — wtedy wystarczy dodać wyjątek jak wyżej.
+
+Uwaga: usunięcie dowolnego antywirusa to decyzja użytkownika i zmniejsza ochronę komputera. Fakturnik
+niczego nie odinstalowuje za Ciebie ani nie wyłącza ochrony — podpowiada tylko, jak dodać wyjątek.
 
 Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Code Signing
 (płatny, np. Certum, albo darmowy dla otwartych projektów przez SignPath).
@@ -206,7 +235,7 @@ Ostrzeżenia znikają całkowicie dopiero po podpisaniu programu certyfikatem Co
 - **Wystawione dokumenty w Plikach**: PDF każdego wystawionego rachunku, faktury i korekty trafia sam do Plików (rodzaj „Wystawiony dokument”, z datą i nabywcą), zaszyfrowany i niezmienialny jak inne pliki. Poprawka i anulowanie dodają nową wersję PDF, poprzednie zostają w archiwum. Dokumenty wystawione wcześniej program uzupełnia w tle po starcie; jest też przycisk „Uzupełnij wystawione” w Plikach. Anonimizacja RODO usuwa PDF-y z danymi osobowymi razem z danymi. Można to wyłączyć w Ustawieniach → Bezpieczeństwo.
 - **Aktualizacje zawsze dochodzą**: gdy API GitHuba nie odpowiada (np. limit zapytań), program i usługa biorą numer najnowszej wersji ze zwykłej strony wydań i pobierają pliki ze stałych adresów. Zerwane pobieranie jest ponawiane (4 próby, z coraz dłuższą przerwą, na zmianę obiema drogami), zawsze z kontrolą SHA-256. Komputer nie musi działać cały czas: usługa rusza co godzinę, 5 minut po starcie, 2 minuty po zalogowaniu (Windows z „szybkim uruchamianiem” przy włączeniu nie robi prawdziwego startu) i 2 minuty po wybudzeniu ze snu; brakujące zadania usługa dopisuje sama. Strażnik w programie sprawdza co godzinę: jeśli usługa nie zainstaluje dostępnej wersji w ciągu 3 godzin pracy komputera (noc i uśpienie się nie liczą), pojawia się powiadomienie i pasek z „Aktualizuj teraz”.
 - **Ustawienia zostają po aktualizacji**: wszystkie ustawienia (także te nigdy nie zmieniane) są zapisane w zaszyfrowanych danych, więc nowa wersja ze zmienionymi wartościami domyślnymi ich nie przestawi; nowe ustawienia dostają wartość domyślną tylko raz. Wyłączenie „Uruchamiaj razem z Windows” jest zapamiętane w rejestrze użytkownika i działa także po aktualizacji instalatorem (instalator odtwarza wspólny wpis autostartu, ale program po starcie z Windows sam się wtedy kończy).
-- **PIN** (Ustawienia → Bezpieczeństwo → Ustaw PIN, każda osoba w Ctrl+K → „Ustaw mój PIN”): 4–6 cyfr do szybkiego odblokowania programu i zasłony, gdy program działa. PIN nie szyfruje danych, więc po uruchomieniu komputera zawsze potrzebne jest pełne hasło. Po 10 błędnych PIN-ach PIN-y przestają działać, dopóki ktoś nie zaloguje się pełnym hasłem. PIN-y są zapisane tylko jako skróty Argon2id w zaszyfrowanych danych; każde konto ma własny, a zbyt proste (1111, 1234) są odrzucane.
+- **PIN** (Ustawienia → Bezpieczeństwo → Ustaw PIN, każda osoba w Ctrl+K → „Ustaw mój PIN”): 4–6 cyfr do szybkiego odblokowania programu, zasłony ekranu oraz potwierdzania operacji właściciela, gdy program działa — PIN-em właściciela można m.in. odsłonić przychody (kwoty) i potwierdzać ważne operacje tak samo jak hasłem. Jedyny wyjątek: wejście do **Ustawień** zawsze wymaga pełnego hasła (PIN tam nie działa). PIN asystentki nie potwierdza operacji właściciela. PIN nie szyfruje danych, więc po uruchomieniu komputera zawsze potrzebne jest pełne hasło. Po 10 błędnych PIN-ach PIN-y przestają działać, dopóki ktoś nie zaloguje się pełnym hasłem. PIN-y są zapisane tylko jako skróty Argon2id w zaszyfrowanych danych; każde konto ma własny, a zbyt proste (1111, 1234) są odrzucane.
 - **Odblokowanie zasłony** (Ustawienia → Wygaszacz ekranu): jedna spacja (domyślnie, zalecane — jedno naciśnięcie chowa zasłonę), dowolny klawisz (jak zwykły wygaszacz), 5 spacji, PIN (cyfry i Enter), 5 spacji, a potem PIN, albo spacja, a potem pełne hasło i Enter (polskie znaki i Shift działają). W trybach bez PIN-u i hasła dodatkowo podwójne kliknięcie myszą zawsze chowa zasłonę. Spacje i PIN odczytuje bezpośrednio stan klawiatury (GetAsyncKeyState), więc działają zawsze, niezależnie od tego, które okno ma fokus i czy antywirus zablokował hak klawiatury. Wpisywane znaki widać tylko jako małe, przygaszone kropki pod datą. Po 10 błędnych PIN-ach lub hasłach na zasłonie Windows się blokuje (Win+L), a program wymaga pełnego hasła.
 - **Start cicho w tle**: po uruchomieniu komputera program nie wyskakuje oknem — uruchamia się obok zegara (ikona w zasobniku) i otwiera dopiero po kliknięciu (przy danych z hasłem pyta wtedy o hasło/PIN). Można to zmienić w Ustawieniach („Po uruchomieniu komputera pokaż okno programu”).
 - **Delikatne animacje**: okna logowania i zasłony pojawiają się płynnie, a przełączanie zakładek oraz otwieranie z zasobnika łączy płynne pojawienie z subtelnym uniesieniem treści na miejsce (miękkie wygaszenie ruchu) — spokojnie i profesjonalnie, bez efekciarstwa; animacje są odporne na szybkie przełączanie (treść zawsze trafia dokładnie na miejsce).

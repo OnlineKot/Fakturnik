@@ -992,9 +992,8 @@ class StronaPulpit(Strona):
 
     def odslon(self):
         baza = self.okno.baza
-        if baza.ma_haslo and OknoHasla(baza.sprawdz_haslo, "Pokaż przychody", self, self.okno.dziennik,
-                                       "podgląd przychodów", "Podaj hasło, aby zobaczyć kwoty.").exec() \
-                != QDialog.DialogCode.Accepted:
+        if baza.ma_haslo and not self.okno.potwierdz_haslem(
+                "podgląd przychodów", "Podaj hasło lub PIN, aby zobaczyć kwoty."):
             return
         self._wypelnij()
         self.zaslona.hide()
@@ -4514,7 +4513,9 @@ class StronaUstawienia(Strona):
         self._pokaz_stan_blokady()
 
     def odblokuj(self):
-        if self.okno.potwierdz_haslem("odblokowanie ustawień", "Podaj hasło, aby zmienić ustawienia."):
+        # Ustawienia celowo wymagają PEŁNEGO HASŁA (PIN tu nie działa) — to najważniejsze miejsce w programie.
+        if self.okno.potwierdz_haslem("odblokowanie ustawień", "Podaj pełne hasło, aby zmienić ustawienia. "
+                                      "(W ustawieniach PIN nie działa.)", pin_ok=False):
             self.odblokowane = True
             self._pokaz_stan_blokady()
 
@@ -5063,11 +5064,15 @@ class OknoKontroli(QDialog):
         r = QHBoxLayout()
         if ignor:
             r.addWidget(przycisk("Przywróć wszystkie ostrzeżenia", "odswiez", "plaski", self._przywroc_wszystkie))
+        r.addWidget(przycisk("Wyjątek w Defenderze", "tarcza", "plaski", self._wyjatek_defendera))
         r.addStretch()
         r.addWidget(przycisk("Sprawdź ponownie", "odswiez", akcja=self.odswiez))
         r.addWidget(przycisk("Zamknij", styl="glowny", akcja=self.accept))
         self.u.addLayout(r)
         self.adjustSize()
+
+    def _wyjatek_defendera(self):
+        self.okno.dodaj_wyjatek_defendera()
 
     def _ignoruj(self, klucz: str, ignoruj: bool):
         ignor = kontrola.zignorowane(self.okno.baza)
@@ -6756,13 +6761,66 @@ class OknoGlowne(QMainWindow):
         self.strona_nowy.zaladuj_do_edycji(dok)
 
     # ---- hasło do ważnych operacji
-    def potwierdz_haslem(self, cel: str, opis: str = "Ta operacja wymaga hasła.") -> bool:
-        """Ważne operacje zawsze wymagają hasła właściciela (także gdy pracuje asystentka)."""
+    def _sprawdz_wlasciciela(self, pin_ok: bool = True):
+        """Funkcja sprawdzająca: pełne hasło właściciela, a przy pin_ok także PIN WŁAŚCICIELA (nie asystentki).
+        Ustawienia używają pin_ok=False — tam działa wyłącznie pełne hasło."""
+        def sprawdz(tekst: str) -> bool:
+            if self.baza.sprawdz_haslo(tekst):
+                return True
+            if pin_ok and jest_pin(tekst) and self.baza.sa_piny and not self.baza.piny_zablokowane:
+                return self.baza.sprawdz_pin(tekst) == ""  # "" = PIN właściciela; id asystentki tu nie wystarcza
+            return False
+        return sprawdz
+
+    def dodaj_wyjatek_defendera(self):
+        """Dodaje foldery Fakturnika (program + dane) do wyjątków Microsoft Defender, żeby nie blokował
+        instalacji ani działania. Nie wyłącza ochrony komputera — Defender dalej sprawdza wszystko inne."""
+        import sys
+        if not windows.na_windows():
+            self.komunikat("Wyjątek w Microsoft Defender można dodać tylko na Windows.", blad=True)
+            return
+        foldery = []
+        for kand in (lambda: str(Path(sys.executable).resolve().parent),
+                     lambda: str(sciezka_danych().parent)):
+            try:
+                f = kand()
+            except Exception:  # noqa: BLE001
+                continue
+            if f and f not in foldery:
+                foldery.append(f)
+        if not foldery:
+            self.komunikat("Nie udało się ustalić folderów Fakturnika.", blad=True)
+            return
+        lista = "\n".join("• " + f for f in foldery)
+        if QMessageBox.question(self, "Wyjątek w Microsoft Defender",
+                                "Dodać te foldery Fakturnika do wyjątków Microsoft Defender, żeby nie blokował "
+                                "instalacji ani działania programu?\n\n" + lista +
+                                "\n\nTo NIE wyłącza ochrony komputera — Defender dalej sprawdza wszystko inne. "
+                                "Za chwilę Windows poprosi o zgodę administratora (kliknij „Tak”).",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        wynik = windows.dodaj_wyjatek_defendera(foldery)
+        if wynik:
+            self.dziennik.zapisz("dodano wyjątek Fakturnika w Microsoft Defender")
+            self.komunikat("Gotowe. Jeśli Windows zapytał o zgodę administratora i kliknąłeś „Tak”, "
+                           "Microsoft Defender nie będzie już blokował folderów Fakturnika.")
+        elif wynik is False:
+            self.komunikat("Nie dodano wyjątku — brak zgody administratora (okno „Kontrola konta użytkownika”). "
+                           "Spróbuj ponownie i kliknij „Tak”.", blad=True)
+        else:
+            self.komunikat("Nie udało się dodać wyjątku automatycznie. Instrukcja ręczna jest w README "
+                           "(Zabezpieczenia Windows → Ochrona przed wirusami i zagrożeniami → Wykluczenia).", blad=True)
+
+    def potwierdz_haslem(self, cel: str, opis: str = "Ta operacja wymaga hasła.", pin_ok: bool = True) -> bool:
+        """Ważne operacje wymagają potwierdzenia właściciela (także gdy pracuje asystentka): pełnym hasłem,
+        a przy pin_ok także PIN-em właściciela. Ustawienia wywołują z pin_ok=False (tylko pełne hasło)."""
         if not self.baza.ma_haslo:
             return True
         if not self.jest_wlascicielka:
             opis += "\n(hasło właściciela)"
-        return OknoHasla(self.baza.sprawdz_haslo, "Potwierdź hasłem", self, self.dziennik, cel, opis).exec() \
+        tytul = "Potwierdź hasłem lub PIN-em" if pin_ok else "Potwierdź hasłem"
+        return OknoHasla(self._sprawdz_wlasciciela(pin_ok), tytul, self, self.dziennik, cel, opis).exec() \
             == QDialog.DialogCode.Accepted
 
     # ---- praca w tle (zasobnik obok zegara)
@@ -6908,8 +6966,8 @@ class OknoGlowne(QMainWindow):
         return True
 
     def udziel_zgody(self) -> bool:
-        if OknoHasla(self.baza.sprawdz_haslo, "Zgoda właściciela", self, self.dziennik, "zgoda na pracę po godzinach",
-                     "Praca asystentek po godzinach do końca dnia.\nPodaj hasło właściciela.").exec() \
+        if OknoHasla(self._sprawdz_wlasciciela(), "Zgoda właściciela", self, self.dziennik, "zgoda na pracę po godzinach",
+                     "Praca asystentek po godzinach do końca dnia.\nPodaj hasło lub PIN właściciela.").exec() \
                 != QDialog.DialogCode.Accepted:
             return False
         godziny.udziel_zgody()
